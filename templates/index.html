@@ -33,6 +33,19 @@
       <div class="feature-error" id="feature-error" role="alert" hidden></div>
 
       <section class="view-panel chat-view" id="chat-view" aria-label="Chat">
+        <section class="document-panel" aria-label="Selected document">
+          <div class="document-panel-info">
+            <span class="eyebrow">DOCUMENT CONTEXT</span>
+            <span id="document-status" role="status">No document selected</span>
+            <span id="document-detail" hidden></span>
+          </div>
+          <div class="document-panel-actions">
+            <label class="file-picker" for="document-file">Choose file</label>
+            <input id="document-file" type="file" accept=".txt,.pdf,text/plain,application/pdf">
+            <button class="primary-action" id="upload-document" type="button" disabled>Upload</button>
+            <button class="delete-action" id="clear-document" type="button" disabled>Clear</button>
+          </div>
+        </section>
         <div class="conversation" aria-label="Conversation">
           <div class="empty-state" id="empty-state">
             <span class="eyebrow">YOUR LOCAL ASSISTANT</span>

@@ -30,7 +30,7 @@ Coordinates user input, context, model requests, and tool execution.
 Communicates with the local Ollama API. Keeps model configuration separate from application logic.
 
 ### Context
-Loads the user-editable `profile.json` before each model request and provides its validated preferences as separate system context alongside the in-memory conversation. Profile values are user data, not instructions or authorization. Missing or invalid profiles use generic defaults.
+Loads the user-editable `profile.json` before each model request and provides its validated preferences as separate system context alongside the in-memory conversation. The web client can also attach one explicitly uploaded `.txt` or `.pdf` to a conversation. `documents.py` validates and extracts uploads locally in memory; question-relevant page/paragraph excerpts are passed as separate untrusted document context through the shared Ollama request path, capped at 12,000 characters. Replacing the selected document resets that conversation's history. Profile values are user data, not instructions or authorization. Missing or invalid profiles use generic defaults.
 
 ### Memory
 `storage.py` owns the SQLite schema and parameterized CRUD operations for tasks and notes. The default database is `data/project_u.sqlite3`, created automatically and kept local. Flask exposes explicit task and note APIs used by the web interface; chat does not create or modify these records.
@@ -52,6 +52,10 @@ Provides a single, consistent interface for interacting with U.
 - Do not send personal files to external services without explicit user approval.
 - Keep the local SQLite database out of version control.
 - Task and note changes require explicit UI/API requests; the LLM cannot create or modify them.
+- Uploaded documents are processed locally; request parsing may temporarily spool upload data, but no file is retained after the request. Extracted text is conversation-scoped memory only and is never added to profile or SQLite storage.
+- Limit document uploads and extracted context; scanned PDFs are not OCR'd and large documents may be represented only by selected excerpts.
+- Uploaded documents are processed locally, held only in memory, and never added to profile or SQLite storage.
+- Limit document uploads and extracted context; scanned PDFs are not OCR'd and large documents may be represented only by selected excerpts.
 
 ## 5. Development Rules
 

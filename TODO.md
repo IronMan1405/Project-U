@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** Tasks and notes complete; next milestone is selected-file and PDF support.
+**Current milestone:** Selected-file and PDF support complete; next milestone is approved computer utilities.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -52,11 +52,14 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Test invalid input, missing records, and SQL-safe user text
 
 ### 3. Selected-File & PDF Support
-- [ ] Allow the user to select or upload a file explicitly
-- [ ] Extract text from supported files and PDFs
-- [ ] Let U answer questions about the supplied content
-- [ ] Handle unsupported, empty, and oversized files gracefully
-- [ ] Restrict file access to user-selected files
+- [x] Allow explicit upload of one `.txt` or `.pdf` per conversation
+- [x] Extract text locally with upload, page, stream, and text limits
+- [x] Pass separate, bounded document context through the shared Ollama path
+- [x] Select page/paragraph excerpts for long documents and disclose scope
+- [x] Handle unsupported, empty, malformed, encrypted, textless, and oversized files
+- [x] Keep uploads in memory, scoped to a conversation, with clear/new-conversation actions
+- [x] Verify document contents are not persisted in SQLite or profile storage
+- [x] Test document extraction, limits, context selection, and conversation isolation
 
 ### 4. Approved Computer Utilities
 - [ ] Identify a small set of genuinely useful utilities

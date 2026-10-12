@@ -36,9 +36,15 @@ def respond_to_message(
     model: str,
     conversation: list[dict[str, str]],
     message: str,
+    additional_context: list[dict[str, str]] | None = None,
 ) -> str:
     user_message = {"role": "user", "content": message}
-    messages = [profile_context_message(load_profile()), *conversation, user_message]
+    messages = [
+        profile_context_message(load_profile()),
+        *(additional_context or []),
+        *conversation,
+        user_message,
+    ]
     response = ask_ollama(endpoint, model, messages)
     conversation.extend([user_message, {"role": "assistant", "content": response}])
     return response

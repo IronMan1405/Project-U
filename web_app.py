@@ -7,8 +7,17 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from flask import Flask, jsonify, render_template, request
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from config import load_settings
+from documents import (
+    MAX_ACTIVE_DOCUMENTS,
+    MAX_UPLOAD_BYTES,
+    DocumentError,
+    SelectedDocument,
+    document_context_message,
+    extract_document,
+)
 from main import respond_to_message
 from storage import (
     DATABASE_PATH,
@@ -29,7 +38,9 @@ from storage import (
 def create_app(database_path: str | Path | None = None) -> Flask:
     app = Flask(__name__)
     conversations: dict[str, list[dict[str, str]]] = {}
+    conversation_documents: dict[str, SelectedDocument] = {}
     app.config["DATABASE_PATH"] = Path(database_path) if database_path else DATABASE_PATH
+    app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES + 64 * 1024
 
     try:
         endpoint, model = load_settings()
@@ -53,6 +64,10 @@ def create_app(database_path: str | Path | None = None) -> Flask:
     @app.errorhandler(RecordNotFound)
     def handle_missing_record(error):
         return jsonify(error=str(error)), 404
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def handle_upload_too_large(error):
+        return jsonify(error="Uploads must be 5 MiB or smaller."), 413
 
     def data_store_unavailable():
         if not app.config["DATABASE_READY"]:
@@ -96,6 +111,7 @@ def create_app(database_path: str | Path | None = None) -> Flask:
             if not _valid_conversation_id(previous_id):
                 return jsonify(error="Invalid conversation ID."), 400
             conversations.pop(previous_id, None)
+            conversation_documents.pop(previous_id, None)
 
         conversation_id = str(uuid4())
         conversations[conversation_id] = []
@@ -124,8 +140,22 @@ def create_app(database_path: str | Path | None = None) -> Flask:
             return jsonify(error="Conversation not found. Start a new conversation."), 404
 
         try:
-            response = respond_to_message(endpoint, model, conversation, message.strip())
-            return jsonify(response=response)
+            document = conversation_documents.get(conversation_id)
+            if document is None:
+                response = respond_to_message(endpoint, model, conversation, message.strip())
+                return jsonify(response=response)
+
+            context_message, selection = document_context_message(document, message.strip())
+            response = respond_to_message(
+                endpoint,
+                model,
+                conversation,
+                message.strip(),
+                additional_context=[context_message],
+            )
+            return jsonify(response=response, document_context=selection.mode)
+        except DocumentError as error:
+            return jsonify(error=str(error)), 422
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace").strip()
             try:
@@ -138,6 +168,53 @@ def create_app(database_path: str | Path | None = None) -> Flask:
             return jsonify(error=f"Could not connect to Ollama: {reason}"), 503
         except (json.JSONDecodeError, ValueError) as error:
             return jsonify(error=f"Could not read Ollama's response: {error}"), 502
+
+    @app.post("/api/documents")
+    def document_upload():
+        conversation_id = request.form.get("conversation_id", "")
+        if not _valid_conversation_id(conversation_id):
+            return jsonify(error="Invalid conversation ID."), 400
+        if conversation_id not in conversations:
+            return jsonify(error="Conversation not found. Start a new conversation."), 404
+        if (
+            conversation_id not in conversation_documents
+            and len(conversation_documents) >= MAX_ACTIVE_DOCUMENTS
+        ):
+            return jsonify(error="The local server already has four active document sessions."), 429
+
+        uploaded_file = request.files.get("file")
+        if uploaded_file is None or not uploaded_file.filename:
+            return jsonify(error="Choose a .txt or .pdf file to upload."), 400
+
+        try:
+            content = uploaded_file.stream.read(MAX_UPLOAD_BYTES + 1)
+            if len(content) > MAX_UPLOAD_BYTES:
+                return jsonify(error="Uploads must be 5 MiB or smaller."), 413
+            document = extract_document(uploaded_file.filename, content)
+        except DocumentError as error:
+            return jsonify(error=str(error)), 422
+        except OSError:
+            return jsonify(error="The selected file could not be read."), 400
+        finally:
+            uploaded_file.close()
+
+        conversation_reset = conversation_id in conversation_documents
+        if conversation_reset:
+            conversations[conversation_id].clear()
+        conversation_documents[conversation_id] = document
+        return jsonify(
+            document=document.metadata(),
+            conversation_reset=conversation_reset,
+        ), 201
+
+    @app.delete("/api/conversations/<conversation_id>/document")
+    def document_clear(conversation_id: str):
+        if not _valid_conversation_id(conversation_id):
+            return jsonify(error="Invalid conversation ID."), 400
+        if conversation_id not in conversations:
+            return jsonify(error="Conversation not found. Start a new conversation."), 404
+        conversation_documents.pop(conversation_id, None)
+        return "", 204
 
     @app.get("/api/tasks")
     def tasks_list():

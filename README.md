@@ -75,6 +75,28 @@ excluded from Git. Removing the database file while U is stopped permanently
 deletes its tasks and notes. These operations are explicit UI/API actions and
 are not performed automatically by the model.
 
+## Selected documents
+
+In Chat, choose and upload one `.txt` (UTF-8) or `.pdf` file to ask questions
+about it. Extraction runs locally with `pypdf` (the only new dependency).
+Flask may transiently spool multipart input while parsing it; no uploaded file
+is retained after the request. Extracted text is held only in memory for the
+active conversation and is never written to disk, SQLite, or the profile.
+Clearing the attachment returns to
+ordinary chat. Replacing an
+attached document resets that conversation's history to keep document sources
+separate. Starting a new conversation discards its attachment.
+
+Uploads are limited to 5 MiB, PDFs to 200 pages, and decoded PDF streams to
+500,000 bytes each. Extraction is capped at 100,000 characters, with a
+12,000-character document-context budget per model request. Small documents
+that fit are supplied in full. Larger documents use
+simple keyword-ranked, page-labeled paragraph excerpts; this is not semantic
+search, and U does not claim the full document was considered. If extraction
+hits its limit, the remainder is unavailable. Scanned/image-only PDFs are not
+OCR'd; encrypted, malformed, empty, unsupported, or textless files are rejected
+with an explanation.
+
 Assistant responses render Markdown with locally served `markdown-it` 15.0.2
 and DOMPurify 3.4.16 bundles in `static/vendor/`. Raw HTML is disabled, parsed
 output is sanitized against an allowlist, and unsafe URL schemes are removed.

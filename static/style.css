@@ -179,6 +179,96 @@ button {
   flex-direction: column;
 }
 
+.document-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgb(24 28 31 / 72%);
+}
+
+.document-panel-info {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.document-panel-info #document-status {
+  color: #dce1e4;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.document-panel-info #document-detail {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.document-panel-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.file-picker {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid #343c41;
+  border-radius: 4px;
+  color: #c5cdd1;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.file-picker:hover {
+  border-color: #53616a;
+  background: rgb(255 255 255 / 3%);
+}
+
+#document-file {
+  width: min(220px, 24vw);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+#document-file::file-selector-button {
+  max-width: 110px;
+  margin-right: 7px;
+  padding: 7px 8px;
+  overflow: hidden;
+  border: 1px solid #343c41;
+  border-radius: 4px;
+  background: #14181a;
+  color: #bfc9ce;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+
+.document-panel .primary-action {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.document-panel .delete-action {
+  padding: 7px 6px;
+}
+
+.document-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .feature-view {
   display: flex;
   min-height: 0;
@@ -851,6 +941,22 @@ button {
     flex-wrap: wrap;
     gap: 5px 12px;
     line-height: 1.4;
+  }
+
+  .document-panel {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 10px;
+  }
+
+  .document-panel-actions {
+    justify-content: flex-start;
+  }
+
+  #document-file {
+    width: min(100%, 230px);
   }
 
   .workspace-tabs {

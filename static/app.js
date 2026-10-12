@@ -24,6 +24,11 @@ const noteTitleInput = document.querySelector("#note-title");
 const noteContentInput = document.querySelector("#note-content");
 const newNoteButton = document.querySelector("#new-note");
 const deleteNoteButton = document.querySelector("#delete-note");
+const documentFileInput = document.querySelector("#document-file");
+const uploadDocumentButton = document.querySelector("#upload-document");
+const clearDocumentButton = document.querySelector("#clear-document");
+const documentStatus = document.querySelector("#document-status");
+const documentDetail = document.querySelector("#document-detail");
 
 const markdownParser = window.markdownit({ html: false, linkify: false });
 markdownParser.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
@@ -46,6 +51,9 @@ let isSending = false;
 let currentNoteId = null;
 let notesCache = [];
 let originalNote = null;
+let selectedDocument = null;
+let documentUploadPending = false;
+let selectedDocumentDetail = "";
 
 function showError(message) {
   errorMessage.textContent = message;
@@ -100,8 +108,13 @@ function appendAssistantMarkdown(target, content) {
 
 function setBusy(busy) {
   isSending = busy;
-  sendButton.disabled = busy;
-  newChatButton.disabled = busy;
+  const controlsBusy = busy || documentUploadPending;
+  sendButton.disabled = controlsBusy;
+  newChatButton.disabled = controlsBusy;
+  input.disabled = controlsBusy;
+  documentFileInput.disabled = controlsBusy;
+  uploadDocumentButton.disabled = controlsBusy || documentFileInput.files.length === 0;
+  clearDocumentButton.disabled = controlsBusy || selectedDocument === null;
   requestState.hidden = !busy;
 }
 
@@ -133,9 +146,93 @@ async function startConversation(previousId = null) {
   conversationId = result.conversation_id;
   messagesElement.replaceChildren();
   emptyState.hidden = false;
+  setSelectedDocument(null);
   clearError();
   input.focus();
 }
+
+function setSelectedDocument(documentInfo) {
+  selectedDocument = documentInfo;
+  if (!documentInfo) {
+    selectedDocumentDetail = "";
+    documentStatus.textContent = "No document selected";
+    documentDetail.textContent = "";
+    documentDetail.hidden = true;
+    clearDocumentButton.disabled = true;
+    return;
+  }
+
+  documentStatus.textContent = `${documentInfo.filename} selected`;
+  const details = [
+    `${documentInfo.file_type} · ${documentInfo.page_count} ${documentInfo.page_count === 1 ? "page" : "pages"}`,
+    `${documentInfo.extracted_chars.toLocaleString()} characters extracted`,
+  ];
+  if (documentInfo.truncated) {
+    details.push("extraction limit reached; remainder unavailable");
+  } else if (documentInfo.extracted_chars > documentInfo.context_budget) {
+    details.push("relevant excerpts used per question, not the full document");
+  } else {
+    details.push("full extracted text fits the context budget");
+  }
+  if (documentInfo.little_text) {
+    details.push("little selectable text; scanned PDFs are not OCR'd");
+  }
+  selectedDocumentDetail = details.join(" · ");
+  documentDetail.textContent = selectedDocumentDetail;
+  documentDetail.hidden = false;
+  clearDocumentButton.disabled = false;
+}
+
+documentFileInput.addEventListener("change", () => {
+  uploadDocumentButton.disabled = documentUploadPending || documentFileInput.files.length === 0;
+});
+
+uploadDocumentButton.addEventListener("click", async () => {
+  const file = documentFileInput.files[0];
+  if (!file || !conversationId || documentUploadPending || isSending) return;
+
+  documentUploadPending = true;
+  setBusy(false);
+  documentStatus.textContent = "Reading document locally...";
+  clearError();
+  const formData = new FormData();
+  formData.append("conversation_id", conversationId);
+  formData.append("file", file);
+  try {
+    const result = await apiRequest("/api/documents", { method: "POST", body: formData });
+    if (result.conversation_reset) {
+      messagesElement.replaceChildren();
+      emptyState.hidden = false;
+    }
+    setSelectedDocument(result.document);
+    if (result.conversation_reset) {
+      documentDetail.textContent += " · chat history reset to keep sources separate";
+    }
+    documentFileInput.value = "";
+  } catch (error) {
+    documentStatus.textContent = selectedDocument
+      ? `${selectedDocument.filename} selected`
+      : "No document selected";
+    showError(error.message || "The document could not be read.");
+  } finally {
+    documentUploadPending = false;
+    setBusy(false);
+  }
+});
+
+clearDocumentButton.addEventListener("click", async () => {
+  if (!conversationId || !selectedDocument) return;
+  clearDocumentButton.disabled = true;
+  try {
+    await apiRequest(`/api/conversations/${conversationId}/document`, { method: "DELETE" });
+    setSelectedDocument(null);
+    documentFileInput.value = "";
+    clearError();
+  } catch (error) {
+    clearDocumentButton.disabled = false;
+    showError(error.message || "The selected document could not be cleared.");
+  }
+});
 
 async function apiRequest(url, options = {}) {
   const response = await fetch(url, options);
@@ -400,7 +497,7 @@ deleteNoteButton.addEventListener("click", async () => {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = input.value.trim();
-  if (!message || isSending) return;
+  if (!message || isSending || documentUploadPending) return;
   if (!conversationId) {
     showError("The conversation is still starting. Try again in a moment.");
     return;
@@ -421,6 +518,10 @@ form.addEventListener("submit", async (event) => {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The assistant could not respond.");
     appendMessage("assistant", result.response);
+    if (selectedDocument && result.document_context) {
+      const scope = result.document_context === "full" ? "full extracted text" : "selected excerpts only";
+      documentDetail.textContent = `${selectedDocumentDetail} · Last answer used ${scope}`;
+    }
   } catch (error) {
     showError(error.message || "Could not reach the local assistant backend.");
   } finally {
@@ -442,7 +543,7 @@ input.addEventListener("input", () => {
 });
 
 newChatButton.addEventListener("click", async () => {
-  if (isSending) return;
+  if (isSending || documentUploadPending) return;
   newChatButton.disabled = true;
   clearError();
   try {
