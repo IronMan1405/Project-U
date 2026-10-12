@@ -142,7 +142,7 @@ class SharedProfileContextTests(unittest.TestCase):
 
     def test_web_client_keeps_profile_and_conversation_context(self):
         self._write_profile("brief")
-        client = web_app.create_app().test_client()
+        client = web_app.create_app(self.profile_path.parent / "web-test.sqlite3").test_client()
         conversation_id = client.post("/api/conversations", json={}).get_json()["conversation_id"]
         with patch.object(user_profile, "PROFILE_PATH", self.profile_path), patch.object(
             main, "ask_ollama", side_effect=["391", "408; difference 17"]

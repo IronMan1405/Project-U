@@ -24,35 +24,91 @@
     </header>
 
     <main class="workspace">
-      <section class="conversation" aria-label="Conversation">
-        <div class="empty-state" id="empty-state">
-          <span class="eyebrow">YOUR LOCAL ASSISTANT</span>
-          <h1>What can I help with?</h1>
-          <p>Start a conversation with U.</p>
+      <nav class="workspace-tabs" aria-label="Workspace">
+        <button class="workspace-tab active" type="button" data-view="chat" aria-pressed="true">Chat</button>
+        <button class="workspace-tab" type="button" data-view="tasks" aria-pressed="false">Tasks</button>
+        <button class="workspace-tab" type="button" data-view="notes" aria-pressed="false">Notes</button>
+      </nav>
+
+      <div class="feature-error" id="feature-error" role="alert" hidden></div>
+
+      <section class="view-panel chat-view" id="chat-view" aria-label="Chat">
+        <div class="conversation" aria-label="Conversation">
+          <div class="empty-state" id="empty-state">
+            <span class="eyebrow">YOUR LOCAL ASSISTANT</span>
+            <h1>What can I help with?</h1>
+            <p>Start a conversation with U.</p>
+          </div>
+          <div class="messages" id="messages" aria-live="polite"></div>
+          <div class="request-state" id="request-state" hidden>
+            <span class="thinking-mark" aria-hidden="true"></span>
+            <span>U is thinking</span>
+          </div>
         </div>
-        <div class="messages" id="messages" aria-live="polite"></div>
-        <div class="request-state" id="request-state" hidden>
-          <span class="thinking-mark" aria-hidden="true"></span>
-          <span>U is thinking</span>
-        </div>
+
+        <div class="error-message" id="error-message" role="alert" hidden></div>
+
+        <footer class="composer-area">
+          <form class="composer" id="chat-form">
+            <label class="visually-hidden" for="message-input">Message U</label>
+            <textarea id="message-input" name="message" rows="1" maxlength="20000"
+              placeholder="Message U..." autocomplete="off" required></textarea>
+            <button class="send-button" id="send-button" type="submit" aria-label="Send message" title="Send message">
+              <span aria-hidden="true">&#8593;</span>
+            </button>
+          </form>
+          <div class="composer-notes">
+            <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
+            <span>Stop the server with Ctrl+C in its terminal.</span>
+          </div>
+        </footer>
       </section>
 
-      <div class="error-message" id="error-message" role="alert" hidden></div>
-
-      <footer class="composer-area">
-        <form class="composer" id="chat-form">
-          <label class="visually-hidden" for="message-input">Message U</label>
-          <textarea id="message-input" name="message" rows="1" maxlength="20000"
-            placeholder="Message U..." autocomplete="off" required></textarea>
-          <button class="send-button" id="send-button" type="submit" aria-label="Send message" title="Send message">
-            <span aria-hidden="true">&#8593;</span>
-          </button>
+      <section class="view-panel feature-view" id="tasks-view" aria-labelledby="tasks-heading" hidden>
+        <header class="feature-heading">
+          <div>
+            <span class="eyebrow">LOCAL TASKS</span>
+            <h1 id="tasks-heading">Tasks</h1>
+          </div>
+        </header>
+        <form class="entry-form" id="task-form">
+          <label class="visually-hidden" for="task-title">Task title</label>
+          <input id="task-title" name="title" maxlength="200" placeholder="Add a task..." required>
+          <label class="visually-hidden" for="task-description">Task description (optional)</label>
+          <textarea id="task-description" name="description" rows="2" maxlength="5000"
+            placeholder="Description (optional)"></textarea>
+          <button class="primary-action" type="submit">Add task</button>
         </form>
-        <div class="composer-notes">
-          <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
-          <span>Stop the server with Ctrl+C in its terminal.</span>
+        <p class="feature-empty" id="tasks-empty" hidden>No tasks yet. Add one above.</p>
+        <ul class="task-list" id="tasks-list" aria-label="Tasks"></ul>
+      </section>
+
+      <section class="view-panel feature-view" id="notes-view" aria-labelledby="notes-heading" hidden>
+        <header class="feature-heading">
+          <div>
+            <span class="eyebrow">LOCAL NOTES</span>
+            <h1 id="notes-heading">Notes</h1>
+          </div>
+          <button class="secondary-action" id="new-note" type="button">New note</button>
+        </header>
+        <div class="notes-layout">
+          <aside class="note-sidebar" aria-label="Saved notes">
+            <p class="feature-empty" id="notes-empty" hidden>No notes yet.</p>
+            <ul class="note-list" id="notes-list"></ul>
+          </aside>
+          <p class="note-placeholder" id="note-placeholder">Choose a note or create one.</p>
+          <form class="note-editor" id="note-form" hidden>
+            <label for="note-title">Title</label>
+            <input id="note-title" name="title" maxlength="200" required>
+            <label for="note-content">Content</label>
+            <textarea id="note-content" name="content" maxlength="200000" spellcheck="false"></textarea>
+            <div class="note-actions">
+              <button class="primary-action" type="submit">Save note</button>
+              <button class="danger-action" id="delete-note" type="button" hidden>Delete note</button>
+            </div>
+          </form>
         </div>
-      </footer>
+      </section>
     </main>
   </div>
 </body>

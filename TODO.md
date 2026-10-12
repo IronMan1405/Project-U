@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** Persistent profile complete; next milestone is tasks and notes.
+**Current milestone:** Tasks and notes complete; next milestone is selected-file and PDF support.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -43,12 +43,13 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Test persistence across application restarts
 
 ### 2. Tasks & Notes
-- [ ] Define minimal task and note data models
-- [ ] Store tasks and notes locally
-- [ ] Support creating, listing, and completing tasks
-- [ ] Support creating, listing, and retrieving notes
-- [ ] Expose these operations through the web interface
-- [ ] Verify data persists across restarts
+- [x] Define minimal task and note data models
+- [x] Store tasks and notes locally
+- [x] Create, list, complete, reopen, and delete tasks
+- [x] Create, list, read, edit, and delete notes
+- [x] Expose these operations through the web interface
+- [x] Verify data persists across database reopen
+- [x] Test invalid input, missing records, and SQL-safe user text
 
 ### 3. Selected-File & PDF Support
 - [ ] Allow the user to select or upload a file explicitly

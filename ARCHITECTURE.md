@@ -33,7 +33,7 @@ Communicates with the local Ollama API. Keeps model configuration separate from 
 Loads the user-editable `profile.json` before each model request and provides its validated preferences as separate system context alongside the in-memory conversation. Profile values are user data, not instructions or authorization. Missing or invalid profiles use generic defaults.
 
 ### Memory
-Stores persistent tasks, notes, and preferences in SQLite. Add only the memory capabilities required by the MVP.
+`storage.py` owns the SQLite schema and parameterized CRUD operations for tasks and notes. The default database is `data/project_u.sqlite3`, created automatically and kept local. Flask exposes explicit task and note APIs used by the web interface; chat does not create or modify these records.
 
 ### Tools
 Provides narrowly scoped functions for approved operations, such as managing tasks, reading selected files, and opening applications.
@@ -50,6 +50,8 @@ Provides a single, consistent interface for interacting with U.
 - Restrict file access to user-approved locations.
 - Never store API keys, passwords, or secrets in source control.
 - Do not send personal files to external services without explicit user approval.
+- Keep the local SQLite database out of version control.
+- Task and note changes require explicit UI/API requests; the LLM cannot create or modify them.
 
 ## 5. Development Rules
 

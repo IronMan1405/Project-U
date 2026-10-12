@@ -3,4 +3,5 @@ __pycache__/
 *.py[cod]
 config.ini
 profile.json
+data/
 .DS_Store

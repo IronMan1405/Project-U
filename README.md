@@ -65,6 +65,16 @@ kept in server memory for each open conversation and cleared when a new one is
 started or the server stops. The status indicator checks Ollama and the
 configured model. Stop the server with `Ctrl+C` in its terminal.
 
+## Tasks and notes
+
+Use the Tasks and Notes tabs in the web interface to create, edit, complete,
+reopen, and delete records. Notes preserve their text and newlines. Records are
+stored locally in `data/project_u.sqlite3`; the directory and schema are created
+automatically the first time U starts. Data persists across restarts and is
+excluded from Git. Removing the database file while U is stopped permanently
+deletes its tasks and notes. These operations are explicit UI/API actions and
+are not performed automatically by the model.
+
 Assistant responses render Markdown with locally served `markdown-it` 15.0.2
 and DOMPurify 3.4.16 bundles in `static/vendor/`. Raw HTML is disabled, parsed
 output is sanitized against an allowlist, and unsafe URL schemes are removed.
