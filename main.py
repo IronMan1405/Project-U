@@ -30,6 +30,18 @@ def ask_ollama(endpoint: str, model: str, messages: list[dict[str, str]]) -> str
         raise ValueError("Ollama returned an unexpected response.") from error
 
 
+def respond_to_message(
+    endpoint: str,
+    model: str,
+    conversation: list[dict[str, str]],
+    message: str,
+) -> str:
+    user_message = {"role": "user", "content": message}
+    response = ask_ollama(endpoint, model, conversation + [user_message])
+    conversation.extend([user_message, {"role": "assistant", "content": response}])
+    return response
+
+
 def main() -> int:
     try:
         endpoint, model = load_settings()
@@ -53,12 +65,7 @@ def main() -> int:
             continue
 
         try:
-            user_message = {"role": "user", "content": message}
-            response = ask_ollama(endpoint, model, conversation + [user_message])
-            print(f"U: {response}")
-            conversation.extend(
-                [user_message, {"role": "assistant", "content": response}]
-            )
+            print(f"U: {respond_to_message(endpoint, model, conversation, message)}")
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace").strip()
             try:

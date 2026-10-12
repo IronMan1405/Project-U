@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111416">
+  <title>U | Local Assistant</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="U home">U<span class="wordmark-period">.</span></a>
+      <div class="connection" aria-live="polite">
+        <span id="health-dot" class="health-dot" aria-hidden="true"></span>
+        <span id="health-label">Checking local model</span>
+      </div>
+      <button class="new-chat" id="new-chat" type="button">
+        <span aria-hidden="true">+</span> New conversation
+      </button>
+    </header>
+
+    <main class="workspace">
+      <section class="conversation" aria-label="Conversation">
+        <div class="empty-state" id="empty-state">
+          <span class="eyebrow">YOUR LOCAL ASSISTANT</span>
+          <h1>What can I help with?</h1>
+          <p>Start a conversation with U.</p>
+        </div>
+        <div class="messages" id="messages" aria-live="polite"></div>
+        <div class="request-state" id="request-state" hidden>
+          <span class="thinking-mark" aria-hidden="true"></span>
+          <span>U is thinking</span>
+        </div>
+      </section>
+
+      <div class="error-message" id="error-message" role="alert" hidden></div>
+
+      <footer class="composer-area">
+        <form class="composer" id="chat-form">
+          <label class="visually-hidden" for="message-input">Message U</label>
+          <textarea id="message-input" name="message" rows="1" maxlength="20000"
+            placeholder="Message U..." autocomplete="off" required></textarea>
+          <button class="send-button" id="send-button" type="submit" aria-label="Send message" title="Send message">
+            <span aria-hidden="true">&#8593;</span>
+          </button>
+        </form>
+        <div class="composer-notes">
+          <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
+          <span>Stop the server with Ctrl+C in its terminal.</span>
+        </div>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
