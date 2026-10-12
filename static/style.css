@@ -269,6 +269,50 @@ button {
   opacity: 0.45;
 }
 
+.tool-activity {
+  margin-top: 10px;
+  padding: 8px 11px;
+  border-left: 2px solid #657d8e;
+  color: #aebbc3;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.confirmation-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid #48545b;
+  border-radius: 5px;
+  background: #1a2023;
+}
+
+.confirmation-panel[hidden] {
+  display: none;
+}
+
+.confirmation-panel p {
+  margin: 5px 0 0;
+  color: #e0e5e8;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.confirmation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.confirmation-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .feature-view {
   display: flex;
   min-height: 0;
@@ -952,6 +996,15 @@ button {
   }
 
   .document-panel-actions {
+    justify-content: flex-start;
+  }
+
+  .confirmation-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .confirmation-actions {
     justify-content: flex-start;
   }
 

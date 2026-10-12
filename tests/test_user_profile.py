@@ -11,6 +11,7 @@ from unittest.mock import patch
 import main
 import user_profile
 import web_app
+import assistant_runtime
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -106,18 +107,24 @@ class SharedProfileContextTests(unittest.TestCase):
         self._write_profile("brief")
         conversation = []
         with patch.object(user_profile, "PROFILE_PATH", self.profile_path), patch.object(
-            main, "ask_ollama", side_effect=["first answer", "second answer"]
+            assistant_runtime,
+            "ask_ollama",
+            side_effect=[
+                {"role": "assistant", "content": "first answer"},
+                {"role": "assistant", "content": "second answer"},
+            ],
         ) as ask:
-            main.respond_to_message("local", "model", conversation, "first question")
+            runtime = assistant_runtime.AssistantRuntime("local", "model", history=conversation)
+            runtime.run_turn("first question")
             self._write_profile("detailed")
-            main.respond_to_message("local", "model", conversation, "follow-up")
+            runtime.run_turn("follow-up")
 
         first_messages = ask.call_args_list[0].args[2]
         second_messages = ask.call_args_list[1].args[2]
         self.assertIn('"explanation_detail": "brief"', first_messages[0]["content"])
         self.assertIn('"explanation_detail": "detailed"', second_messages[0]["content"])
         self.assertEqual(
-            second_messages[1:],
+            second_messages[2:],
             [
                 {"role": "user", "content": "first question"},
                 {"role": "assistant", "content": "first answer"},
@@ -132,7 +139,11 @@ class SharedProfileContextTests(unittest.TestCase):
             patch.object(user_profile, "PROFILE_PATH", self.profile_path),
             patch.object(main, "load_settings", return_value=("local", "model")),
             patch("builtins.input", side_effect=lambda _: next(prompts)),
-            patch.object(main, "ask_ollama", return_value="hello back") as ask,
+            patch.object(
+                main,
+                "ask_ollama",
+                return_value={"role": "assistant", "content": "hello back"},
+            ) as ask,
             redirect_stdout(io.StringIO()),
             redirect_stderr(io.StringIO()),
         ):
@@ -142,11 +153,16 @@ class SharedProfileContextTests(unittest.TestCase):
 
     def test_web_client_keeps_profile_and_conversation_context(self):
         self._write_profile("brief")
-        client = web_app.create_app(self.profile_path.parent / "web-test.sqlite3").test_client()
-        conversation_id = client.post("/api/conversations", json={}).get_json()["conversation_id"]
         with patch.object(user_profile, "PROFILE_PATH", self.profile_path), patch.object(
-            main, "ask_ollama", side_effect=["391", "408; difference 17"]
+            assistant_runtime,
+            "ask_ollama",
+            side_effect=[
+                {"role": "assistant", "content": "391"},
+                {"role": "assistant", "content": "408; difference 17"},
+            ],
         ) as ask:
+            client = web_app.create_app(self.profile_path.parent / "web-test.sqlite3").test_client()
+            conversation_id = client.post("/api/conversations", json={}).get_json()["conversation_id"]
             first = client.post(
                 "/api/chat", json={"conversation_id": conversation_id, "message": "17 × 23?"}
             )
@@ -159,7 +175,7 @@ class SharedProfileContextTests(unittest.TestCase):
         self.assertEqual(second.status_code, 200)
         second_messages = ask.call_args_list[1].args[2]
         self.assertEqual(
-            second_messages[1:],
+            second_messages[2:],
             [
                 {"role": "user", "content": "17 × 23?"},
                 {"role": "assistant", "content": "391"},

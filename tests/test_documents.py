@@ -10,6 +10,7 @@ from pypdf import PdfWriter
 
 import documents
 import web_app
+from assistant_runtime import AssistantRuntime, TurnResult
 
 
 def make_pdf(page_texts, compress=False):
@@ -190,7 +191,11 @@ class DocumentApiTests(unittest.TestCase):
         self.assertEqual(uploaded.status_code, 201)
         self.assertEqual(uploaded.get_json()["document"]["filename"], "facts.txt")
 
-        with patch.object(web_app, "respond_to_message", return_value="It lasts 18 months.") as respond:
+        with patch.object(
+            AssistantRuntime,
+            "run_turn",
+            return_value=TurnResult("It lasts 18 months.", []),
+        ) as respond:
             chat = self.client.post(
                 "/api/chat", json={"conversation_id": self.conversation_id, "message": "How long is it?"}
             )
@@ -206,19 +211,23 @@ class DocumentApiTests(unittest.TestCase):
             self.client.post(
                 "/api/chat", json={"conversation_id": self.conversation_id, "message": "Normal chat now."}
             )
-            self.assertNotIn("additional_context", respond.call_args.kwargs)
+            self.assertEqual(respond.call_args.kwargs["additional_context"], [])
 
     def test_document_context_does_not_leak_between_conversations(self):
         other_id = self.client.post("/api/conversations", json={}).get_json()["conversation_id"]
         self.upload(self.conversation_id, "private.txt", b"Secret document phrase: saffron river.")
 
-        with patch.object(web_app, "respond_to_message", return_value="Ordinary answer.") as respond:
+        with patch.object(
+            AssistantRuntime,
+            "run_turn",
+            return_value=TurnResult("Ordinary answer.", []),
+        ) as respond:
             response = self.client.post(
                 "/api/chat", json={"conversation_id": other_id, "message": "What is in the file?"}
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn("additional_context", respond.call_args.kwargs)
+        self.assertEqual(respond.call_args.kwargs["additional_context"], [])
         self.assertNotIn("saffron river", response.get_data(as_text=True))
 
     def test_replacing_document_resets_history_and_is_not_persisted(self):
@@ -243,13 +252,17 @@ class DocumentApiTests(unittest.TestCase):
             "/api/conversations", json={"previous_id": self.conversation_id}
         ).get_json()["conversation_id"]
 
-        with patch.object(web_app, "respond_to_message", return_value="No document context.") as respond:
+        with patch.object(
+            AssistantRuntime,
+            "run_turn",
+            return_value=TurnResult("No document context.", []),
+        ) as respond:
             response = self.client.post(
                 "/api/chat", json={"conversation_id": new_id, "message": "Hello"}
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn("additional_context", respond.call_args.kwargs)
+        self.assertEqual(respond.call_args.kwargs["additional_context"], [])
 
 
 if __name__ == "__main__":

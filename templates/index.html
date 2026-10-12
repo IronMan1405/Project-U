@@ -46,6 +46,17 @@
             <button class="delete-action" id="clear-document" type="button" disabled>Clear</button>
           </div>
         </section>
+        <div class="tool-activity" id="tool-activity" role="status" aria-live="polite" hidden></div>
+        <section class="confirmation-panel" id="confirmation-panel" aria-label="Confirm assistant action" hidden>
+          <div>
+            <span class="eyebrow">ACTION NEEDS APPROVAL</span>
+            <p id="confirmation-summary"></p>
+          </div>
+          <div class="confirmation-actions">
+            <button class="primary-action" id="confirm-action" type="button">Confirm</button>
+            <button class="secondary-action" id="cancel-action" type="button">Cancel</button>
+          </div>
+        </section>
         <div class="conversation" aria-label="Conversation">
           <div class="empty-state" id="empty-state">
             <span class="eyebrow">YOUR LOCAL ASSISTANT</span>

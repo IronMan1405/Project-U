@@ -97,6 +97,21 @@ hits its limit, the remainder is unavailable. Scanned/image-only PDFs are not
 OCR'd; encrypted, malformed, empty, unsupported, or textless files are rejected
 with an explanation.
 
+## Assistant tools
+
+Terminal and web chat share `assistant_runtime.py` and Ollama's native tool-call
+protocol. U can list/create/complete/reopen/delete tasks; list/read/create/edit/
+delete notes; report local time, battery, memory, and disk status; and request a
+website opening in the default browser. Task and note actions use the existing
+SQLite storage layer. No model-generated shell commands or code are executed.
+
+The runtime allows at most four tool executions per user turn. Read-only tools
+run directly. A task/note write runs directly only when the user message clearly
+requests it; ambiguous writes, every deletion, and every website opening pause
+for explicit approval. Web users get Confirm/Cancel controls; the terminal asks
+for a yes/no response. Tool errors and unavailable system readings are reported
+as such rather than guessed.
+
 Assistant responses render Markdown with locally served `markdown-it` 15.0.2
 and DOMPurify 3.4.16 bundles in `static/vendor/`. Raw HTML is disabled, parsed
 output is sanitized against an allowlist, and unsafe URL schemes are removed.

@@ -1,53 +1,25 @@
 import json
+import sqlite3
 import sys
 import urllib.error
-import urllib.request
 
+from assistant_runtime import AssistantRuntime, ask_ollama
 from config import load_settings
-from user_profile import load_profile, profile_context_message
+from storage import initialize_database
 
 
-def ask_ollama(endpoint: str, model: str, messages: list[dict[str, str]]) -> str:
-    payload = json.dumps(
-        {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        f"{endpoint}/api/chat",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
-    with urllib.request.urlopen(request, timeout=120) as response:
-        result = json.load(response)
-
+def _confirm_in_terminal(summary: str) -> bool:
     try:
-        return result["message"]["content"]
-    except (KeyError, TypeError) as error:
-        raise ValueError("Ollama returned an unexpected response.") from error
+        answer = input(f"U requests: {summary}\nConfirm? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("Confirmation cancelled.")
+        return False
+    return answer in {"y", "yes"}
 
 
-def respond_to_message(
-    endpoint: str,
-    model: str,
-    conversation: list[dict[str, str]],
-    message: str,
-    additional_context: list[dict[str, str]] | None = None,
-) -> str:
-    user_message = {"role": "user", "content": message}
-    messages = [
-        profile_context_message(load_profile()),
-        *(additional_context or []),
-        *conversation,
-        user_message,
-    ]
-    response = ask_ollama(endpoint, model, messages)
-    conversation.extend([user_message, {"role": "assistant", "content": response}])
-    return response
+def _terminal_activity(activity: dict) -> None:
+    if activity.get("status") == "running":
+        print(f"U: {activity.get('summary', 'Using a tool')}...", flush=True)
 
 
 def main() -> int:
@@ -57,8 +29,18 @@ def main() -> int:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 1
 
+    try:
+        initialize_database()
+    except (OSError, sqlite3.Error) as error:
+        print(f"Local task/note storage is unavailable: {error}", file=sys.stderr)
+
     print(f"U is ready (model: {model}). Type /quit to exit.")
-    conversation = []
+    runtime = AssistantRuntime(
+        endpoint,
+        model,
+        model_client=ask_ollama,
+        activity_callback=_terminal_activity,
+    )
     while True:
         try:
             message = input("You: ").strip()
@@ -73,7 +55,13 @@ def main() -> int:
             continue
 
         try:
-            print(f"U: {respond_to_message(endpoint, model, conversation, message)}")
+            result = runtime.run_turn(message, confirm_callback=_confirm_in_terminal)
+            for activity in result.activities:
+                print(f"[{activity['status']}] {activity['summary']}")
+            if result.pending_confirmation:
+                print("Action is awaiting confirmation.", file=sys.stderr)
+            elif result.response:
+                print(f"U: {result.response}")
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace").strip()
             try:

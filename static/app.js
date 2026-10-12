@@ -29,6 +29,11 @@ const uploadDocumentButton = document.querySelector("#upload-document");
 const clearDocumentButton = document.querySelector("#clear-document");
 const documentStatus = document.querySelector("#document-status");
 const documentDetail = document.querySelector("#document-detail");
+const toolActivity = document.querySelector("#tool-activity");
+const confirmationPanel = document.querySelector("#confirmation-panel");
+const confirmationSummary = document.querySelector("#confirmation-summary");
+const confirmActionButton = document.querySelector("#confirm-action");
+const cancelActionButton = document.querySelector("#cancel-action");
 
 const markdownParser = window.markdownit({ html: false, linkify: false });
 markdownParser.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
@@ -54,6 +59,9 @@ let originalNote = null;
 let selectedDocument = null;
 let documentUploadPending = false;
 let selectedDocumentDetail = "";
+let pendingConfirmationId = null;
+let confirmationResolving = false;
+let activityPollTimer = null;
 
 function showError(message) {
   errorMessage.textContent = message;
@@ -108,7 +116,7 @@ function appendAssistantMarkdown(target, content) {
 
 function setBusy(busy) {
   isSending = busy;
-  const controlsBusy = busy || documentUploadPending;
+  const controlsBusy = busy || documentUploadPending || confirmationResolving || pendingConfirmationId !== null;
   sendButton.disabled = controlsBusy;
   newChatButton.disabled = controlsBusy;
   input.disabled = controlsBusy;
@@ -147,6 +155,9 @@ async function startConversation(previousId = null) {
   messagesElement.replaceChildren();
   emptyState.hidden = false;
   setSelectedDocument(null);
+  pendingConfirmationId = null;
+  confirmationPanel.hidden = true;
+  clearToolActivity();
   clearError();
   input.focus();
 }
@@ -249,6 +260,131 @@ async function apiRequest(url, options = {}) {
   }
   return result;
 }
+
+function clearToolActivity() {
+  toolActivity.replaceChildren();
+  toolActivity.hidden = true;
+}
+
+function toolLabel(toolName) {
+  const labels = {
+    create_task: "Creating task",
+    list_tasks: "Checking tasks",
+    set_task_completed: "Updating task",
+    delete_task: "Deleting task",
+    list_notes: "Checking notes",
+    get_note: "Reading note",
+    create_note: "Creating note",
+    update_note: "Updating note",
+    delete_note: "Deleting note",
+    get_system_info: "Checking system information",
+    open_website: "Requesting browser launch",
+    document_context: "Using document context",
+  };
+  return labels[toolName] || "Using an assistant tool";
+}
+
+function showLiveActivity(activity) {
+  if (!activity || activity.status === "idle") {
+    clearToolActivity();
+    return;
+  }
+  toolActivity.replaceChildren();
+  const label = document.createElement("span");
+  label.textContent = activity.status === "running"
+    ? `${toolLabel(activity.tool)}...`
+    : activity.summary || "Assistant action";
+  toolActivity.append(label);
+  toolActivity.hidden = false;
+}
+
+async function pollConversationActivity() {
+  if (!conversationId) return;
+  try {
+    const result = await apiRequest(`/api/conversations/${conversationId}/activity`);
+    showLiveActivity(result.activity);
+  } catch {
+    // Activity feedback is best-effort; the chat response remains authoritative.
+  }
+}
+
+function startActivityPolling() {
+  stopActivityPolling();
+  pollConversationActivity();
+  activityPollTimer = window.setInterval(pollConversationActivity, 350);
+}
+
+function stopActivityPolling() {
+  if (activityPollTimer !== null) {
+    window.clearInterval(activityPollTimer);
+    activityPollTimer = null;
+  }
+}
+
+function renderToolActivities(activities) {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    clearToolActivity();
+    return;
+  }
+  toolActivity.replaceChildren();
+  for (const activity of activities) {
+    const line = document.createElement("div");
+    const result = activity.status === "success" ? "Done" : activity.status;
+    line.textContent = `${toolLabel(activity.tool)}: ${activity.summary} (${result})`;
+    toolActivity.append(line);
+  }
+  toolActivity.hidden = false;
+}
+
+function showPendingConfirmation(pending) {
+  pendingConfirmationId = pending.confirmation_id;
+  confirmationSummary.textContent = `${pending.summary} ${pending.message}`;
+  confirmationPanel.hidden = false;
+}
+
+function acceptTurnResult(result) {
+  renderToolActivities(result.activities);
+  if (result.pending_confirmation) {
+    showPendingConfirmation(result.pending_confirmation);
+    return;
+  }
+  pendingConfirmationId = null;
+  confirmationPanel.hidden = true;
+  if (result.response) appendMessage("assistant", result.response);
+}
+
+async function resolvePendingAction(approved) {
+  if (!conversationId || !pendingConfirmationId || confirmationResolving) return;
+  confirmationResolving = true;
+  confirmActionButton.disabled = true;
+  cancelActionButton.disabled = true;
+  setBusy(true);
+  startActivityPolling();
+  try {
+    const result = await apiRequest("/api/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        confirmation_id: pendingConfirmationId,
+        approved,
+      }),
+    });
+    acceptTurnResult(result);
+  } catch (error) {
+    showError(error.message || "The pending action could not be resolved.");
+  } finally {
+    confirmationResolving = false;
+    confirmActionButton.disabled = false;
+    cancelActionButton.disabled = false;
+    stopActivityPolling();
+    setBusy(false);
+    input.focus();
+  }
+}
+
+confirmActionButton.addEventListener("click", () => resolvePendingAction(true));
+cancelActionButton.addEventListener("click", () => resolvePendingAction(false));
 
 function showFeatureError(message = "") {
   featureError.textContent = message;
@@ -508,6 +644,7 @@ form.addEventListener("submit", async (event) => {
   input.value = "";
   input.style.height = "auto";
   setBusy(true);
+  startActivityPolling();
 
   try {
     const response = await fetch("/api/chat", {
@@ -517,7 +654,7 @@ form.addEventListener("submit", async (event) => {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The assistant could not respond.");
-    appendMessage("assistant", result.response);
+    acceptTurnResult(result);
     if (selectedDocument && result.document_context) {
       const scope = result.document_context === "full" ? "full extracted text" : "selected excerpts only";
       documentDetail.textContent = `${selectedDocumentDetail} · Last answer used ${scope}`;
@@ -525,8 +662,9 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     showError(error.message || "Could not reach the local assistant backend.");
   } finally {
+    stopActivityPolling();
     setBusy(false);
-    input.focus();
+    if (!pendingConfirmationId) input.focus();
   }
 });
 

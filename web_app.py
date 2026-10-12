@@ -18,7 +18,7 @@ from documents import (
     document_context_message,
     extract_document,
 )
-from main import respond_to_message
+from assistant_runtime import AssistantRuntime, RuntimeBusyError, TurnResult
 from storage import (
     DATABASE_PATH,
     RecordNotFound,
@@ -37,8 +37,9 @@ from storage import (
 
 def create_app(database_path: str | Path | None = None) -> Flask:
     app = Flask(__name__)
-    conversations: dict[str, list[dict[str, str]]] = {}
+    conversations: dict[str, AssistantRuntime] = {}
     conversation_documents: dict[str, SelectedDocument] = {}
+    conversation_activity: dict[str, dict] = {}
     app.config["DATABASE_PATH"] = Path(database_path) if database_path else DATABASE_PATH
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES + 64 * 1024
 
@@ -64,6 +65,10 @@ def create_app(database_path: str | Path | None = None) -> Flask:
     @app.errorhandler(RecordNotFound)
     def handle_missing_record(error):
         return jsonify(error=str(error)), 404
+
+    @app.errorhandler(RuntimeBusyError)
+    def handle_runtime_busy(error):
+        return jsonify(error=str(error)), 409
 
     @app.errorhandler(RequestEntityTooLarge)
     def handle_upload_too_large(error):
@@ -112,10 +117,33 @@ def create_app(database_path: str | Path | None = None) -> Flask:
                 return jsonify(error="Invalid conversation ID."), 400
             conversations.pop(previous_id, None)
             conversation_documents.pop(previous_id, None)
+            conversation_activity.pop(previous_id, None)
 
         conversation_id = str(uuid4())
-        conversations[conversation_id] = []
+        if config_error is None:
+            def update_activity(activity: dict, key: str = conversation_id) -> None:
+                conversation_activity[key] = activity
+
+            conversations[conversation_id] = AssistantRuntime(
+                endpoint,
+                model,
+                database_path=app.config["DATABASE_PATH"],
+                activity_callback=update_activity,
+            )
+            conversation_activity[conversation_id] = {
+                "status": "idle",
+                "tool": None,
+                "summary": "",
+            }
         return jsonify(conversation_id=conversation_id)
+
+    @app.get("/api/conversations/<conversation_id>/activity")
+    def conversation_activity_status(conversation_id: str):
+        if not _valid_conversation_id(conversation_id):
+            return jsonify(error="Invalid conversation ID."), 400
+        if conversation_id not in conversations:
+            return jsonify(error="Conversation not found. Start a new conversation."), 404
+        return jsonify(activity=conversation_activity.get(conversation_id, {"status": "idle"}))
 
     @app.post("/api/chat")
     def chat():
@@ -135,25 +163,23 @@ def create_app(database_path: str | Path | None = None) -> Flask:
         if not _valid_conversation_id(conversation_id):
             return jsonify(error="Invalid conversation ID."), 400
 
-        conversation = conversations.get(conversation_id)
-        if conversation is None:
+        runtime = conversations.get(conversation_id)
+        if runtime is None:
             return jsonify(error="Conversation not found. Start a new conversation."), 404
 
         try:
             document = conversation_documents.get(conversation_id)
-            if document is None:
-                response = respond_to_message(endpoint, model, conversation, message.strip())
-                return jsonify(response=response)
-
-            context_message, selection = document_context_message(document, message.strip())
-            response = respond_to_message(
-                endpoint,
-                model,
-                conversation,
-                message.strip(),
-                additional_context=[context_message],
+            additional_context = []
+            document_selection = None
+            if document is not None:
+                context_message, document_selection = document_context_message(
+                    document, message.strip()
+                )
+                additional_context.append(context_message)
+            result = runtime.run_turn(
+                message.strip(), additional_context=additional_context
             )
-            return jsonify(response=response, document_context=selection.mode)
+            return jsonify(_serialize_turn_result(result, document_selection))
         except DocumentError as error:
             return jsonify(error=str(error)), 422
         except urllib.error.HTTPError as error:
@@ -168,6 +194,13 @@ def create_app(database_path: str | Path | None = None) -> Flask:
             return jsonify(error=f"Could not connect to Ollama: {reason}"), 503
         except (json.JSONDecodeError, ValueError) as error:
             return jsonify(error=f"Could not read Ollama's response: {error}"), 502
+        finally:
+            if not runtime.has_pending_confirmation:
+                conversation_activity[conversation_id] = {
+                    "status": "idle",
+                    "tool": None,
+                    "summary": "",
+                }
 
     @app.post("/api/documents")
     def document_upload():
@@ -200,7 +233,10 @@ def create_app(database_path: str | Path | None = None) -> Flask:
 
         conversation_reset = conversation_id in conversation_documents
         if conversation_reset:
-            conversations[conversation_id].clear()
+            try:
+                conversations[conversation_id].reset_history()
+            except RuntimeBusyError as error:
+                return jsonify(error=str(error)), 409
         conversation_documents[conversation_id] = document
         return jsonify(
             document=document.metadata(),
@@ -215,6 +251,36 @@ def create_app(database_path: str | Path | None = None) -> Flask:
             return jsonify(error="Conversation not found. Start a new conversation."), 404
         conversation_documents.pop(conversation_id, None)
         return "", 204
+
+    @app.post("/api/confirm")
+    def confirm_action():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify(error="Send a JSON object with the confirmation details."), 400
+        conversation_id = data.get("conversation_id")
+        confirmation_id = data.get("confirmation_id")
+        approved = data.get("approved")
+        if not _valid_conversation_id(conversation_id):
+            return jsonify(error="Invalid conversation ID."), 400
+        if not isinstance(confirmation_id, str) or not confirmation_id:
+            return jsonify(error="Invalid confirmation ID."), 400
+        if not isinstance(approved, bool):
+            return jsonify(error="approved must be a boolean."), 400
+        runtime = conversations.get(conversation_id)
+        if runtime is None:
+            return jsonify(error="Conversation not found. Start a new conversation."), 404
+        try:
+            result = runtime.resolve_confirmation(confirmation_id, approved)
+            return jsonify(_serialize_turn_result(result))
+        except RuntimeBusyError as error:
+            return jsonify(error=str(error)), 409
+        finally:
+            if not runtime.has_pending_confirmation:
+                conversation_activity[conversation_id] = {
+                    "status": "idle",
+                    "tool": None,
+                    "summary": "",
+                }
 
     @app.get("/api/tasks")
     def tasks_list():
@@ -327,6 +393,25 @@ def _valid_conversation_id(value: object) -> bool:
         return str(UUID(value)) == value
     except ValueError:
         return False
+
+
+def _serialize_turn_result(result: TurnResult, document_selection=None) -> dict:
+    activities = list(result.activities)
+    if document_selection is not None:
+        if document_selection.mode == "full":
+            summary = "Used the full extracted document text."
+        else:
+            summary = "Used selected document excerpts; the full document was not considered."
+        activities.insert(
+            0,
+            {"tool": "document_context", "status": "context", "summary": summary},
+        )
+    return {
+        "response": result.response,
+        "activities": activities,
+        "pending_confirmation": result.pending_confirmation,
+        "document_context": document_selection.mode if document_selection is not None else None,
+    }
 
 
 if __name__ == "__main__":
