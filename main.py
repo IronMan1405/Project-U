@@ -6,11 +6,11 @@ import urllib.request
 from config import load_settings
 
 
-def ask_ollama(endpoint: str, model: str, message: str) -> str:
+def ask_ollama(endpoint: str, model: str, messages: list[dict[str, str]]) -> str:
     payload = json.dumps(
         {
             "model": model,
-            "messages": [{"role": "user", "content": message}],
+            "messages": messages,
             "stream": False,
         }
     ).encode("utf-8")
@@ -38,6 +38,7 @@ def main() -> int:
         return 1
 
     print(f"U is ready (model: {model}). Type /quit to exit.")
+    conversation = []
     while True:
         try:
             message = input("You: ").strip()
@@ -52,7 +53,12 @@ def main() -> int:
             continue
 
         try:
-            print(f"U: {ask_ollama(endpoint, model, message)}")
+            user_message = {"role": "user", "content": message}
+            response = ask_ollama(endpoint, model, conversation + [user_message])
+            print(f"U: {response}")
+            conversation.extend(
+                [user_message, {"role": "assistant", "content": response}]
+            )
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace").strip()
             try:
