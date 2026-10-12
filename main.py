@@ -4,6 +4,7 @@ import urllib.error
 import urllib.request
 
 from config import load_settings
+from user_profile import load_profile, profile_context_message
 
 
 def ask_ollama(endpoint: str, model: str, messages: list[dict[str, str]]) -> str:
@@ -37,7 +38,8 @@ def respond_to_message(
     message: str,
 ) -> str:
     user_message = {"role": "user", "content": message}
-    response = ask_ollama(endpoint, model, conversation + [user_message])
+    messages = [profile_context_message(load_profile()), *conversation, user_message]
+    response = ask_ollama(endpoint, model, messages)
     conversation.extend([user_message, {"role": "assistant", "content": response}])
     return response
 

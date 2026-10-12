@@ -30,7 +30,7 @@ Coordinates user input, context, model requests, and tool execution.
 Communicates with the local Ollama API. Keeps model configuration separate from application logic.
 
 ### Context
-Provides relevant user preferences, active projects, and other explicitly configured information to the assistant.
+Loads the user-editable `profile.json` before each model request and provides its validated preferences as separate system context alongside the in-memory conversation. Profile values are user data, not instructions or authorization. Missing or invalid profiles use generic defaults.
 
 ### Memory
 Stores persistent tasks, notes, and preferences in SQLite. Add only the memory capabilities required by the MVP.
