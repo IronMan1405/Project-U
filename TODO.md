@@ -6,7 +6,7 @@
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
-- [x] Confirm the local LLM model (`gemma4:12b`)
+- [x] Confirm the local LLM model (`gemma4:e4b`)
 - [x] Create the minimal Python application
 - [x] Connect to Ollama
 - [x] Test a complete chat exchange

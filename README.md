@@ -12,7 +12,7 @@ cp config.ini.example config.ini
 ```
 
 Set `model` in `config.ini` to a model shown by `ollama list`. The default
-configuration uses `gemma4:12b` and the local Ollama endpoint
+configuration uses `gemma4:e4b` and the local Ollama endpoint
 `http://127.0.0.1:11434`. Make sure Ollama is running before starting U.
 
 Run the automated profile and client tests with:

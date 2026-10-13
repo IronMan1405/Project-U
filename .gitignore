@@ -5,3 +5,4 @@ config.ini
 profile.json
 data/
 .DS_Store
+.aider*
