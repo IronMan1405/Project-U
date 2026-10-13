@@ -9,7 +9,7 @@ import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 from storage import (
@@ -19,6 +19,7 @@ from storage import (
     delete_note,
     delete_task,
     get_note,
+    initialize_database,
     list_notes,
     list_tasks,
     set_task_completed,
@@ -239,6 +240,7 @@ class ToolRegistry:
                     {
                         "title": {"type": "string", "minLength": 1, "maxLength": 200},
                         "description": {"type": "string", "maxLength": 5000},
+                        "due_at": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}(\s\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z)?$"},
                     },
                     ("title",),
                 ),
@@ -405,6 +407,7 @@ class ToolRegistry:
         task = create_task(
             arguments["title"].strip(),
             arguments.get("description", ""),
+            arguments.get("due_at"),
             self.database_path,
         )
         return ToolOutcome(True, "Task created.", task)
@@ -429,7 +432,7 @@ class ToolRegistry:
 
     def _set_task_completed(self, arguments: dict) -> ToolOutcome:
         task = set_task_completed(
-            arguments["task_id"], arguments["completed"], self.database_path
+            arguments["task_id"], arguments["completed"], arguments.get("due_at"), self.database_path
         )
         status = "completed" if task["completed"] else "reopened"
         return ToolOutcome(True, f"Task {status}.", task)

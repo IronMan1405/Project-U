@@ -50,6 +50,27 @@ class StorageTests(unittest.TestCase):
         with self.assertRaises(storage.RecordNotFound):
             storage.delete_task(task["id"], self.database_path)
 
+    def test_task_lifecycle_with_due_date_and_persistence(self):
+        storage.initialize_database(self.database_path)
+        due_date = "2023-10-01"
+        task = storage.create_task("Write tests", "Cover both clients", due_date, self.database_path)
+        self.assertIs(task["completed"], False)
+        self.assertTrue(task["created_at"])
+        self.assertEqual(storage.list_tasks(self.database_path)[0]["title"], "Write tests")
+        self.assertEqual(storage.list_tasks(self.database_path)[0]["due_at"], due_date)
+
+        completed = storage.set_task_completed(task["id"], True, due_date, self.database_path)
+        self.assertIs(completed["completed"], True)
+        reopened = storage.set_task_completed(task["id"], False, due_date, self.database_path)
+        self.assertIs(reopened["completed"], False)
+
+        storage.initialize_database(self.database_path)
+        self.assertEqual(storage.list_tasks(self.database_path)[0]["id"], task["id"])
+        storage.delete_task(task["id"], self.database_path)
+        self.assertEqual(storage.list_tasks(self.database_path), [])
+        with self.assertRaises(storage.RecordNotFound):
+            storage.delete_task(task["id"], self.database_path)
+
     def test_note_lifecycle_preserves_content_and_persists(self):
         storage.initialize_database(self.database_path)
         content = "First line\n\n  indented line\n"
@@ -88,6 +109,25 @@ class StorageApiTests(unittest.TestCase):
         task = created.get_json()["task"]
         self.assertFalse(task["completed"])
         self.assertEqual(self.client.get("/api/tasks").get_json()["tasks"][0]["id"], task["id"])
+
+        completed = self.client.patch(f"/api/tasks/{task['id']}", json={"completed": True})
+        self.assertTrue(completed.get_json()["task"]["completed"])
+        reopened = self.client.patch(f"/api/tasks/{task['id']}", json={"completed": False})
+        self.assertFalse(reopened.get_json()["task"]["completed"])
+
+        self.assertEqual(self.client.delete(f"/api/tasks/{task['id']}").status_code, 204)
+        self.assertEqual(self.client.patch(f"/api/tasks/{task['id']}", json={"completed": True}).status_code, 404)
+        self.assertEqual(self.client.delete(f"/api/tasks/{task['id']}").status_code, 404)
+
+    def test_task_routes_create_list_complete_reopen_and_delete_with_due_date(self):
+        created = self.client.post(
+            "/api/tasks", json={"title": "Review", "description": "Read notes", "due_at": "2023-10-01"}
+        )
+        self.assertEqual(created.status_code, 201)
+        task = created.get_json()["task"]
+        self.assertFalse(task["completed"])
+        self.assertEqual(self.client.get("/api/tasks").get_json()["tasks"][0]["id"], task["id"])
+        self.assertEqual(self.client.get("/api/tasks").get_json()["tasks"][0]["due_at"], "2023-10-01")
 
         completed = self.client.patch(f"/api/tasks/{task['id']}", json={"completed": True})
         self.assertTrue(completed.get_json()["task"]["completed"])
