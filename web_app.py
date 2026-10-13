@@ -299,11 +299,14 @@ def create_app(database_path: str | Path | None = None) -> Flask:
             return jsonify(error="Send a JSON object with a task title."), 400
         title = data.get("title")
         description = data.get("description", "")
+        due_at = data.get("due_at")
         if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200:
             return jsonify(error="Title must be between 1 and 200 characters."), 400
         if not isinstance(description, str) or len(description) > 5000:
             return jsonify(error="Description must be 5,000 characters or fewer."), 400
-        task = create_task(title.strip(), description, app.config["DATABASE_PATH"])
+        if due_at is not None and not isinstance(due_at, str):
+            return jsonify(error="due_at must be a string."), 400
+        task = create_task(title.strip(), description, due_at, app.config["DATABASE_PATH"])
         return jsonify(task=task), 201
 
     @app.patch("/api/tasks/<int:task_id>")
@@ -315,7 +318,7 @@ def create_app(database_path: str | Path | None = None) -> Flask:
         if not isinstance(data, dict) or not isinstance(data.get("completed"), bool):
             return jsonify(error="completed must be a boolean."), 400
         task = set_task_completed(
-            task_id, data["completed"], app.config["DATABASE_PATH"]
+            task_id, data["completed"], data.get("due_at"), app.config["DATABASE_PATH"]
         )
         return jsonify(task=task)
 

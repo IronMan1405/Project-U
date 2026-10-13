@@ -2,7 +2,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 
 DATA_DIRECTORY = Path(__file__).resolve().parent / "data"
@@ -42,7 +42,8 @@ def initialize_database(database_path: str | Path | None = None) -> None:
                 title TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
-                completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1))
+                completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
+                due_at TEXT
             );
             CREATE TABLE IF NOT EXISTS notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,45 +59,47 @@ def initialize_database(database_path: str | Path | None = None) -> None:
 def list_tasks(database_path: str | Path | None = None) -> list[dict]:
     with _connection(database_path) as connection:
         rows = connection.execute(
-            "SELECT id, title, description, created_at, completed "
+            "SELECT id, title, description, created_at, completed, due_at "
             "FROM tasks ORDER BY completed ASC, created_at DESC, id DESC"
         ).fetchall()
-    return [{**dict(row), "completed": bool(row["completed"])} for row in rows]
+    return [{**dict(row), "completed": bool(row["completed"]), "due_at": row["due_at"]} for row in rows]
 
 
 def create_task(
     title: str,
     description: str = "",
+    due_at: Optional[str] = None,
     database_path: str | Path | None = None,
 ) -> dict:
     with _connection(database_path) as connection:
         cursor = connection.execute(
-            "INSERT INTO tasks (title, description, created_at) VALUES (?, ?, ?)",
-            (title, description, _timestamp()),
+            "INSERT INTO tasks (title, description, created_at, due_at) VALUES (?, ?, ?, ?)",
+            (title, description, _timestamp(), due_at),
         )
         row = connection.execute(
-            "SELECT id, title, description, created_at, completed FROM tasks WHERE id = ?",
+            "SELECT id, title, description, created_at, completed, due_at FROM tasks WHERE id = ?",
             (cursor.lastrowid,),
         ).fetchone()
-    return {**dict(row), "completed": bool(row["completed"])}
+    return {**dict(row), "completed": bool(row["completed"]), "due_at": row["due_at"]}
 
 
 def set_task_completed(
     task_id: int,
     completed: bool,
+    due_at: Optional[str] = None,
     database_path: str | Path | None = None,
 ) -> dict:
     with _connection(database_path) as connection:
         cursor = connection.execute(
-            "UPDATE tasks SET completed = ? WHERE id = ?", (int(completed), task_id)
+            "UPDATE tasks SET completed = ?, due_at = ? WHERE id = ?", (int(completed), due_at, task_id)
         )
         if cursor.rowcount == 0:
             raise RecordNotFound("Task not found.")
         row = connection.execute(
-            "SELECT id, title, description, created_at, completed FROM tasks WHERE id = ?",
+            "SELECT id, title, description, created_at, completed, due_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
-    return {**dict(row), "completed": bool(row["completed"])}
+    return {**dict(row), "completed": bool(row["completed"]), "due_at": row["due_at"]}
 
 
 def delete_task(task_id: int, database_path: str | Path | None = None) -> None:
