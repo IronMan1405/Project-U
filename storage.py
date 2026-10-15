@@ -1,8 +1,9 @@
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 
 DATA_DIRECTORY = Path(__file__).resolve().parent / "data"
@@ -11,6 +12,36 @@ DATABASE_PATH = DATA_DIRECTORY / "project_u.sqlite3"
 
 class RecordNotFound(Exception):
     pass
+
+
+# The single accepted due_at format: a calendar date, or a UTC timestamp with a
+# space separator and a trailing Z. Shared by the API, tool schemas, and the UI.
+DUE_AT_PATTERN = r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2}(\.\d{1,6})?Z)?$"
+DUE_AT_FORMAT_DESCRIPTION = (
+    "YYYY-MM-DD for a calendar date, or 'YYYY-MM-DD HH:MM:SSZ' for a UTC time"
+)
+_DUE_AT = re.compile(DUE_AT_PATTERN)
+_UNSET = object()
+
+
+def validate_due_at(value: str | None) -> str | None:
+    """Accept a calendar date or UTC timestamp in the task API/tool format."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("due_at must be a date string or null.")
+    try:
+        if not _DUE_AT.fullmatch(value):
+            raise ValueError
+        if len(value) == 10:
+            datetime.strptime(value, "%Y-%m-%d")
+        else:
+            timestamp = value[:-1]
+            fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in timestamp else "%Y-%m-%d %H:%M:%S"
+            datetime.strptime(timestamp, fmt)
+    except ValueError as error:
+        raise ValueError(f"due_at must be {DUE_AT_FORMAT_DESCRIPTION}.") from error
+    return value
 
 
 @contextmanager
@@ -54,6 +85,11 @@ def initialize_database(database_path: str | Path | None = None) -> None:
             );
             """
         )
+        task_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "due_at" not in task_columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN due_at TEXT")
 
 
 def list_tasks(database_path: str | Path | None = None) -> list[dict]:
@@ -68,9 +104,11 @@ def list_tasks(database_path: str | Path | None = None) -> list[dict]:
 def create_task(
     title: str,
     description: str = "",
-    due_at: Optional[str] = None,
     database_path: str | Path | None = None,
+    *,
+    due_at: str | None = None,
 ) -> dict:
+    due_at = validate_due_at(due_at)
     with _connection(database_path) as connection:
         cursor = connection.execute(
             "INSERT INTO tasks (title, description, created_at, due_at) VALUES (?, ?, ?, ?)",
@@ -83,23 +121,48 @@ def create_task(
     return {**dict(row), "completed": bool(row["completed"]), "due_at": row["due_at"]}
 
 
-def set_task_completed(
+def update_task(
     task_id: int,
-    completed: bool,
-    due_at: Optional[str] = None,
     database_path: str | Path | None = None,
+    *,
+    completed: object = _UNSET,
+    due_at: object = _UNSET,
 ) -> dict:
+    """Update only the fields that are passed; due_at=None clears the due date."""
+    assignments = []
+    values: list[object] = []
+    if completed is not _UNSET:
+        if not isinstance(completed, bool):
+            raise ValueError("completed must be a boolean.")
+        assignments.append("completed = ?")
+        values.append(int(completed))
+    if due_at is not _UNSET:
+        assignments.append("due_at = ?")
+        values.append(validate_due_at(due_at))
     with _connection(database_path) as connection:
-        cursor = connection.execute(
-            "UPDATE tasks SET completed = ?, due_at = ? WHERE id = ?", (int(completed), due_at, task_id)
-        )
-        if cursor.rowcount == 0:
-            raise RecordNotFound("Task not found.")
+        if assignments:
+            cursor = connection.execute(
+                f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?", (*values, task_id)
+            )
+            if cursor.rowcount == 0:
+                raise RecordNotFound("Task not found.")
         row = connection.execute(
             "SELECT id, title, description, created_at, completed, due_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
+    if row is None:
+        raise RecordNotFound("Task not found.")
     return {**dict(row), "completed": bool(row["completed"]), "due_at": row["due_at"]}
+
+
+def set_task_completed(
+    task_id: int,
+    completed: bool,
+    database_path: str | Path | None = None,
+    *,
+    due_at: object = _UNSET,
+) -> dict:
+    return update_task(task_id, database_path, completed=completed, due_at=due_at)
 
 
 def delete_task(task_id: int, database_path: str | Path | None = None) -> None:

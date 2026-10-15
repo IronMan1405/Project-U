@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 from storage import (
+    DUE_AT_PATTERN,
     RecordNotFound,
     create_note,
     create_task,
@@ -24,6 +25,8 @@ from storage import (
     list_tasks,
     set_task_completed,
     update_note,
+    update_task,
+    validate_due_at,
 )
 
 
@@ -139,9 +142,16 @@ def validate_arguments(schema: dict, value: object) -> dict:
         if definition is None:
             continue
         expected = definition.get("type")
+        if isinstance(expected, list):
+            if item is None and "null" in expected:
+                continue
+            expected = next((kind for kind in expected if kind != "null"), None)
         if expected == "string":
             if not isinstance(item, str):
                 raise ToolError(f"{name} must be text.")
+            if "pattern" in definition and not re.search(definition["pattern"], item):
+                detail = definition.get("description")
+                raise ToolError(f"{name} has an invalid format." + (f" {detail}" if detail else ""))
             if name == "title" and not item.strip():
                 raise ToolError("title must contain non-whitespace text.")
             if "minLength" in definition and len(item) < definition["minLength"]:
@@ -166,6 +176,9 @@ def _explicit_write_requested(name: str, message: str) -> bool:
         ],
         "set_task_completed": [
             rf"^{prefixes}(?:mark|complete|finish|reopen)\b.{{0,120}}\b(?:task|todo)\b",
+        ],
+        "set_task_due_date": [
+            rf"^{prefixes}(?:set|change|update|move|push|reschedule|remove|clear)\b.{{0,120}}\b(?:due|deadline)\b",
         ],
         "create_note": [
             rf"^{prefixes}(?:create|write|make|record|take)\b.{{0,120}}\bnote\b",
@@ -232,15 +245,27 @@ class ToolRegistry:
         self.browser_open = browser_open or webbrowser.open
         task_id = _positive_id_schema()
         note_id = _positive_id_schema()
+        due_at_description = (
+            "Machine-format due date, never natural language. Use YYYY-MM-DD when the user "
+            "gives only a day, or 'YYYY-MM-DD HH:MM:SSZ' in UTC when they give a time. "
+            "Specific times are supported: convert the user's local date and time to UTC "
+            "using the current date and UTC offset in the system context before calling "
+            "(for example, 5 AM local at UTC-04:00 is 09:00:00Z on the same day)."
+        )
         self._definitions = {
             "create_task": ToolDefinition(
                 "create_task",
-                "Create a task only when the user explicitly asks for one.",
+                "Create a task only when the user explicitly asks for one. "
+                "It may have a due date with or without a specific time (see due_at).",
                 _object_schema(
                     {
                         "title": {"type": "string", "minLength": 1, "maxLength": 200},
                         "description": {"type": "string", "maxLength": 5000},
-                        "due_at": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}(\s\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z)?$"},
+                        "due_at": {
+                            "type": "string",
+                            "pattern": DUE_AT_PATTERN,
+                            "description": f"Optional. {due_at_description}",
+                        },
                     },
                     ("title",),
                 ),
@@ -249,18 +274,37 @@ class ToolRegistry:
             ),
             "list_tasks": ToolDefinition(
                 "list_tasks",
-                "List the user's tasks, including completion status.",
+                "List the user's tasks, including completion status and due_at (null when unset).",
                 _object_schema({}),
                 self._list_tasks,
             ),
             "set_task_completed": ToolDefinition(
                 "set_task_completed",
-                "Complete or reopen an existing task by ID.",
+                "Complete or reopen an existing task by ID. Does not change its due date.",
                 _object_schema(
                     {"task_id": task_id, "completed": {"type": "boolean"}},
                     ("task_id", "completed"),
                 ),
                 self._set_task_completed,
+                direct_write=True,
+            ),
+            "set_task_due_date": ToolDefinition(
+                "set_task_due_date",
+                "Set, change, or clear the due date (with or without a specific time) "
+                "of an existing task by ID. "
+                "Pass due_at as null to remove the due date. Does not change completion status.",
+                _object_schema(
+                    {
+                        "task_id": task_id,
+                        "due_at": {
+                            "type": ["string", "null"],
+                            "pattern": DUE_AT_PATTERN,
+                            "description": f"{due_at_description} Use null to clear.",
+                        },
+                    },
+                    ("task_id", "due_at"),
+                ),
+                self._set_task_due_date,
                 direct_write=True,
             ),
             "delete_task": ToolDefinition(
@@ -348,6 +392,11 @@ class ToolRegistry:
         if definition is None:
             raise ToolError("The requested tool is not available.")
         arguments = validate_arguments(definition.parameters, raw_arguments)
+        if arguments.get("due_at") is not None:
+            try:
+                validate_due_at(arguments["due_at"])
+            except ValueError as error:
+                raise ToolError(str(error)) from error
         if name == "open_website":
             arguments = {"url": validate_http_url(arguments["url"])}
         direct_intent = _explicit_write_requested(name, user_message)
@@ -387,10 +436,15 @@ class ToolRegistry:
     @staticmethod
     def _summary(name: str, arguments: dict) -> str:
         if name == "create_task":
-            return f"Create task: {arguments['title']}"
+            due = f" (due {arguments['due_at']})" if arguments.get("due_at") else ""
+            return f"Create task: {arguments['title']}{due}"
         if name == "set_task_completed":
             state = "complete" if arguments["completed"] else "reopen"
             return f"Mark task {arguments['task_id']} to {state}"
+        if name == "set_task_due_date":
+            if arguments["due_at"] is None:
+                return f"Clear due date of task {arguments['task_id']}"
+            return f"Set due date of task {arguments['task_id']} to {arguments['due_at']}"
         if name == "delete_task":
             return f"Delete task {arguments['task_id']}"
         if name == "create_note":
@@ -407,8 +461,8 @@ class ToolRegistry:
         task = create_task(
             arguments["title"].strip(),
             arguments.get("description", ""),
-            arguments.get("due_at"),
             self.database_path,
+            due_at=arguments.get("due_at"),
         )
         return ToolOutcome(True, "Task created.", task)
 
@@ -432,10 +486,15 @@ class ToolRegistry:
 
     def _set_task_completed(self, arguments: dict) -> ToolOutcome:
         task = set_task_completed(
-            arguments["task_id"], arguments["completed"], arguments.get("due_at"), self.database_path
+            arguments["task_id"], arguments["completed"], self.database_path
         )
         status = "completed" if task["completed"] else "reopened"
         return ToolOutcome(True, f"Task {status}.", task)
+
+    def _set_task_due_date(self, arguments: dict) -> ToolOutcome:
+        task = update_task(arguments["task_id"], self.database_path, due_at=arguments["due_at"])
+        message = "Task due date cleared." if task["due_at"] is None else "Task due date set."
+        return ToolOutcome(True, message, task)
 
     def _delete_task(self, arguments: dict) -> ToolOutcome:
         delete_task(arguments["task_id"], self.database_path)

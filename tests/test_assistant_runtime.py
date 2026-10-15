@@ -300,6 +300,208 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertTrue(registry.execute(edit).ok)
         self.assertEqual(storage.get_note(note["id"], self.database_path)["content"], "Revised text")
 
+    def test_due_date_tool_schemas_describe_and_enforce_format(self):
+        registry = ToolRegistry(self.database_path)
+        definitions = {
+            item["function"]["name"]: item["function"]["parameters"]
+            for item in registry.definitions()
+        }
+        create_due = definitions["create_task"]["properties"]["due_at"]
+        update_due = definitions["set_task_due_date"]["properties"]["due_at"]
+        for schema in (create_due, update_due):
+            self.assertEqual(schema["pattern"], storage.DUE_AT_PATTERN)
+            self.assertIn("YYYY-MM-DD", schema["description"])
+        self.assertEqual(update_due["type"], ["string", "null"])
+        self.assertEqual(definitions["set_task_due_date"]["required"], ["task_id", "due_at"])
+
+        pattern_schema = {
+            "type": "object",
+            "properties": {"code": {"type": "string", "pattern": r"^[a-z]{3}$"}},
+        }
+        self.assertEqual(
+            tool_registry.validate_arguments(pattern_schema, {"code": "abc"}), {"code": "abc"}
+        )
+        with self.assertRaises(ToolError):
+            tool_registry.validate_arguments(pattern_schema, {"code": "abcd"})
+
+        for name, arguments in (
+            ("create_task", {"title": "Bad", "due_at": "2026-11-03T10:00:00Z"}),
+            ("create_task", {"title": "Bad", "due_at": "2026-02-30"}),
+            ("create_task", {"title": "Bad", "due_at": "Friday"}),
+            ("create_task", {"title": "Bad", "due_at": None}),
+            ("set_task_due_date", {"task_id": 1, "due_at": "2026-11-03 10:00:00"}),
+            ("set_task_due_date", {"task_id": 1, "due_at": "2026-04-31"}),
+            ("set_task_due_date", {"task_id": 1}),
+            ("set_task_due_date", {"task_id": 1, "due_at": 3}),
+        ):
+            with self.subTest(name=name, arguments=arguments), self.assertRaises(ToolError):
+                registry.prepare(name, arguments, "Please set the due date of task 1.")
+
+    def test_task_due_date_tools_set_change_clear_and_preserve(self):
+        registry = ToolRegistry(self.database_path)
+        create = registry.prepare(
+            "create_task",
+            {"title": "File taxes", "due_at": "2026-11-03"},
+            "Please create a task to file taxes due 2026-11-03.",
+        )
+        self.assertFalse(create.always_confirm)
+        self.assertEqual(create.summary, "Create task: File taxes (due 2026-11-03)")
+        task_id = registry.execute(create).data["id"]
+        self.assertEqual(storage.list_tasks(self.database_path)[0]["due_at"], "2026-11-03")
+
+        change = registry.prepare(
+            "set_task_due_date",
+            {"task_id": task_id, "due_at": "2026-11-04 17:00:00Z"},
+            "Please change the due date of task 1 to Nov 4 at 5pm UTC.",
+        )
+        self.assertFalse(change.always_confirm)
+        self.assertEqual(change.summary, f"Set due date of task {task_id} to 2026-11-04 17:00:00Z")
+        changed = registry.execute(change)
+        self.assertTrue(changed.ok)
+        self.assertEqual(changed.data["due_at"], "2026-11-04 17:00:00Z")
+
+        complete = registry.prepare(
+            "set_task_completed", {"task_id": task_id, "completed": True}, "Please complete task 1."
+        )
+        self.assertEqual(registry.execute(complete).data["due_at"], "2026-11-04 17:00:00Z")
+        reopen = registry.prepare(
+            "set_task_completed", {"task_id": task_id, "completed": False}, "Please reopen task 1."
+        )
+        self.assertEqual(registry.execute(reopen).data["due_at"], "2026-11-04 17:00:00Z")
+
+        clear = registry.prepare(
+            "set_task_due_date",
+            {"task_id": task_id, "due_at": None},
+            "Please remove the due date from task 1.",
+        )
+        self.assertFalse(clear.always_confirm)
+        self.assertEqual(clear.summary, f"Clear due date of task {task_id}")
+        cleared = registry.execute(clear)
+        self.assertEqual(cleared.message, "Task due date cleared.")
+        self.assertIsNone(storage.list_tasks(self.database_path)[0]["due_at"])
+        self.assertIs(storage.list_tasks(self.database_path)[0]["completed"], False)
+
+        implied = registry.prepare(
+            "set_task_due_date",
+            {"task_id": task_id, "due_at": "2026-12-01"},
+            "What do I have going on in December?",
+        )
+        self.assertTrue(implied.always_confirm)
+        missing = registry.execute(
+            registry.prepare(
+                "set_task_due_date",
+                {"task_id": 999, "due_at": None},
+                "Please clear the due date on task 999.",
+            )
+        )
+        self.assertFalse(missing.ok)
+        self.assertEqual(missing.message, "Task not found.")
+
+    def test_runtime_gives_model_current_date_for_relative_due_dates(self):
+        from datetime import datetime, timedelta, timezone
+
+        fixed_now = datetime(2026, 10, 15, 14, 5, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        model = Mock(
+            side_effect=[
+                assistant_tool_call(
+                    "create_task", {"title": "Call bank", "due_at": "2026-10-16"}
+                ),
+                {"role": "assistant", "content": "Added for tomorrow."},
+            ]
+        )
+        runtime = AssistantRuntime(
+            "http://local",
+            "test-model",
+            database_path=self.database_path,
+            model_client=model,
+            clock=lambda: fixed_now,
+        )
+
+        result = runtime.run_turn("Please add a task to call the bank tomorrow.")
+
+        self.assertEqual(result.response, "Added for tomorrow.")
+        first_messages = model.call_args_list[0].args[2]
+        date_context = next(
+            message["content"]
+            for message in first_messages
+            if message["role"] == "system" and "Current local date" in message["content"]
+        )
+        self.assertIn("2026-10-15", date_context)
+        self.assertIn("Thursday", date_context)
+        self.assertIn("UTC+05:30", date_context)
+        self.assertIn("'tomorrow at 5 AM' -> 2026-10-15 23:30:00Z", date_context)
+        self.assertEqual(storage.list_tasks(self.database_path)[0]["due_at"], "2026-10-16")
+
+    def test_date_context_gives_computed_due_at_examples_for_any_offset(self):
+        from datetime import datetime, timedelta, timezone
+
+        cases = (
+            # (local now, offset, tomorrow, tomorrow 5 AM in UTC, today 6 PM in UTC)
+            (datetime(2026, 10, 15, 14, 5), timedelta(hours=5, minutes=30),
+             "2026-10-16", "2026-10-15 23:30:00Z", "2026-10-15 12:30:00Z"),
+            (datetime(2026, 10, 15, 22, 0), timedelta(hours=-7),
+             "2026-10-16", "2026-10-16 12:00:00Z", "2026-10-16 01:00:00Z"),
+            (datetime(2026, 12, 31, 9, 0), timedelta(0),
+             "2027-01-01", "2027-01-01 05:00:00Z", "2026-12-31 18:00:00Z"),
+        )
+        for local_now, offset, tomorrow, tomorrow_5am, today_6pm in cases:
+            now = local_now.replace(tzinfo=timezone(offset))
+            with self.subTest(now=now.isoformat()):
+                context = assistant_runtime.date_context(now)
+                self.assertIn(f"{local_now:%A %Y-%m-%d %H:%M}", context)
+                self.assertIn(f"'tomorrow' -> {tomorrow};", context)
+                self.assertIn(f"'tomorrow at 5 AM' -> {tomorrow_5am}", context)
+                self.assertIn(f"'today at 6 PM' -> {today_6pm}", context)
+                for example in (tomorrow, tomorrow_5am, today_6pm):
+                    self.assertEqual(storage.validate_due_at(example), example)
+
+        context = assistant_runtime.date_context(cases[0][0].replace(tzinfo=timezone(cases[0][1])))
+        for instruction in (
+            "due_at is a machine-format value, never natural language",
+            "Specific times are supported",
+            "never drop a time the user gave",
+            "'YYYY-MM-DD HH:MM:SSZ' in UTC",
+            "Relative days and clock times are not ambiguous",
+        ):
+            self.assertIn(instruction, context)
+
+    def test_due_at_tool_descriptions_allow_times_in_canonical_utc_format(self):
+        registry = ToolRegistry(self.database_path)
+        functions = {item["function"]["name"]: item["function"] for item in registry.definitions()}
+        for name in ("create_task", "set_task_due_date"):
+            with self.subTest(tool=name):
+                self.assertIn("specific time", functions[name]["description"])
+                description = functions[name]["parameters"]["properties"]["due_at"]["description"]
+                self.assertIn("Specific times are supported", description)
+                self.assertIn("'YYYY-MM-DD HH:MM:SSZ' in UTC", description)
+                self.assertIn("never natural language", description)
+                self.assertNotIn("ask the user", description)
+
+        # A converted "tomorrow at 5 AM" is accepted and stored exactly as given.
+        create = registry.prepare(
+            "create_task",
+            {"title": "Work out", "due_at": "2026-10-15 23:30:00Z"},
+            "Please add a task to work out tomorrow at 5am.",
+        )
+        self.assertFalse(create.always_confirm)
+        self.assertEqual(create.summary, "Create task: Work out (due 2026-10-15 23:30:00Z)")
+        created = registry.execute(create)
+        self.assertTrue(created.ok)
+        self.assertEqual(
+            storage.list_tasks(self.database_path)[0]["due_at"], "2026-10-15 23:30:00Z"
+        )
+
+        # Unconverted natural language is still rejected, with format guidance for the model.
+        for value in ("tomorrow at 5am", "2026-10-16 05:00", "2026-10-16T05:00:00+05:30"):
+            with self.subTest(value=value):
+                with self.assertRaises(ToolError) as raised:
+                    registry.prepare(
+                        "set_task_due_date",
+                        {"task_id": created.data["id"], "due_at": value},
+                        "Please set the due date of task 1 to tomorrow at 5am.",
+                    )
+                self.assertIn("YYYY-MM-DD HH:MM:SSZ", str(raised.exception))
+
     def test_system_info_is_structured_and_reports_unavailable_values(self):
         registry = ToolRegistry(self.database_path)
         def which(name):

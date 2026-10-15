@@ -14,6 +14,8 @@ const featureError = document.querySelector("#feature-error");
 const taskForm = document.querySelector("#task-form");
 const taskTitleInput = document.querySelector("#task-title");
 const taskDescriptionInput = document.querySelector("#task-description");
+const taskDueDateInput = document.querySelector("#task-due-date");
+const taskDueTimeInput = document.querySelector("#task-due-time");
 const taskList = document.querySelector("#tasks-list");
 const tasksEmpty = document.querySelector("#tasks-empty");
 const notesList = document.querySelector("#notes-list");
@@ -271,6 +273,7 @@ function toolLabel(toolName) {
     create_task: "Creating task",
     list_tasks: "Checking tasks",
     set_task_completed: "Updating task",
+    set_task_due_date: "Updating due date",
     delete_task: "Deleting task",
     list_notes: "Checking notes",
     get_note: "Reading note",
@@ -407,6 +410,119 @@ function switchView(viewName) {
   if (viewName === "notes") loadNotes();
 }
 
+// due_at is "YYYY-MM-DD" (a calendar date) or "YYYY-MM-DD HH:MM:SS[.ffffff]Z" (UTC).
+function buildDueAt(dateValue, timeValue) {
+  if (!dateValue) {
+    if (timeValue) throw new Error("Choose a due date to go with the time.");
+    return null;
+  }
+  if (!timeValue) return dateValue;
+  const local = new Date(`${dateValue}T${timeValue}`);
+  if (Number.isNaN(local.getTime())) throw new Error("Enter a valid due date and time.");
+  return `${local.toISOString().slice(0, 19).replace("T", " ")}Z`;
+}
+
+function parseDueAt(dueAt) {
+  if (dueAt.length === 10) {
+    const [year, month, day] = dueAt.split("-").map(Number);
+    return { dateOnly: true, date: new Date(year, month - 1, day) };
+  }
+  const iso = dueAt.replace(" ", "T").replace(/(\.\d{3})\d*Z$/, "$1Z");
+  return { dateOnly: false, date: new Date(iso) };
+}
+
+function dueInputValues(dueAt) {
+  if (!dueAt) return { date: "", time: "" };
+  const { dateOnly, date } = parseDueAt(dueAt);
+  if (dateOnly) return { date: dueAt, time: "" };
+  const pad = (value) => String(value).padStart(2, "0");
+  return {
+    date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  };
+}
+
+function describeDue(task) {
+  const { dateOnly, date } = parseDueAt(task.due_at);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const overdue = !task.completed && (dateOnly ? date < today : date < now);
+  const label = dateOnly
+    ? date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })
+    : date.toLocaleString(undefined, {
+      weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+    });
+  return { overdue, text: `${overdue ? "Overdue" : "Due"} ${label}` };
+}
+
+async function updateTaskDueDate(taskId, dueAt) {
+  await apiRequest(`/api/tasks/${taskId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ due_at: dueAt }),
+  });
+  showFeatureError();
+  await loadTasks();
+}
+
+function buildDueEditor(task) {
+  const editor = document.createElement("div");
+  editor.className = "task-due-editor";
+  editor.hidden = true;
+
+  const initial = dueInputValues(task.due_at);
+  const dateInput = document.createElement("input");
+  dateInput.type = "date";
+  dateInput.value = initial.date;
+  dateInput.setAttribute("aria-label", `Due date for ${task.title}`);
+  const timeInput = document.createElement("input");
+  timeInput.type = "time";
+  timeInput.value = initial.time;
+  timeInput.setAttribute("aria-label", `Due time for ${task.title} (optional)`);
+
+  const save = document.createElement("button");
+  save.className = "secondary-action";
+  save.type = "button";
+  save.textContent = "Save";
+  save.addEventListener("click", async () => {
+    try {
+      const dueAt = buildDueAt(dateInput.value, timeInput.value);
+      if (dueAt === null) throw new Error("Choose a due date, or use Remove to clear it.");
+      await updateTaskDueDate(task.id, dueAt);
+    } catch (error) {
+      showFeatureError(error.message);
+    }
+  });
+
+  const cancel = document.createElement("button");
+  cancel.className = "delete-action";
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => {
+    dateInput.value = initial.date;
+    timeInput.value = initial.time;
+    editor.hidden = true;
+  });
+
+  editor.append(dateInput, timeInput, save);
+  if (task.due_at) {
+    const clear = document.createElement("button");
+    clear.className = "delete-action";
+    clear.type = "button";
+    clear.textContent = "Remove";
+    clear.addEventListener("click", async () => {
+      try {
+        await updateTaskDueDate(task.id, null);
+      } catch (error) {
+        showFeatureError(error.message);
+      }
+    });
+    editor.append(clear);
+  }
+  editor.append(cancel);
+  return editor;
+}
+
 function renderTasks(tasks) {
   taskList.replaceChildren();
   tasksEmpty.hidden = tasks.length > 0;
@@ -448,6 +564,24 @@ function renderTasks(tasks) {
       description.textContent = task.description;
       copy.append(description);
     }
+    if (task.due_at) {
+      const { overdue, text } = describeDue(task);
+      const due = document.createElement("div");
+      due.className = `task-due${overdue ? " overdue" : ""}`;
+      due.textContent = text;
+      copy.append(due);
+    }
+    const dueEditor = buildDueEditor(task);
+    copy.append(dueEditor);
+
+    const editDue = document.createElement("button");
+    editDue.className = "delete-action edit-due-action";
+    editDue.type = "button";
+    editDue.textContent = task.due_at ? "Edit due" : "Set due";
+    editDue.addEventListener("click", () => {
+      dueEditor.hidden = !dueEditor.hidden;
+      if (!dueEditor.hidden) dueEditor.querySelector("input").focus();
+    });
 
     const remove = document.createElement("button");
     remove.className = "delete-action";
@@ -464,7 +598,11 @@ function renderTasks(tasks) {
       }
     });
 
-    row.append(checkbox, copy, remove);
+    const actions = document.createElement("div");
+    actions.className = "task-actions";
+    actions.append(editDue, remove);
+
+    row.append(checkbox, copy, actions);
     item.append(row);
     taskList.append(item);
   }
@@ -565,10 +703,11 @@ taskForm.addEventListener("submit", async (event) => {
     return;
   }
   try {
+    const dueAt = buildDueAt(taskDueDateInput.value, taskDueTimeInput.value);
     await apiRequest("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, description: taskDescriptionInput.value }),
+      body: JSON.stringify({ title, description: taskDescriptionInput.value, due_at: dueAt }),
     });
     taskForm.reset();
     showFeatureError();

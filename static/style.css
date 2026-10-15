@@ -381,8 +381,24 @@ button {
 
 .entry-form .primary-action {
   grid-column: 2;
-  grid-row: 1 / span 2;
+  grid-row: 1 / span 3;
   align-self: stretch;
+}
+
+.due-fields {
+  display: flex;
+  grid-column: 1;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.entry-form .due-fields input,
+.task-due-editor input {
+  width: auto;
+  color-scheme: dark;
 }
 
 .primary-action,
@@ -501,6 +517,58 @@ button {
 
 .delete-action:hover {
   color: #e9aaa2;
+}
+
+.task-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.edit-due-action:hover {
+  color: var(--accent-hover);
+}
+
+.task-due {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.task-due.overdue {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.task-due-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.task-due-editor[hidden] {
+  display: none;
+}
+
+.task-due-editor input {
+  padding: 6px 8px;
+  border: 1px solid #343c41;
+  border-radius: 4px;
+  outline: none;
+  background: #14181a;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.task-due-editor input:focus {
+  border-color: #536a7a;
+}
+
+.task-due-editor .secondary-action {
+  min-height: 30px;
 }
 
 .notes-layout {
@@ -1028,6 +1096,7 @@ button {
 
   .entry-form input,
   .entry-form textarea,
+  .entry-form .due-fields,
   .entry-form .primary-action {
     grid-column: 1;
     grid-row: auto;

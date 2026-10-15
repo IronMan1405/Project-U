@@ -75,6 +75,16 @@ excluded from Git. Removing the database file while U is stopped permanently
 deletes its tasks and notes. These operations are explicit UI/API actions and
 are not performed automatically by the model.
 
+Tasks can have an optional due date. `due_at` is either a calendar date
+(`YYYY-MM-DD`) or a UTC time (`YYYY-MM-DD HH:MM:SSZ`, optional fractional
+seconds); any other format, or an impossible date, is rejected with a 400.
+In the Tasks tab, pick a date (and optionally a time, entered in local time)
+when adding a task, or use "Set due"/"Edit due" on an existing task to change
+or remove it. Incomplete tasks past their due date are marked "Overdue".
+`PATCH /api/tasks/<id>` accepts `completed`, `due_at`, or both; `"due_at": null`
+clears the due date, and a field left out of the request is left unchanged.
+Databases created before due dates existed gain the column automatically.
+
 ## Selected documents
 
 In Chat, choose and upload one `.txt` (UTF-8) or `.pdf` file to ask questions
@@ -100,7 +110,8 @@ with an explanation.
 ## Assistant tools
 
 Terminal and web chat share `assistant_runtime.py` and Ollama's native tool-call
-protocol. U can list/create/complete/reopen/delete tasks; list/read/create/edit/
+protocol. U can list/create/complete/reopen/delete tasks and set, change, or clear a
+task's due date; list/read/create/edit/
 delete notes; report local time, battery, memory, and disk status; and request a
 website opening in the default browser. Task and note actions use the existing
 SQLite storage layer. No model-generated shell commands or code are executed.
@@ -110,7 +121,9 @@ run directly. A task/note write runs directly only when the user message clearly
 requests it; ambiguous writes, every deletion, and every website opening pause
 for explicit approval. Web users get Confirm/Cancel controls; the terminal asks
 for a yes/no response. Tool errors and unavailable system readings are reported
-as such rather than guessed.
+as such rather than guessed. Each model request includes the current local date
+and time so U can resolve dates such as "tomorrow" or "Friday"; when a requested
+due date is ambiguous, U is instructed to ask rather than guess.
 
 Assistant responses render Markdown with locally served `markdown-it` 15.0.2
 and DOMPurify 3.4.16 bundles in `static/vendor/`. Raw HTML is disabled, parsed
