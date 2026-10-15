@@ -150,6 +150,52 @@ class ReplyKindTests(unittest.TestCase):
                 self.assertIsNone(voice.classify_reply(text))
 
 
+class EndOfSpeechSettingsTests(VoiceTestCase):
+    def test_defaults_when_not_configured(self):
+        settings = voice.build_voice_settings({}, self.base)
+        self.assertEqual((settings.end_silence_ms, settings.min_recording_ms), (1200, 600))
+        self.assertEqual(settings.max_seconds, 60)
+        self.assertEqual(VoiceSettings().end_silence_ms, 1200)
+        self.assertEqual(voice.NO_SPEECH_TIMEOUT_MS, 6000)
+
+    def test_valid_overrides_from_config(self):
+        path = self.base / "config.ini"
+        path.write_text(
+            "[voice]\nend_silence_ms = 2000\nmin_recording_ms = 900\nmax_seconds = 45\n", encoding="utf-8"
+        )
+        settings = config.load_voice_settings(path)
+        self.assertEqual((settings.end_silence_ms, settings.min_recording_ms, settings.max_seconds), (2000, 900, 45))
+        for values, expected in (
+            ({"end_silence_ms": "500", "min_recording_ms": "200"}, (500, 200)),
+            ({"end_silence_ms": "4000", "min_recording_ms": "3000"}, (4000, 3000)),
+            ({"end_silence_ms": " 1500 "}, (1500, 600)),
+        ):
+            with self.subTest(values=values):
+                settings = voice.build_voice_settings(values, self.base)
+                self.assertEqual((settings.end_silence_ms, settings.min_recording_ms), expected)
+
+    def test_invalid_values_fall_back_to_defaults_with_a_warning(self):
+        for values in (
+            {"end_silence_ms": "fast"},
+            {"end_silence_ms": "1.5"},
+            {"end_silence_ms": "499"},
+            {"end_silence_ms": "4001"},
+            {"end_silence_ms": "-1200"},
+            {"min_recording_ms": "199"},
+            {"min_recording_ms": "3001"},
+            {"min_recording_ms": "lots"},
+        ):
+            with self.subTest(values=values), self.assertLogs("voice", level="WARNING"):
+                settings = voice.build_voice_settings(values, self.base)
+                self.assertEqual((settings.end_silence_ms, settings.min_recording_ms), (1200, 600))
+
+    def test_min_recording_must_be_shorter_than_the_maximum(self):
+        with self.assertLogs("voice", level="WARNING"):
+            settings = voice.build_voice_settings({"max_seconds": "1", "min_recording_ms": "2500"}, self.base)
+        self.assertEqual(settings.max_seconds, 1)
+        self.assertLess(settings.min_recording_ms, 1000)
+
+
 class TranscribeTests(VoiceTestCase):
     def fake_run(self, transcript=" Please create a task.\n", fail_step=None, timeout_step=None, converted=None):
         calls = []
@@ -383,9 +429,16 @@ class VoiceApiTests(VoiceTestCase):
     def test_status_reflects_configuration(self):
         with patch.object(voice, "SAY_COMMAND", self.ffmpeg):
             on = self.client().get("/api/voice/status").get_json()
-        self.assertEqual(on, {"speech_input": True, "speech_output": True, "max_seconds": 60})
+        timing = {"end_silence_ms": 1200, "min_recording_ms": 600, "no_speech_timeout_ms": 6000}
+        self.assertEqual(on, {"speech_input": True, "speech_output": True, "max_seconds": 60, **timing})
         off = self.client(VoiceSettings()).get("/api/voice/status").get_json()
-        self.assertEqual(off, {"speech_input": False, "speech_output": False, "max_seconds": 60})
+        self.assertEqual(off, {"speech_input": False, "speech_output": False, "max_seconds": 60, **timing})
+        custom = VoiceSettings(self.ffmpeg, self.whisper, self.model, None, "en", 30, True, 2000, 900)
+        self.assertEqual(
+            {key: self.client(custom).get("/api/voice/status").get_json()[key]
+             for key in ("max_seconds", "end_silence_ms", "min_recording_ms")},
+            {"max_seconds": 30, "end_silence_ms": 2000, "min_recording_ms": 900},
+        )
         disabled = self.client(VoiceSettings())
         self.assertEqual(self.upload(disabled).status_code, 503)
         self.assertEqual(disabled.post("/api/voice/speak", json={"text": "hi"}).status_code, 503)

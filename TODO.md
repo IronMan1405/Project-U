@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** v1.2 natural voice interaction. The must-have items are implemented and tested; a real-voice check of the silence threshold, review, and commit remain.
+**Current milestone:** v1.2 continuous voice loop. Automatic end-of-speech detection (Hands-free) is implemented and tested; your real-microphone checks, review, and commit remain.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -108,9 +108,20 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Loudness check before whisper.cpp so silent recordings report "No speech was detected"
 - [x] Automated tests, `VOICE_SMOKE=1`, and live browser regression with real Gemma
 - [x] Update README, ARCHITECTURE, and FUTURE for v1.2 voice behaviour
-- [ ] Check the silence threshold with your own quiet speech on a real microphone
-- [ ] Review the v1.2 diff and commit
+- [x] Check the silence threshold with your own quiet speech on a real microphone
+- [x] Review the v1.2 diff and commit
 - [ ] Separate experiment: `think: false` for faster replies, adopted only if the regression scripts still pass
+
+### 8. v1.2 Continuous Voice Loop
+- [x] Audit the recording, playback, and UI-state code for a continuous voice loop
+- [x] Automatic end-of-speech detection in Hands-free mode (tap to start, stops after a pause; `end_silence_ms`, `min_recording_ms`, 6 s no-speech discard, `max_seconds` kept)
+- [x] Detector module with `node:test` tests; Python tests for the new settings; live browser regression
+- [ ] Check end-of-speech detection on a real microphone in Chrome and Safari (quiet room, background noise, pauses, quiet speech, Bluetooth headset)
+- [ ] Review the end-of-speech diff and commit
+- [ ] Clear Listening / Thinking / Speaking / error indicator and a stop-speaking control
+- [ ] Automatic listening resumption after U finishes speaking (with a loop breaker)
+- [ ] Interruption handling
+- [ ] Optional wake-word support (last; needs its own decision)
 
 ## Scope Rules
 - One feature at a time.

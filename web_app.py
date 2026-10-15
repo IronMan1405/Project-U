@@ -254,6 +254,9 @@ def create_app(
             speech_input=voice_settings.stt_available,
             speech_output=voice_settings.tts_available,
             max_seconds=voice_settings.max_seconds,
+            end_silence_ms=voice_settings.end_silence_ms,
+            min_recording_ms=voice_settings.min_recording_ms,
+            no_speech_timeout_ms=voice.NO_SPEECH_TIMEOUT_MS,
         )
 
     @app.post("/api/voice/transcribe")
