@@ -282,6 +282,9 @@ function toolLabel(toolName) {
     delete_note: "Deleting note",
     get_system_info: "Checking system information",
     open_website: "Requesting browser launch",
+    find_files: "Searching approved folders",
+    open_file: "Requesting file open",
+    open_application: "Requesting app launch",
     document_context: "Using document context",
   };
   return labels[toolName] || "Using an assistant tool";

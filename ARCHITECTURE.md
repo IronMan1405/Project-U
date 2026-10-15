@@ -36,7 +36,7 @@ Loads the user-editable `profile.json` before each model request and provides it
 `storage.py` owns the SQLite schema and parameterized CRUD operations for tasks and notes. Tasks have an optional `due_at` (`YYYY-MM-DD` or a UTC `YYYY-MM-DD HH:MM:SSZ` timestamp), validated by `storage.validate_due_at` and shared by the API, tool schemas, and UI; older databases gain the column on startup. `update_task` changes only the fields it is given, so completing a task never alters its due date. The default database is `data/project_u.sqlite3`, created automatically and kept local. Flask exposes explicit task and note APIs used by the web interface; chat changes these records only through the registered tools in `tool_registry.py`.
 
 ### Tools
-Provides narrowly scoped functions for approved operations, such as managing tasks, reading selected files, and opening applications.
+Provides narrowly scoped functions for approved operations, such as managing tasks, reading selected files, and opening applications. `computer_utilities.py` holds the approved computer utilities: `config.py` loads allowlisted folders and macOS apps from `config.ini`, and `tool_registry.py` offers `find_files` (bounded, read-only file-name search), `open_file` (confirmed, path-contained, document types only), and `open_application` (confirmed, allowlist only) only when they are configured. Launches use the fixed `/usr/bin/open` executable with argument lists, never a shell.
 
 ### UI
 Provides a single, consistent interface for interacting with U.
