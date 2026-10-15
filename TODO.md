@@ -75,7 +75,7 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Spoken replies toggle, off by default
 - [x] Mocked tests plus a local speech round-trip test
 - [x] Try push-to-talk with a real microphone in Chrome and Safari
-- [ ] Decide on October 20 whether voice is stable enough for v1.0
+- [x] Approve voice for inclusion in v1.0
 
 ### 5. Release & Polish
 - [x] Release-readiness audit (October 15)
@@ -84,9 +84,8 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Verify graceful handling of Ollama/server failures (automated tests)
 - [x] Review local storage, privacy, and safety (audit; see `FUTURE.md` for known limitations)
 - [x] Update README with installation, startup, and usage instructions
-- [ ] Test core features end to end by hand, following the README on a fresh setup
-- [ ] Fix any important bugs found in that pass
-- [ ] Create a final release commit by October 21
+- [x] Test core features end to end by hand, following the README on a fresh setup
+- [x] Fix any important bugs found in that pass
 
 ## Scope Rules
 - One feature at a time.
@@ -97,3 +96,10 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - No autonomous execution of arbitrary commands.
 - Unfinished ideas go into `FUTURE.md`.
 - **Ship a useful v1.0 by October 21, 2026.**
+
+### Release policy
+
+- **Release date:** October 15, 2026
+- Freeze features for v1.0; only release-blocking fixes are permitted.
+- Defer new features and improvements to v1.1 or later.
+- Keep unfinished ideas and known limitations documented in `FUTURE.md`.
