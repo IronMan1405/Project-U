@@ -5,10 +5,14 @@ request and are never logged or stored. External programs run from configured ab
 paths with argument lists (never a shell) and timeouts.
 """
 
+import array
 import logging
+import math
 import re
 import subprocess
+import sys
 import tempfile
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +26,16 @@ CONVERT_TIMEOUT_SECONDS = 20
 TRANSCRIBE_TIMEOUT_SECONDS = 60
 SPEAK_TIMEOUT_SECONDS = 60
 DEFAULT_MAX_SECONDS = 60
+# Loudness check on the converted 16 kHz mono WAV, before whisper.cpp runs (whisper
+# transcribes silence as "you"). A recording counts as speech only if at least
+# MIN_SPEECH_SECONDS of 30 ms windows reach SPEECH_LEVEL_DBFS. The threshold sits just
+# above a measured quiet-room microphone noise floor (loudest 30 ms window -58.7 dBFS)
+# and below the quietest speech whisper still transcribed correctly in that room
+# (loudest window -55 dBFS); requiring a duration ignores single clicks.
+SPEECH_LEVEL_DBFS = -57.0
+MIN_SPEECH_SECONDS = 0.12
+LEVEL_WINDOW_SECONDS = 0.03
+NO_SPEECH_MESSAGE = "No speech was detected. Hold the button and speak, then release."
 
 # Browser MediaRecorder formats: MIME type -> (file suffix, forced FFmpeg demuxer, magic check).
 AUDIO_FORMATS = {
@@ -143,6 +157,34 @@ def audio_format(mime_type: str):
     return AUDIO_FORMATS[base_type]
 
 
+def speech_level(wav_path: Path) -> tuple[float, float]:
+    """Return (seconds of 30 ms windows at or above SPEECH_LEVEL_DBFS, loudest window dBFS)
+    for a 16-bit mono WAV. Deterministic and standard-library only."""
+    try:
+        with wave.open(str(wav_path), "rb") as recording:
+            if recording.getsampwidth() != 2 or recording.getnchannels() != 1:
+                raise VoiceError("Local audio conversion produced unusable audio.")
+            rate = recording.getframerate()
+            samples = array.array("h", recording.readframes(recording.getnframes()))
+    except (wave.Error, EOFError, OSError) as error:
+        raise VoiceError("Local audio conversion produced unusable audio.") from error
+    if sys.byteorder == "big":
+        samples.byteswap()
+    size = max(1, int(rate * LEVEL_WINDOW_SECONDS))
+    threshold_energy = (10 ** (SPEECH_LEVEL_DBFS / 20) * 32768) ** 2 * size
+    loud_windows = 0
+    loudest_energy = 0
+    for start in range(0, len(samples) - size + 1, size):
+        window = samples[start : start + size]
+        energy = sum(value * value for value in window)
+        loudest_energy = max(loudest_energy, energy)
+        if energy >= threshold_energy:
+            loud_windows += 1
+    loudest_rms = math.sqrt(loudest_energy / size)
+    loudest_db = 20 * math.log10(loudest_rms / 32768) if loudest_rms else float("-inf")
+    return loud_windows * size / rate, loudest_db
+
+
 def transcribe(settings: VoiceSettings, audio: bytes, mime_type: str) -> str:
     """Convert one browser recording to 16 kHz mono WAV with FFmpeg and transcribe it."""
     if not settings.stt_available:
@@ -168,6 +210,11 @@ def transcribe(settings: VoiceSettings, audio: bytes, mime_type: str) -> str:
             CONVERT_TIMEOUT_SECONDS,
             "audio conversion",
         )
+        speech_seconds, loudest_db = speech_level(speech)
+        # Levels only (never audio or text), to help tune SPEECH_LEVEL_DBFS.
+        logger.info("Voice level: loudest %.1f dBFS, %.2fs at or above %.0f dBFS", loudest_db, speech_seconds, SPEECH_LEVEL_DBFS)
+        if speech_seconds < MIN_SPEECH_SECONDS:
+            raise VoiceError(NO_SPEECH_MESSAGE)
         result = _run(
             [
                 str(settings.whisper_cli), "-m", str(settings.whisper_model), "-f", str(speech),
@@ -178,8 +225,41 @@ def transcribe(settings: VoiceSettings, audio: bytes, mime_type: str) -> str:
         )
     text = " ".join(_NON_SPEECH_MARKER.sub(" ", result.stdout).split())
     if not text:
-        raise VoiceError("No speech was detected. Hold the button and speak, then release.")
+        raise VoiceError(NO_SPEECH_MESSAGE)
     return text[:MAX_TRANSCRIPT_CHARS]
+
+
+# Whole-utterance replies to a pending confirmation. Only a transcript that is *just*
+# one of these phrases is classified; anything longer (e.g. "no, open the March one") is
+# an ordinary message. "affirm" never approves anything: the page asks for the Confirm
+# button instead. "decline" acts like the Cancel button, which can never run an action.
+_AFFIRM_PHRASES = frozenset({
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm", "confirmed", "approve",
+    "approved", "do it", "go ahead", "go for it", "please do", "yes please", "yes do it",
+    "yes go ahead", "sounds good", "correct", "that's right", "thats right", "right",
+})
+_DECLINE_PHRASES = frozenset({
+    "no", "nope", "nah", "no thanks", "no thank you", "cancel", "cancel it", "cancel that",
+    "cancel this", "don't", "dont", "do not", "don't do it", "dont do it", "do not do it",
+    "stop", "never mind", "nevermind", "forget it", "not now", "no don't", "no dont",
+    "no cancel", "no cancel it", "no cancel that",
+})
+_FILLER = frozenset({"please", "thanks", "thank", "you", "um", "uh", "oh", "well", "u"})
+
+
+def classify_reply(text: str) -> str | None:
+    """Classify a transcript as 'affirm', 'decline', or None (an ordinary message)."""
+    words = re.findall(r"[a-z']+", (text or "").casefold().replace("\u2019", "'"))
+    if not words or len(words) > 6:
+        return None
+    phrase = " ".join(words)
+    core = " ".join(word for word in words if word not in _FILLER) or phrase
+    for candidate in (phrase, core):
+        if candidate in _DECLINE_PHRASES:
+            return "decline"
+        if candidate in _AFFIRM_PHRASES:
+            return "affirm"
+    return None
 
 
 def synthesize(settings: VoiceSettings, text: str) -> tuple[bytes, bool]:

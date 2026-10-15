@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import io
+import math
+import random
+import struct
 import threading
+import wave
 
 import assistant_runtime
 import config
@@ -17,6 +21,26 @@ from voice import VoiceError, VoiceSettings, VoiceTimeout, VoiceUnavailable
 
 
 WEBM = b"\x1a\x45\xdf\xa3" + b"\x00" * 60
+
+
+def write_wav(path, segments, rate=16000):
+    """Write a 16-bit mono WAV from (seconds, dBFS or None for silence, kind) segments."""
+    rng = random.Random(1234)
+    frames = []
+    for seconds, level, kind in segments:
+        amplitude = 0 if level is None else 32768 * 10 ** (level / 20)
+        for index in range(int(seconds * rate)):
+            if kind == "tone":  # sine RMS is peak / sqrt(2)
+                value = amplitude * math.sqrt(2) * math.sin(2 * math.pi * 220 * index / rate)
+            else:  # uniform noise RMS is peak / sqrt(3)
+                value = amplitude * math.sqrt(3) * rng.uniform(-1, 1)
+            frames.append(max(-32768, min(32767, int(value))))
+    with wave.open(str(path), "wb") as recording:
+        recording.setnchannels(1)
+        recording.setsampwidth(2)
+        recording.setframerate(rate)
+        recording.writeframes(struct.pack(f"<{len(frames)}h", *frames))
+    return path
 OGG = b"OggS" + b"\x00" * 60
 MP4 = b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 60
 
@@ -104,8 +128,30 @@ class VoiceSettingsTests(VoiceTestCase):
         )
 
 
+class ReplyKindTests(unittest.TestCase):
+    def test_short_affirmations_and_declines_are_classified(self):
+        for text in ("Yes.", "yes", "YES!!!", "Yeah.", "Okay.", "OK", "Sure.", "Confirm.", "Go ahead.",
+                     "Do it.", "Yes, please.", "Um, yes please.", "Please do.", "Sounds good."):
+            with self.subTest(text=text):
+                self.assertEqual(voice.classify_reply(text), "affirm")
+        for text in ("No.", "Nope.", "No, thank you.", "No thanks.", "Cancel.", "Cancel that.", "Don't.",
+                     "Don\u2019t do it.", "Stop.", "Never mind.", "Forget it.", "No, cancel it.", "Not now."):
+            with self.subTest(text=text):
+                self.assertEqual(voice.classify_reply(text), "decline")
+
+    def test_anything_more_than_a_bare_reply_is_an_ordinary_message(self):
+        for text in (
+            "No, open the March one instead.", "Yes, and also create a task.", "Yes delete task 3 and 4",
+            "Cancel my dentist appointment task", "Don't forget to buy milk", "Stop the music in Music app",
+            "Okay, what's next on my list?", "Delete task 3", "Thank you.", "Thanks.", "", "   ", "...",
+            "no no no no no no no",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(voice.classify_reply(text))
+
+
 class TranscribeTests(VoiceTestCase):
-    def fake_run(self, transcript=" Please create a task.\n", fail_step=None, timeout_step=None):
+    def fake_run(self, transcript=" Please create a task.\n", fail_step=None, timeout_step=None, converted=None):
         calls = []
 
         def run(arguments, **kwargs):
@@ -116,7 +162,7 @@ class TranscribeTests(VoiceTestCase):
             if step == fail_step:
                 return Mock(returncode=1, stdout="", stderr="decoder error")
             if step == "convert":
-                Path(arguments[-1]).write_bytes(b"RIFF")
+                write_wav(Path(arguments[-1]), converted or [(1.0, -30, "tone")])
                 return Mock(returncode=0, stdout="", stderr="")
             return Mock(returncode=0, stdout=transcript, stderr="")
 
@@ -209,6 +255,52 @@ class TranscribeTests(VoiceTestCase):
         with patch.object(voice.subprocess, "run", side_effect=run):
             text = voice.transcribe(self.settings, WEBM, "audio/webm")
         self.assertLessEqual(len(text), voice.MAX_TRANSCRIPT_CHARS)
+
+    def test_silent_recordings_are_rejected_before_whisper_runs(self):
+        quiet_room = [(2.0, -66, "noise")]
+        for label, converted in (
+            ("digital silence", [(2.0, None, "noise")]),
+            ("quiet-room noise floor", quiet_room),
+            ("single click in a quiet room", [(0.5, -66, "noise"), (0.03, -20, "noise"), (1.0, -66, "noise")]),
+            ("speech just below the threshold", [(1.5, -58, "tone")]),
+        ):
+            run, calls = self.fake_run(transcript=" you\n", converted=converted)
+            with self.subTest(case=label), patch.object(voice.subprocess, "run", side_effect=run):
+                with self.assertRaises(VoiceError) as raised:
+                    voice.transcribe(self.settings, WEBM, "audio/webm")
+                self.assertEqual(str(raised.exception), voice.NO_SPEECH_MESSAGE)
+                self.assertEqual(len(calls), 1)  # FFmpeg ran; whisper.cpp did not
+                self.assertFalse(Path(calls[0][0][-1]).parent.exists())
+
+    def test_speech_level_audio_reaches_whisper(self):
+        for label, converted in (
+            ("normal speech level", [(1.5, -25, "tone")]),
+            ("quiet speech", [(0.5, -66, "noise"), (1.0, -50, "noise"), (0.5, -66, "noise")]),
+            ("very quiet but sustained", [(1.0, -56, "tone")]),
+            ("short word", [(0.2, -40, "noise")]),
+        ):
+            run, calls = self.fake_run(converted=converted)
+            with self.subTest(case=label), patch.object(voice.subprocess, "run", side_effect=run):
+                self.assertEqual(voice.transcribe(self.settings, WEBM, "audio/webm"), "Please create a task.")
+                self.assertEqual(len(calls), 2)
+
+    def test_speech_level_measurement_is_deterministic(self):
+        path = Path(self.temp_dir.name) / "level.wav"
+        write_wav(path, [(1.0, None, "noise"), (0.6, -30, "tone"), (1.0, None, "noise")])
+        seconds, loudest = voice.speech_level(path)
+        self.assertAlmostEqual(seconds, 0.6, delta=0.06)
+        self.assertAlmostEqual(loudest, -30, delta=0.5)
+        self.assertEqual(voice.speech_level(path), (seconds, loudest))
+        write_wav(path, [(1.0, None, "noise")])
+        self.assertEqual(voice.speech_level(path), (0.0, float("-inf")))
+        path.write_bytes(b"RIFF....not a wav")
+        with self.assertRaises(VoiceError):
+            voice.speech_level(path)
+        with wave.open(str(path), "wb") as stereo:
+            stereo.setnchannels(2); stereo.setsampwidth(2); stereo.setframerate(16000)
+            stereo.writeframes(b"\x00\x00" * 3200)
+        with self.assertRaises(VoiceError):
+            voice.speech_level(path)
 
     def test_missing_program_reports_unavailable(self):
         with patch.object(voice.subprocess, "run", side_effect=FileNotFoundError("gone")):
@@ -307,7 +399,7 @@ class VoiceApiTests(VoiceTestCase):
             response = self.upload(client)
             activity = client.get(f"/api/conversations/{conversation_id}/activity").get_json()
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), {"text": "Please delete task 3"})
+        self.assertEqual(response.get_json(), {"text": "Please delete task 3", "reply_kind": None})
         transcribe.assert_called_once_with(self.settings, WEBM, "audio/webm;codecs=opus")
         model.assert_not_called()
         self.assertEqual(activity["activity"]["status"], "idle")
@@ -331,6 +423,20 @@ class VoiceApiTests(VoiceTestCase):
         # The real format checks run inside voice.transcribe and surface as 422.
         self.assertEqual(self.upload(client, b"<html>", "text/html").status_code, 422)
 
+    def test_silent_recording_returns_no_speech_from_the_endpoint(self):
+        calls = []
+
+        def run(arguments, **kwargs):
+            calls.append(arguments[0])
+            write_wav(Path(arguments[-1]), [(1.5, -66, "noise")])
+            return Mock(returncode=0, stdout="", stderr="")
+
+        with patch.object(voice.subprocess, "run", side_effect=run):
+            response = self.upload(self.client())
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.get_json(), {"error": voice.NO_SPEECH_MESSAGE})
+        self.assertEqual(calls, [str(self.ffmpeg)])
+
     def test_only_one_transcription_runs_at_a_time(self):
         started, release = threading.Event(), threading.Event()
 
@@ -349,9 +455,45 @@ class VoiceApiTests(VoiceTestCase):
             release.set()
             worker.join(5)
         self.assertEqual(second.status_code, 429)
-        self.assertEqual(results["first"].get_json(), {"text": "first"})
+        self.assertEqual(results["first"].get_json(), {"text": "first", "reply_kind": None})
         with patch.object(voice, "transcribe", return_value="again"):
             self.assertEqual(self.upload(client).status_code, 200)
+
+    def test_reply_kind_is_returned_with_the_transcript(self):
+        client = self.client()
+        for text, kind in (("Yes.", "affirm"), ("No, thank you.", "decline"), ("Open my notes", None)):
+            with self.subTest(text=text), patch.object(voice, "transcribe", return_value=text):
+                self.assertEqual(self.upload(client).get_json(), {"text": text, "reply_kind": kind})
+
+    def test_only_one_speech_synthesis_runs_at_a_time(self):
+        started, release = threading.Event(), threading.Event()
+
+        def slow_synthesize(*args):
+            started.set()
+            release.wait(5)
+            return b"RIFF....WAVE", False
+
+        client = self.client()
+        results = {}
+        with patch.object(voice, "SAY_COMMAND", self.ffmpeg), patch.object(
+            voice, "synthesize", side_effect=slow_synthesize
+        ) as synthesize:
+            worker = threading.Thread(
+                target=lambda: results.setdefault("first", client.post("/api/voice/speak", json={"text": "one"}))
+            )
+            worker.start()
+            self.assertTrue(started.wait(5))
+            second = client.post("/api/voice/speak", json={"text": "two"})
+            release.set()
+            worker.join(5)
+        self.assertEqual(second.status_code, 429)
+        self.assertEqual(second.get_json(), {"error": "Speech output is busy. Try again shortly."})
+        self.assertEqual(results["first"].status_code, 200)
+        self.assertEqual(synthesize.call_count, 1)
+        with patch.object(voice, "SAY_COMMAND", self.ffmpeg), patch.object(
+            voice, "synthesize", return_value=(b"RIFF", False)
+        ):
+            self.assertEqual(client.post("/api/voice/speak", json={"text": "again"}).status_code, 200)
 
     def test_speak_returns_uncached_wav(self):
         client = self.client()
@@ -407,6 +549,18 @@ class LocalSpeechRoundTripTests(unittest.TestCase):
         text = voice.transcribe(settings, recording, "audio/webm;codecs=opus").lower()
         for word in ("create", "task", "water", "plants", "tomorrow"):
             self.assertIn(word, text)
+
+        # A silent browser-style recording is rejected before whisper.cpp runs.
+        with tempfile.TemporaryDirectory() as directory:
+            silent = Path(directory) / "silent.webm"
+            subprocess.run(
+                [str(settings.ffmpeg), "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i",
+                 "anullsrc=r=48000:cl=mono", "-t", "2", "-c:a", "libopus", str(silent)],
+                check=True, timeout=30,
+            )
+            with self.assertRaises(VoiceError) as raised:
+                voice.transcribe(settings, silent.read_bytes(), "audio/webm;codecs=opus")
+            self.assertEqual(str(raised.exception), voice.NO_SPEECH_MESSAGE)
 
         # Same round trip through the HTTP endpoints the browser uses.
         with tempfile.TemporaryDirectory() as directory:

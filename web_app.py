@@ -77,6 +77,20 @@ def create_app(
         logging.getLogger(__name__).exception("Could not initialize the local data store")
         app.config["DATABASE_READY"] = False
 
+    @app.before_request
+    def reject_cross_site_writes():
+        # Browsers send cross-site multipart and form POSTs without a CORS preflight, so
+        # another website could otherwise make this server do work (for example run a
+        # transcription). State-changing requests must come from this same origin; requests
+        # without an Origin header (curl, the terminal, tests) are unaffected.
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        origin = request.headers.get("Origin")
+        cross_site = request.headers.get("Sec-Fetch-Site") == "cross-site"
+        if cross_site or (origin is not None and origin != f"{request.scheme}://{request.host}"):
+            return jsonify(error="Cross-site requests are not allowed."), 403
+        return None
+
     @app.errorhandler(sqlite3.Error)
     def handle_database_error(error):
         logging.getLogger(__name__).exception("Local data store operation failed")
@@ -267,7 +281,9 @@ def create_app(
             return voice_error_response(error)
         finally:
             transcription_slot.release()
-        return jsonify(text=text)
+        # reply_kind lets the page treat a bare "yes"/"no" specially while a confirmation is
+        # pending; the server never approves or cancels anything based on it.
+        return jsonify(text=text, reply_kind=voice.classify_reply(text))
 
     @app.post("/api/voice/speak")
     def voice_speak():

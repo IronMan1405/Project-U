@@ -149,5 +149,89 @@ class TrustedHostTests(unittest.TestCase):
         self.assertEqual(self.app.config["TRUSTED_HOSTS"], ["127.0.0.1", "localhost"])
 
 
+
+class CrossSiteRequestTests(unittest.TestCase):
+    """State-changing requests must come from U's own page, not another website."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.temp_dir.name) / "origin.sqlite3"
+        self.ffmpeg = Path(self.temp_dir.name) / "bin" / "tool"
+        self.ffmpeg.parent.mkdir()
+        self.ffmpeg.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.ffmpeg.chmod(0o755)
+        voice_settings = VoiceSettings(self.ffmpeg, self.ffmpeg, self.ffmpeg, None, "en", 60, True)
+        self.client = web_app.create_app(
+            self.database_path, utility_settings=UtilitySettings(), voice_settings=voice_settings
+        ).test_client()
+        self.task = storage.create_task("Private task", database_path=self.database_path)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def requests(self, conversation_id):
+        audio = lambda: {"audio": (io.BytesIO(b"\x1a\x45\xdf\xa3" + b"\0" * 64), "r.webm", "audio/webm")}
+        return [
+            ("post", "/api/voice/transcribe", {"data": audio(), "content_type": "multipart/form-data"}),
+            ("post", "/api/documents", {"data": {"conversation_id": conversation_id, "file": (io.BytesIO(b"hello"), "a.txt")}, "content_type": "multipart/form-data"}),
+            ("post", "/api/voice/speak", {"json": {"text": "hello"}}),
+            ("post", "/api/chat", {"json": {"conversation_id": conversation_id, "message": "Delete task 1"}}),
+            ("post", "/api/confirm", {"json": {"conversation_id": conversation_id, "confirmation_id": "x", "approved": True}}),
+            ("post", "/api/conversations", {"json": {}}),
+            ("post", "/api/tasks", {"json": {"title": "Injected"}}),
+            ("patch", f"/api/tasks/{self.task['id']}", {"json": {"completed": True}}),
+            ("delete", f"/api/tasks/{self.task['id']}", {}),
+        ]
+
+    def test_cross_site_writes_are_rejected_before_doing_any_work(self):
+        conversation_id = self.client.post("/api/conversations", json={}).get_json()["conversation_id"]
+        model = Mock(return_value={"role": "assistant", "content": "should not run"})
+        bad_headers = (
+            {"Origin": "https://evil.example"},
+            {"Origin": "http://127.0.0.1:5001"},
+            {"Origin": "http://localhost:5000"},  # request is to 127.0.0.1, a different origin
+            {"Origin": "null"},
+            {"Sec-Fetch-Site": "cross-site"},
+        )
+        with patch.object(assistant_runtime, "ask_ollama", model), patch(
+            "voice.transcribe", return_value="hi"
+        ) as transcribe, patch("voice.synthesize", return_value=(b"RIFF", False)) as synthesize:
+            for headers in bad_headers:
+                for method, url, kwargs in self.requests(conversation_id):
+                    with self.subTest(headers=headers, url=url, method=method):
+                        response = getattr(self.client, method)(
+                            url, headers={"Host": "127.0.0.1:5000", **headers}, **kwargs
+                        )
+                        self.assertEqual(response.status_code, 403)
+                        self.assertEqual(response.get_json(), {"error": "Cross-site requests are not allowed."})
+        transcribe.assert_not_called()
+        synthesize.assert_not_called()
+        model.assert_not_called()
+        self.assertEqual([(t["title"], t["completed"]) for t in storage.list_tasks(self.database_path)], [("Private task", False)])
+
+    def test_same_origin_and_origin_less_requests_still_work(self):
+        with patch("voice.transcribe", return_value="hello there") as transcribe:
+            for headers in (
+                {"Host": "127.0.0.1:5000", "Origin": "http://127.0.0.1:5000", "Sec-Fetch-Site": "same-origin"},
+                {"Host": "localhost:5000", "Origin": "http://localhost:5000"},
+                {"Host": "127.0.0.1:5000"},  # curl, terminal tools, and tests send no Origin
+            ):
+                with self.subTest(headers=headers):
+                    response = self.client.post(
+                        "/api/voice/transcribe",
+                        data={"audio": (io.BytesIO(b"\x1a\x45\xdf\xa3" + b"\0" * 64), "r.webm", "audio/webm")},
+                        content_type="multipart/form-data",
+                        headers=headers,
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    created = self.client.post("/api/tasks", json={"title": "Mine"}, headers=headers)
+                    self.assertEqual(created.status_code, 201)
+        self.assertEqual(transcribe.call_count, 3)
+        # Reads are never blocked by the Origin rule.
+        self.assertEqual(
+            self.client.get("/api/tasks", headers={"Origin": "https://evil.example"}).status_code, 200
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
