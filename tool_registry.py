@@ -777,8 +777,14 @@ class ToolRegistry:
         message = (
             f"Searched {', '.join(found['folders_searched'])} (including subfolders) for"
             f"{kind} file names containing all of: {', '.join(found['query_terms'])}. "
-            f"Found {len(found['results'])} file(s)."
         )
+        if found["retry"]:
+            retry = found["retry"]
+            message += (
+                f"None matched, so it searched again treating {', '.join(retry['type_words'])} as a "
+                f"file type: {', '.join(retry['query_terms'])} in {'/'.join(retry['file_types'])} files. "
+            )
+        message += f"Found {len(found['results'])} file(s)."
         if found["incomplete_folders"]:
             message += (
                 f" The {computer_utilities.MAX_SCANNED_ENTRIES:,}-entry search limit was reached "

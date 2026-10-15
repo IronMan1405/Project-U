@@ -142,7 +142,7 @@ class TrustedHostTests(unittest.TestCase):
                 headers={"Host": "127.0.0.1:5000"},
             )
         self.assertEqual(cancelled.status_code, 200)
-        self.assertEqual(cancelled.get_json()["response"], "Deletion cancelled.")
+        self.assertEqual(cancelled.get_json()["response"], f"Cancelled: Delete task {self.task['id']}. It was not run.")
         self.assertEqual(len(storage.list_tasks(self.database_path)), 1)
 
     def test_trusted_hosts_are_exact_loopback_names(self):

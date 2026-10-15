@@ -514,6 +514,7 @@ def _serialize_turn_result(result: TurnResult, document_selection=None) -> dict:
         "response": result.response,
         "activities": activities,
         "pending_confirmation": result.pending_confirmation,
+        "notice": result.notice,
         "document_context": document_selection.mode if document_selection is not None else None,
     }
 

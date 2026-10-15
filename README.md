@@ -146,6 +146,50 @@ and time so U can resolve dates such as "tomorrow" or "Friday" into local
 dates and times (U converts them to UTC itself); when the day itself is unclear,
 U is instructed to ask rather than guess.
 
+### Conversations
+
+Within a conversation, U sees the earlier messages and tool results, so
+follow-ups such as "open the second one", "summarize that", or "actually make it
+6pm" can refer to what it found or did before. History is scoped to one
+conversation and kept only in memory: it is gone when you start a new
+conversation, reload the page, or stop or restart U (the server or the terminal
+client). The conversation itself is never saved to disk (tasks and notes that U
+creates or changes during it are).
+
+- **History limit.** Before each new message, if the stored conversation is
+  larger than about 48,000 characters, U drops the oldest complete turns until it
+  is at or below about 28,800 characters (a turn is your message plus U's tool
+  requests, their results, and the reply). A tool request is never separated from
+  its result, and the newest turn is always kept, even if it alone is larger than
+  the limit; U no longer sees what was dropped. The model's hidden reasoning
+  ("thinking") is not stored in the history.
+- **Prompt order.** Each request sends the parts that do not change first (your
+  profile, U's fixed instructions, and the earlier turns), then the parts that
+  change with every message (the current date/time and any document excerpts),
+  then the current turn. The changing parts are not stored in the history. This
+  keeps the start of each request identical to the previous one, so Ollama can
+  reuse its cached processing of the earlier turns instead of re-reading the whole
+  conversation. How much time that saves depends on the conversation length and
+  the Mac; the first message after Ollama starts or reloads the model (Ollama
+  unloads an idle model after a few minutes by default), and the first one after
+  the history limit drops old turns, are processed in full.
+- **Cancelling.** When you click Cancel (or answer anything but "y"/"yes" in the
+  terminal), the declined action is not run, and neither is any action U had
+  queued after it in the same request. U replies with a fixed message rather than
+  a model-written one, for example "Cancelled: Delete task 3. It was not run. 1
+  other requested action was not run either." If earlier actions in the same
+  request had already run, the reply says so and points to the activity list,
+  which shows them.
+- **Changing your mind.** While an action waits for confirmation in the web
+  interface, Confirm and Cancel stay available, and you can also keep typing (or
+  use push-to-talk). Sending a new message first cancels the waiting action
+  exactly as Cancel would (it and anything queued after it never run), shows the
+  cancellation message, and then answers the new message. The old confirmation
+  becomes invalid, so a late Confirm for it is refused. If you had already
+  clicked Confirm and the action is running, a new message is refused as busy
+  until it finishes. Only the Confirm button approves an action: a typed (or
+  spoken) "yes" is a new message, so it cancels the waiting action instead.
+
 ### Approved computer utilities
 
 These tools are controlled by `config.ini`; restart U after editing it.
@@ -163,7 +207,26 @@ tools off; without them, the tools are not offered to the model.
 subfolders only. Every query word must appear in the name, ignoring case, spaces,
 underscores, punctuation, and camelCase/PascalCase, so "performance sheet" finds
 `PerformanceSheet.pdf`, `performance_sheet.pdf`, and `Performance Sheet.pdf`. An
-optional `file_type` (e.g. `pdf`) filters by extension. The model may name only
+optional `file_type` (e.g. `pdf`) filters by extension.
+
+If a search of several words finds nothing and some of the words only describe a
+kind of file, it is retried once with the remaining words, limited to these
+extensions:
+
+| Words | Extensions |
+|---|---|
+| spreadsheet, spreadsheets | `.xlsx` `.xls` `.csv` `.numbers` |
+| pdf, pdfs | `.pdf` |
+| document, documents, doc, docs | `.docx` `.doc` `.pdf` `.txt` `.md` `.rtf` `.pages` |
+| image(s), photo(s), picture(s) | `.png` `.jpg` `.jpeg` `.heic` `.gif` |
+| presentation(s), slides, slideshow | `.pptx` `.ppt` `.key` |
+
+For example, "budget spreadsheets" finds `Budget 2026.xlsx`. The retry searches
+the same approved folders with the same rules, and uses only what is left of the
+same 5,000-entry limit (so both searches together never examine more). It does
+not run when the first search found anything, when `file_type` was given, when
+every word is a file-type word, or when the limit is already used up; the result
+says when it retried. The model may name only
 an approved root (folder label), never a path or subfolder; subfolders such as
 `Desktop/Projects/` are reached only by searching their approved root. Hidden
 items, symbolic links, and app/system packages are skipped; the search goes at most

@@ -58,6 +58,8 @@ def main() -> int:
 
         try:
             result = runtime.run_turn(message, confirm_callback=_confirm_in_terminal)
+            if result.notice:
+                print(f"U: {result.notice}")
             for activity in result.activities:
                 print(f"[{activity['status']}] {activity['summary']}")
             if result.pending_confirmation:

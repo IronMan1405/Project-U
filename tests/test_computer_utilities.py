@@ -247,6 +247,87 @@ class KeywordSearchTests(UtilityTestCase):
         self.assertNotIn("limit", empty.message)
 
 
+class TypeWordRetryTests(UtilityTestCase):
+    def setUp(self):
+        super().setUp()
+        for name in ("Finance/Budget 2025.xlsx", "Finance/Budget 2026.xlsx", "Finance/Budget notes.txt",
+                     "Invoice April.pdf", "Spreadsheet Tips.pdf"):
+            self.write(name)
+
+    def find(self, query, **kwargs):
+        return computer_utilities.find_files(self.settings(), query, **kwargs)
+
+    def test_type_words_become_a_file_type_filter_after_zero_matches(self):
+        found = self.find("budget spreadsheets")
+        self.assertEqual(
+            sorted(item["path"] for item in found["results"]),
+            ["Documents/Finance/Budget 2025.xlsx", "Documents/Finance/Budget 2026.xlsx"],
+        )
+        self.assertEqual(found["query_terms"], ["budget", "spreadsheets"])
+        self.assertEqual(found["retry"]["query_terms"], ["budget"])
+        self.assertEqual(found["retry"]["type_words"], ["spreadsheets"])
+        self.assertIn(".xlsx", found["retry"]["file_types"])
+
+        registry = ToolRegistry(self.database_path, utilities=self.settings())
+        outcome = registry.execute(registry.prepare("find_files", {"query": "budget spreadsheets"}, "Find it"))
+        self.assertIn("None matched, so it searched again treating spreadsheets as a file type: budget in", outcome.message)
+        self.assertTrue(outcome.message.endswith("Found 2 file(s)."))
+
+    def test_no_retry_when_ordinary_matching_already_finds_files(self):
+        for query, expected in (
+            ("spreadsheet tips", ["Documents/Spreadsheet Tips.pdf"]),  # type word that is in the name
+            ("invoice pdf", ["Documents/Invoice April.pdf"]),            # extension matches by name
+            ("budget", None),
+        ):
+            with self.subTest(query=query):
+                found = self.find(query)
+                self.assertIsNone(found["retry"])
+                if expected:
+                    self.assertEqual([item["path"] for item in found["results"]], expected)
+        self.assertEqual(len(self.find("budget")["results"]), 3)
+
+        registry = ToolRegistry(self.database_path, utilities=self.settings())
+        message = registry.execute(registry.prepare("find_files", {"query": "budget"}, "Find it")).message
+        self.assertNotIn("searched again", message)
+
+    def test_no_retry_for_explicit_type_single_words_or_only_type_words(self):
+        for query, kwargs in (
+            ("budget spreadsheets", {"file_type": "xlsx"}),  # caller chose the type explicitly
+            ("spreadsheets", {}),                            # nothing left to search names for
+            ("photos documents", {}),                         # only type words
+            ("missing spreadsheets", {}),                     # retried, still nothing
+        ):
+            with self.subTest(query=query, **kwargs):
+                found = self.find(query, **kwargs)
+                self.assertEqual(found["results"], [])
+                if query == "missing spreadsheets":
+                    self.assertIsNotNone(found["retry"])
+                else:
+                    self.assertIsNone(found["retry"])
+
+    def test_retry_shares_the_scan_limit_and_stays_in_approved_roots(self):
+        outside = Path(self.temp_dir.name).resolve() / "outside"
+        outside.mkdir()
+        (outside / "Budget secret.xlsx").write_text("x", encoding="utf-8")
+        (self.documents / "Linked").symlink_to(outside, target_is_directory=True)
+        found = self.find("budget spreadsheets")
+        self.assertNotIn("secret", " ".join(item["path"] for item in found["results"]))
+
+        for index in range(30):
+            self.write(f"filler-{index:02}.txt")
+        total_entries = sum(1 for _ in self.documents.rglob("*"))
+        with patch.object(computer_utilities, "MAX_SCANNED_ENTRIES", total_entries + 5):
+            limited = self.find("budget spreadsheets")
+        self.assertLessEqual(limited["entries_examined"], total_entries + 5)
+        self.assertTrue(limited["truncated"])
+        self.assertEqual(limited["incomplete_folders"], ["Documents"])
+
+        with patch.object(computer_utilities, "MAX_SCANNED_ENTRIES", 5):
+            exhausted = self.find("budget spreadsheets")
+        self.assertIsNone(exhausted["retry"])  # no budget left, so no second walk
+        self.assertEqual(exhausted["entries_examined"], 5)
+
+
 class SearchScopeTests(UtilityTestCase):
     def setUp(self):
         super().setUp()

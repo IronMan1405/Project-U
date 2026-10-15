@@ -199,14 +199,237 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertIsNone(pending.response)
         self.assertEqual(pending.pending_confirmation["tool"], "delete_task")
         self.assertEqual(len(storage.list_tasks(self.database_path)), 1)
-        with self.assertRaises(RuntimeBusyError):
-            runtime.run_turn("Do something else")
 
         result = runtime.resolve_confirmation(pending.pending_confirmation["confirmation_id"], False)
-        self.assertEqual(result.response, "Deletion was cancelled.")
+        self.assertEqual(result.response, f"Cancelled: Delete task {task['id']}. It was not run.")
+        self.assertEqual(model.call_count, 1)  # the reply is fixed text, not a model interpretation
         self.assertEqual(len(storage.list_tasks(self.database_path)), 1)
         with self.assertRaises(RuntimeBusyError):
             runtime.resolve_confirmation(pending.pending_confirmation["confirmation_id"], True)
+
+    def multi_call(self, *calls):
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": f"call-{index}", "function": {"name": name, "arguments": arguments}}
+                for index, (name, arguments) in enumerate(calls)
+            ],
+        }
+
+    def assert_every_tool_call_has_a_result(self, history):
+        calls = sum(len(m.get("tool_calls") or []) for m in history if m["role"] == "assistant")
+        self.assertEqual(calls, sum(m["role"] == "tool" for m in history))
+
+    def test_cancel_skips_queued_actions_and_replies_deterministically(self):
+        keep = storage.create_task("Keep me", database_path=self.database_path)
+        model = Mock(
+            side_effect=[
+                self.multi_call(
+                    ("delete_task", {"task_id": keep["id"]}),
+                    ("create_task", {"title": "Queued write"}),
+                    ("set_task_completed", {"task_id": keep["id"], "completed": True}),
+                ),
+                {"role": "assistant", "content": "Next turn answer."},
+            ]
+        )
+        runtime = self.runtime(model)
+        pending = runtime.run_turn("Please create a task and delete task 1.")
+        result = runtime.resolve_confirmation(pending.pending_confirmation["confirmation_id"], False)
+
+        self.assertEqual(
+            result.response,
+            f"Cancelled: Delete task {keep['id']}. It was not run. 2 other requested actions were not run either.",
+        )
+        self.assertEqual(model.call_count, 1)
+        tasks = storage.list_tasks(self.database_path)
+        self.assertEqual([(t["title"], t["completed"]) for t in tasks], [("Keep me", False)])
+        self.assertEqual(
+            [(a["tool"], a["status"]) for a in result.activities],
+            [("delete_task", "cancelled"), ("create_task", "skipped"), ("set_task_completed", "skipped")],
+        )
+        self.assert_every_tool_call_has_a_result(runtime.history)
+        self.assertEqual(runtime.history[-1], {"role": "assistant", "content": result.response})
+
+        follow_up = runtime.run_turn("What now?")
+        self.assertEqual(follow_up.response, "Next turn answer.")
+
+    def test_cancel_after_an_earlier_action_ran_says_so(self):
+        target = storage.create_task("Old task", database_path=self.database_path)
+        model = Mock(
+            side_effect=[
+                self.multi_call(
+                    ("create_task", {"title": "New task"}),
+                    ("delete_task", {"task_id": target["id"]}),
+                ),
+            ]
+        )
+        runtime = self.runtime(model)
+        pending = runtime.run_turn("Please create a task called New task and delete the old one.")
+        self.assertEqual(len(storage.list_tasks(self.database_path)), 2)
+        result = runtime.resolve_confirmation(pending.pending_confirmation["confirmation_id"], False)
+        self.assertEqual(
+            result.response,
+            f"Cancelled: Delete task {target['id']}. It was not run. "
+            "Actions that already completed in this request are listed in the activity above.",
+        )
+        self.assertEqual(sorted(t["title"] for t in storage.list_tasks(self.database_path)), ["New task", "Old task"])
+        self.assertEqual([a["status"] for a in result.activities], ["success", "cancelled"])
+        self.assert_every_tool_call_has_a_result(runtime.history)
+
+    def test_terminal_decline_skips_queued_actions(self):
+        keep = storage.create_task("Keep me", database_path=self.database_path)
+        model = Mock(
+            side_effect=[
+                self.multi_call(
+                    ("delete_task", {"task_id": keep["id"]}),
+                    ("create_task", {"title": "Queued write"}),
+                ),
+            ]
+        )
+        runtime = self.runtime(model)
+        prompts = []
+        result = runtime.run_turn(
+            "Please create a task and delete task 1.",
+            confirm_callback=lambda summary: prompts.append(summary) or False,
+        )
+        self.assertEqual(prompts, [f"Delete task {keep['id']}"])
+        self.assertEqual(
+            result.response,
+            f"Cancelled: Delete task {keep['id']}. It was not run. 1 other requested action was not run either.",
+        )
+        self.assertEqual([t["title"] for t in storage.list_tasks(self.database_path)], ["Keep me"])
+        self.assertEqual(model.call_count, 1)
+        self.assert_every_tool_call_has_a_result(runtime.history)
+
+    def test_hidden_thinking_is_not_stored_but_tool_calls_are_kept_exactly(self):
+        call = assistant_tool_call("list_tasks", {})
+        call["thinking"] = "SECRET-REASONING " * 50
+        call["content"] = None
+        model = Mock(side_effect=[call, {"role": "assistant", "content": "None yet.", "thinking": "more"}])
+        runtime = self.runtime(model)
+        runtime.run_turn("What tasks do I have?")
+
+        stored_call = runtime.history[1]
+        self.assertEqual(stored_call, {"role": "assistant", "content": "", "tool_calls": call["tool_calls"]})
+        self.assertNotIn("SECRET-REASONING", json.dumps(runtime.history))
+        second_request = model.call_args_list[1].args[2]
+        self.assertNotIn("SECRET-REASONING", json.dumps(second_request))
+        self.assertEqual(runtime.history[-1], {"role": "assistant", "content": "None yet."})
+
+    def test_history_is_trimmed_by_whole_turns_and_keeps_the_newest(self):
+        big_result = "x" * 900
+
+        def model(endpoint, model_name, messages, tools):
+            last = messages[-1]
+            if last["role"] == "user":
+                return assistant_tool_call("get_system_info", {}, call_id=f"call-{len(messages)}")
+            return {"role": "assistant", "content": f"Answer {len(messages)} " + big_result}
+
+        runtime = self.runtime(model)
+        with unittest.mock.patch.object(assistant_runtime, "MAX_HISTORY_CHARS", 6000), unittest.mock.patch.object(
+            assistant_runtime, "HISTORY_TRIM_TARGET_CHARS", 3600
+        ):
+            for index in range(12):
+                runtime.run_turn(f"Question {index}")
+                history = runtime.history
+                size = sum(len(json.dumps(m, ensure_ascii=False)) for m in history)
+                # Trimming happens before each new turn, so at most one turn exceeds the bound.
+                self.assertEqual(history[0]["role"], "user")
+                self.assert_every_tool_call_has_a_result(history)
+                for position, message in enumerate(history):
+                    if message["role"] == "tool":
+                        self.assertIn(history[position - 1]["role"], ("assistant", "tool"))
+                self.assertEqual(history[-4]["content"], f"Question {index}")
+                self.assertLess(size, 6000 + 4000)
+            kept_questions = [m["content"] for m in runtime.history if m["role"] == "user"]
+            self.assertLess(len(kept_questions), 12)
+            self.assertEqual(kept_questions[-1], "Question 11")
+            self.assertEqual(kept_questions, [f"Question {i}" for i in range(12 - len(kept_questions), 12)])
+
+    def test_a_single_oversized_turn_is_never_split_or_dropped(self):
+        runtime = self.runtime(Mock(return_value={"role": "assistant", "content": "ok"}))
+        huge = "y" * 5000
+        runtime.history.extend(
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "a", "function": {"name": "list_tasks", "arguments": {}}}]},
+                {"role": "tool", "tool_name": "list_tasks", "content": huge},
+                {"role": "assistant", "content": huge},
+            ]
+        )
+        with unittest.mock.patch.object(assistant_runtime, "MAX_HISTORY_CHARS", 1000), unittest.mock.patch.object(
+            assistant_runtime, "HISTORY_TRIM_TARGET_CHARS", 600
+        ):
+            runtime.run_turn("second")
+            # The only earlier turn is the newest completed one at trim time: it is kept whole.
+            self.assertEqual([m["content"] for m in runtime.history if m["role"] == "user"], ["first", "second"])
+            self.assert_every_tool_call_has_a_result(runtime.history)
+            runtime.run_turn("third")
+            # Now "first" is older than the newest completed turn and is dropped whole.
+            self.assertEqual([m["content"] for m in runtime.history if m["role"] == "user"], ["second", "third"])
+            self.assertNotIn(huge, json.dumps(runtime.history))
+
+    def test_new_message_cancels_pending_action_and_queued_calls(self):
+        keep = storage.create_task("Keep me", database_path=self.database_path)
+        model = Mock(
+            side_effect=[
+                self.multi_call(
+                    ("delete_task", {"task_id": keep["id"]}),
+                    ("create_task", {"title": "Queued write"}),
+                ),
+                {"role": "assistant", "content": "Here is the March invoice instead."},
+            ]
+        )
+        runtime = self.runtime(model)
+        pending = runtime.run_turn("Please create a task and delete task 1.")
+        token = pending.pending_confirmation["confirmation_id"]
+
+        result = runtime.run_turn("No, never mind that. Show me the March invoice.")
+
+        self.assertEqual(
+            result.notice,
+            f"Cancelled: Delete task {keep['id']}. It was not run because you sent a new message. "
+            "1 other requested action was not run either.",
+        )
+        self.assertEqual(result.response, "Here is the March invoice instead.")
+        self.assertEqual(
+            [(a["tool"], a["status"]) for a in result.activities],
+            [("delete_task", "cancelled"), ("create_task", "skipped")],
+        )
+        self.assertEqual([t["title"] for t in storage.list_tasks(self.database_path)], ["Keep me"])
+        self.assertFalse(runtime.has_pending_confirmation)
+        with self.assertRaises(RuntimeBusyError):
+            runtime.resolve_confirmation(token, True)
+        self.assertEqual([t["title"] for t in storage.list_tasks(self.database_path)], ["Keep me"])
+        self.assert_every_tool_call_has_a_result(runtime.history)
+        roles = [m["role"] for m in runtime.history]
+        self.assertEqual(roles, ["user", "assistant", "tool", "tool", "assistant", "user", "assistant"])
+        self.assertEqual(runtime.history[4]["content"], result.notice)
+        # The new turn's model request sees the cancellation, then the new message.
+        new_request = [m for m in model.call_args_list[1].args[2] if m["role"] != "system"]
+        self.assertEqual(new_request[-2:], runtime.history[4:6])
+
+    def test_cancellation_stands_even_if_the_new_turn_fails(self):
+        keep = storage.create_task("Keep me", database_path=self.database_path)
+        model = Mock(
+            side_effect=[
+                assistant_tool_call("delete_task", {"task_id": keep["id"]}),
+                OSError("Ollama went away"),
+                {"role": "assistant", "content": "Back."},
+            ]
+        )
+        runtime = self.runtime(model)
+        token = runtime.run_turn("Delete task 1.").pending_confirmation["confirmation_id"]
+        with self.assertRaises(OSError):
+            runtime.run_turn("Actually, what time is it?")
+        self.assertFalse(runtime.has_pending_confirmation)
+        with self.assertRaises(RuntimeBusyError):
+            runtime.resolve_confirmation(token, True)
+        self.assertEqual(len(storage.list_tasks(self.database_path)), 1)
+        self.assertEqual(runtime.history[-1]["content"].split(".")[0], f"Cancelled: Delete task {keep['id']}")
+        self.assertEqual(runtime.run_turn("Hello?").response, "Back.")
+        self.assert_every_tool_call_has_a_result(runtime.history)
 
     def test_delete_executes_once_only_after_approval(self):
         task = storage.create_task("Remove me", database_path=self.database_path)
@@ -563,9 +786,60 @@ class AssistantRuntimeTests(unittest.TestCase):
         )
 
         sent_messages = model.call_args.args[2]
-        self.assertEqual(sent_messages[2]["content"], private_text)
+        self.assertIn({"role": "system", "content": private_text}, sent_messages)
+        # Document context sits just before the current user message, after earlier turns.
+        self.assertEqual(sent_messages[-2]["content"], private_text)
+        self.assertEqual(sent_messages[-1], {"role": "user", "content": "What is the warranty?"})
         self.assertNotIn(private_text, json.dumps(runtime.history))
         self.assertEqual(result.response, "Found the warranty.")
+
+    def test_prompt_prefix_is_stable_across_turns_for_prompt_caching(self):
+        from datetime import datetime, timedelta, timezone
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        times = iter([datetime(2026, 10, 15, 9, minute, tzinfo=ist) for minute in (1, 1, 2, 7, 7)])
+        model = Mock(
+            side_effect=[
+                assistant_tool_call("list_tasks", {}),
+                {"role": "assistant", "content": "You have no tasks."},
+                {"role": "assistant", "content": "Second answer."},
+                assistant_tool_call("list_tasks", {}, call_id="call-2"),
+                {"role": "assistant", "content": "Third answer."},
+            ]
+        )
+        runtime = AssistantRuntime(
+            "http://local", "test-model", database_path=self.database_path,
+            model_client=model, clock=lambda: next(times),
+        )
+        runtime.run_turn("What tasks do I have?")
+        runtime.run_turn("Thanks", additional_context=[{"role": "system", "content": "DOC-A excerpt"}])
+        runtime.run_turn("Check again", additional_context=[{"role": "system", "content": "DOC-B excerpt"}])
+
+        calls = [call.args[2] for call in model.call_args_list]
+        # Every request starts with the same fixed prefix.
+        for messages in calls:
+            self.assertEqual(messages[1], {"role": "system", "content": assistant_runtime.SYSTEM_RULES})
+            self.assertNotIn("Current local date", messages[1]["content"])
+        # Each turn's request begins with the previous turn's full request prefix (minus
+        # the per-request context), so the cached earlier turns are reused unchanged.
+        first_turn_history = runtime.history[:4]
+        self.assertEqual(calls[2][2:6], first_turn_history)
+        self.assertEqual(calls[3][2:6], first_turn_history)
+        self.assertEqual(calls[3][:8], calls[4][:8])
+        for messages, minute, document in (
+            (calls[0], "09:01", None), (calls[2], "09:02", "DOC-A excerpt"), (calls[3], "09:07", "DOC-B excerpt"),
+        ):
+            context = [m["content"] for m in messages if m["role"] == "system" and "Current local date" in m["content"]]
+            self.assertEqual(len(context), 1)
+            self.assertIn(minute, context[0])
+            user_index = max(i for i, m in enumerate(messages) if m["role"] == "user")
+            volatile = [m["content"] for m in messages[user_index - 2 : user_index]]
+            self.assertIn(context[0], volatile)
+            if document:
+                self.assertEqual(messages[user_index - 1]["content"], document)
+        stored = json.dumps(runtime.history)
+        for volatile_text in ("Current local date", "DOC-A", "DOC-B"):
+            self.assertNotIn(volatile_text, stored)
 
     def test_post_execution_model_failure_does_not_report_or_repeat_success(self):
         model = Mock(side_effect=[assistant_tool_call("create_task", {"title": "One-time task"}), OSError("local connection failed")])
@@ -610,13 +884,125 @@ class RuntimeWebApiTests(unittest.TestCase):
                 json={"conversation_id": conversation_id, "confirmation_id": pending["confirmation_id"], "approved": False},
             )
             self.assertEqual(canceled.status_code, 200)
-            self.assertEqual(canceled.get_json()["response"], "Deletion was cancelled.")
+            self.assertEqual(canceled.get_json()["response"], f"Cancelled: Delete task {task['id']}. It was not run.")
+            self.assertEqual(model.call_count, 1)
             duplicate = self.client.post(
                 "/api/confirm",
                 json={"conversation_id": conversation_id, "confirmation_id": pending["confirmation_id"], "approved": True},
             )
 
         self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(len(storage.list_tasks(self.database_path)), 1)
+
+    def start_pending_delete(self, model):
+        task = storage.create_task("Keep this", database_path=self.database_path)
+        conversation_id = self.client.post("/api/conversations", json={}).get_json()["conversation_id"]
+        chat = self.client.post("/api/chat", json={"conversation_id": conversation_id, "message": "Delete task 1."})
+        return task, conversation_id, chat.get_json()["pending_confirmation"]["confirmation_id"]
+
+    def test_web_new_message_cancels_pending_and_invalidates_its_id(self):
+        model = Mock(
+            side_effect=[
+                assistant_tool_call("delete_task", {"task_id": 1}),
+                {"role": "assistant", "content": "Sure, here is something else."},
+            ]
+        )
+        with unittest.mock.patch.object(assistant_runtime, "ask_ollama", model):
+            task, conversation_id, token = self.start_pending_delete(model)
+            response = self.client.post(
+                "/api/chat", json={"conversation_id": conversation_id, "message": "Do something else"}
+            )
+            stale = self.client.post(
+                "/api/confirm",
+                json={"conversation_id": conversation_id, "confirmation_id": token, "approved": True},
+            )
+            activity = self.client.get(f"/api/conversations/{conversation_id}/activity").get_json()
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["notice"], f"Cancelled: Delete task {task['id']}. It was not run because you sent a new message.")
+        self.assertEqual(body["response"], "Sure, here is something else.")
+        self.assertIsNone(body["pending_confirmation"])
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(activity["activity"]["status"], "idle")
+        self.assertEqual(len(storage.list_tasks(self.database_path)), 1)
+
+    def test_web_confirm_in_progress_wins_over_a_new_message(self):
+        started, release = threading.Event(), threading.Event()
+        real_delete = tool_registry.delete_task
+
+        def slow_delete(*args, **kwargs):
+            started.set()
+            release.wait(5)
+            return real_delete(*args, **kwargs)
+
+        model = Mock(
+            side_effect=[
+                assistant_tool_call("delete_task", {"task_id": 1}),
+                {"role": "assistant", "content": "Deleted."},
+                {"role": "assistant", "content": "Next."},
+            ]
+        )
+        results = {}
+        with unittest.mock.patch.object(assistant_runtime, "ask_ollama", model), unittest.mock.patch.object(
+            tool_registry, "delete_task", side_effect=slow_delete
+        ) as delete:
+            task, conversation_id, token = self.start_pending_delete(model)
+            confirm = threading.Thread(
+                target=lambda: results.setdefault("confirm", self.client.post(
+                    "/api/confirm", json={"conversation_id": conversation_id, "confirmation_id": token, "approved": True}
+                ))
+            )
+            confirm.start()
+            self.assertTrue(started.wait(5))
+            racing = self.client.post("/api/chat", json={"conversation_id": conversation_id, "message": "Cancel!"})
+            release.set()
+            confirm.join(5)
+            after = self.client.post("/api/chat", json={"conversation_id": conversation_id, "message": "Next?"})
+        self.assertEqual(racing.status_code, 409)
+        self.assertEqual(results["confirm"].status_code, 200)
+        self.assertEqual(delete.call_count, 1)
+        self.assertEqual(storage.list_tasks(self.database_path), [])
+        self.assertEqual(after.status_code, 200)
+        self.assertIsNone(after.get_json()["notice"])
+
+    def test_web_new_message_in_progress_wins_over_a_stale_confirm(self):
+        started, release = threading.Event(), threading.Event()
+        responses = iter([assistant_tool_call("delete_task", {"task_id": 1})])
+
+        def model(*args):
+            try:
+                return next(responses)
+            except StopIteration:
+                started.set()
+                release.wait(5)
+                return {"role": "assistant", "content": "Answered the new message."}
+
+        results = {}
+        with unittest.mock.patch.object(assistant_runtime, "ask_ollama", side_effect=model):
+            task, conversation_id, token = self.start_pending_delete(model)
+            chat = threading.Thread(
+                target=lambda: results.setdefault("chat", self.client.post(
+                    "/api/chat", json={"conversation_id": conversation_id, "message": "Something else"}
+                ))
+            )
+            chat.start()
+            self.assertTrue(started.wait(5))
+            racing_confirm = self.client.post(
+                "/api/confirm", json={"conversation_id": conversation_id, "confirmation_id": token, "approved": True}
+            )
+            second_message = self.client.post(
+                "/api/chat", json={"conversation_id": conversation_id, "message": "And another"}
+            )
+            release.set()
+            chat.join(5)
+            late_confirm = self.client.post(
+                "/api/confirm", json={"conversation_id": conversation_id, "confirmation_id": token, "approved": True}
+            )
+        self.assertEqual(racing_confirm.status_code, 409)
+        self.assertEqual(second_message.status_code, 409)
+        self.assertEqual(results["chat"].status_code, 200)
+        self.assertIn("because you sent a new message", results["chat"].get_json()["notice"])
+        self.assertEqual(late_confirm.status_code, 409)
         self.assertEqual(len(storage.list_tasks(self.database_path)), 1)
 
     def test_web_activity_is_visible_during_model_request(self):
