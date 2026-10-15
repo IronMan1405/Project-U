@@ -1,16 +1,19 @@
 import json
 import logging
 import sqlite3
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
-from config import load_settings, load_utility_settings
+import voice
+from config import load_settings, load_utility_settings, load_voice_settings
 from computer_utilities import UtilitySettings
+from voice import VoiceError, VoiceSettings, VoiceTimeout, VoiceUnavailable
 from documents import (
     MAX_ACTIVE_DOCUMENTS,
     MAX_UPLOAD_BYTES,
@@ -41,6 +44,7 @@ from storage import (
 def create_app(
     database_path: str | Path | None = None,
     utility_settings: UtilitySettings | None = None,
+    voice_settings: VoiceSettings | None = None,
 ) -> Flask:
     app = Flask(__name__)
     conversations: dict[str, AssistantRuntime] = {}
@@ -57,6 +61,11 @@ def create_app(
         config_error = str(error)
     if utility_settings is None:
         utility_settings = load_utility_settings()
+    if voice_settings is None:
+        voice_settings = load_voice_settings()
+    # One transcription and one synthesis at a time keep local CPU/GPU use bounded.
+    transcription_slot = threading.Semaphore(1)
+    speech_slot = threading.Semaphore(1)
 
     try:
         initialize_database(app.config["DATABASE_PATH"])
@@ -212,6 +221,70 @@ def create_app(
                     "tool": None,
                     "summary": "",
                 }
+
+    def voice_error_response(error: VoiceError):
+        if isinstance(error, VoiceUnavailable):
+            return jsonify(error=str(error)), 503
+        if isinstance(error, VoiceTimeout):
+            return jsonify(error=str(error)), 504
+        return jsonify(error=str(error)), 422
+
+    @app.get("/api/voice/status")
+    def voice_status():
+        return jsonify(
+            speech_input=voice_settings.stt_available,
+            speech_output=voice_settings.tts_available,
+            max_seconds=voice_settings.max_seconds,
+        )
+
+    @app.post("/api/voice/transcribe")
+    def voice_transcribe():
+        # Returns text only; the browser shows it for review and the user sends it
+        # through /api/chat, so tool intent checks and confirmations are unchanged.
+        if not voice_settings.stt_available:
+            return jsonify(error="Local speech recognition is not configured."), 503
+        recording = request.files.get("audio")
+        if recording is None:
+            return jsonify(error="Send the recording as the audio field."), 400
+        try:
+            audio = recording.stream.read(voice.MAX_AUDIO_BYTES + 1)
+        except OSError:
+            return jsonify(error="The recording could not be read."), 400
+        finally:
+            recording.close()
+        if len(audio) > voice.MAX_AUDIO_BYTES:
+            return jsonify(error="The recording is too large; keep it under a minute."), 413
+        if not transcription_slot.acquire(blocking=False):
+            return jsonify(error="Another recording is being transcribed. Try again shortly."), 429
+        try:
+            text = voice.transcribe(voice_settings, audio, recording.content_type or "")
+        except VoiceError as error:
+            return voice_error_response(error)
+        finally:
+            transcription_slot.release()
+        return jsonify(text=text)
+
+    @app.post("/api/voice/speak")
+    def voice_speak():
+        if not voice_settings.tts_available:
+            return jsonify(error="Local speech output is not available."), 503
+        data = request.get_json(silent=True)
+        text = data.get("text") if isinstance(data, dict) else None
+        if not isinstance(text, str) or not text.strip() or len(text) > 20000:
+            return jsonify(error="Send text of 1 to 20,000 characters to speak."), 400
+        if not speech_slot.acquire(blocking=False):
+            return jsonify(error="Speech output is busy. Try again shortly."), 429
+        try:
+            audio, truncated = voice.synthesize(voice_settings, text)
+        except VoiceError as error:
+            return voice_error_response(error)
+        finally:
+            speech_slot.release()
+        return Response(
+            audio,
+            mimetype="audio/wav",
+            headers={"Cache-Control": "no-store", "X-Speech-Truncated": "1" if truncated else "0"},
+        )
 
     @app.post("/api/documents")
     def document_upload():

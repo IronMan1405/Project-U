@@ -5,6 +5,10 @@ const newChatButton = document.querySelector("#new-chat");
 const messagesElement = document.querySelector("#messages");
 const emptyState = document.querySelector("#empty-state");
 const requestState = document.querySelector("#request-state");
+const micButton = document.querySelector("#mic-button");
+const voiceStateElement = document.querySelector("#voice-state");
+const speakToggle = document.querySelector("#speak-replies");
+const speakToggleLabel = document.querySelector("#speak-toggle-label");
 const errorMessage = document.querySelector("#error-message");
 const healthDot = document.querySelector("#health-dot");
 const healthLabel = document.querySelector("#health-label");
@@ -64,6 +68,15 @@ let selectedDocumentDetail = "";
 let pendingConfirmationId = null;
 let confirmationResolving = false;
 let activityPollTimer = null;
+let voiceStatus = { speech_input: false, speech_output: false, max_seconds: 60 };
+let recorder = null;
+let recordingStream = null;
+let recordingChunks = [];
+let recordingTimer = null;
+let micHeld = false;
+let transcribing = false;
+let replyAudio = null;
+let replyRequest = 0;
 
 function showError(message) {
   errorMessage.textContent = message;
@@ -95,6 +108,7 @@ function appendMessage(role, content) {
   messagesElement.append(message);
   emptyState.hidden = true;
   message.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  return text;
 }
 
 function appendAssistantMarkdown(target, content) {
@@ -118,8 +132,10 @@ function appendAssistantMarkdown(target, content) {
 
 function setBusy(busy) {
   isSending = busy;
-  const controlsBusy = busy || documentUploadPending || confirmationResolving || pendingConfirmationId !== null;
+  const controlsBusy =
+    busy || documentUploadPending || confirmationResolving || pendingConfirmationId !== null || transcribing;
   sendButton.disabled = controlsBusy;
+  micButton.disabled = controlsBusy && recorder === null;
   newChatButton.disabled = controlsBusy;
   input.disabled = controlsBusy;
   documentFileInput.disabled = controlsBusy;
@@ -356,8 +372,184 @@ function acceptTurnResult(result) {
   }
   pendingConfirmationId = null;
   confirmationPanel.hidden = true;
-  if (result.response) appendMessage("assistant", result.response);
+  if (result.response) {
+    const content = appendMessage("assistant", result.response);
+    if (speakToggle.checked) speakReply(content.textContent);
+  }
 }
+
+// --- Voice: push-to-talk transcription for review, optional spoken replies -----------
+
+function setVoiceState(message = "") {
+  voiceStateElement.textContent = message;
+}
+
+async function loadVoiceStatus() {
+  try {
+    voiceStatus = await apiRequest("/api/voice/status");
+  } catch {
+    voiceStatus = { speech_input: false, speech_output: false, max_seconds: 60 };
+  }
+  const canRecord = Boolean(navigator.mediaDevices?.getUserMedia) && typeof MediaRecorder !== "undefined";
+  micButton.hidden = !(voiceStatus.speech_input && canRecord);
+  speakToggleLabel.hidden = !voiceStatus.speech_output;
+}
+
+function preferredRecordingType() {
+  const candidates = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function releaseMicrophone() {
+  recordingStream?.getTracks().forEach((track) => track.stop());
+  recordingStream = null;
+}
+
+async function startRecording() {
+  if (recorder || transcribing || micButton.disabled) return;
+  clearError();
+  stopReplyAudio();
+  try {
+    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    setVoiceState("");
+    showError("Microphone access was denied or is unavailable.");
+    return;
+  }
+  if (!micHeld) {
+    releaseMicrophone();
+    return;
+  }
+  const mimeType = preferredRecordingType();
+  try {
+    recorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+  } catch {
+    releaseMicrophone();
+    showError("This browser cannot record audio in a supported format.");
+    return;
+  }
+  recordingChunks = [];
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data.size > 0) recordingChunks.push(event.data);
+  });
+  recorder.addEventListener("stop", finishRecording, { once: true });
+  recorder.start();
+  micButton.classList.add("recording");
+  micButton.setAttribute("aria-pressed", "true");
+  setVoiceState(`Listening… release to stop (up to ${voiceStatus.max_seconds}s)`);
+  recordingTimer = window.setTimeout(stopRecording, voiceStatus.max_seconds * 1000);
+}
+
+function stopRecording() {
+  micHeld = false;
+  window.clearTimeout(recordingTimer);
+  if (recorder && recorder.state !== "inactive") recorder.stop();
+}
+
+async function finishRecording() {
+  const type = recorder?.mimeType || recordingChunks[0]?.type || "";
+  const recording = new Blob(recordingChunks, { type });
+  recorder = null;
+  recordingChunks = [];
+  releaseMicrophone();
+  micButton.classList.remove("recording");
+  micButton.setAttribute("aria-pressed", "false");
+  if (recording.size === 0) {
+    setVoiceState("");
+    showError("Nothing was recorded. Hold the button while you speak.");
+    setBusy(isSending);
+    return;
+  }
+
+  transcribing = true;
+  setBusy(isSending);
+  setVoiceState("Transcribing locally…");
+  try {
+    const formData = new FormData();
+    formData.append("audio", recording, "recording");
+    const result = await apiRequest("/api/voice/transcribe", { method: "POST", body: formData });
+    const existing = input.value.trim();
+    input.value = existing ? `${existing} ${result.text}` : result.text;
+    input.dispatchEvent(new Event("input"));
+    setVoiceState("Review the transcript, then press Enter to send.");
+  } catch (error) {
+    setVoiceState("");
+    showError(error.message || "The recording could not be transcribed.");
+  } finally {
+    transcribing = false;
+    setBusy(isSending);
+    input.focus();
+  }
+}
+
+function stopReplyAudio() {
+  replyRequest += 1;
+  if (replyAudio) {
+    replyAudio.pause();
+    URL.revokeObjectURL(replyAudio.src);
+    replyAudio = null;
+  }
+}
+
+async function speakReply(text) {
+  stopReplyAudio();
+  const request = replyRequest;
+  try {
+    const response = await fetch("/api/voice/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => null);
+      throw new Error(result?.error || "Local speech output failed.");
+    }
+    const audio = await response.blob();
+    if (request !== replyRequest || !speakToggle.checked) return;
+    replyAudio = new Audio(URL.createObjectURL(audio));
+    replyAudio.addEventListener("ended", stopReplyAudio, { once: true });
+    if (response.headers.get("X-Speech-Truncated") === "1") {
+      setVoiceState("Speaking the beginning of a long reply.");
+    }
+    await replyAudio.play();
+  } catch (error) {
+    if (request === replyRequest) {
+      stopReplyAudio();
+      setVoiceState(`Spoken reply unavailable: ${error.message}`);
+    }
+  }
+}
+
+micButton.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  try {
+    micButton.setPointerCapture(event.pointerId);
+  } catch {
+    // Without capture, releasing over the button still stops recording.
+  }
+  micHeld = true;
+  startRecording();
+});
+for (const eventName of ["pointerup", "pointercancel"]) {
+  micButton.addEventListener(eventName, stopRecording);
+}
+micButton.addEventListener("keydown", (event) => {
+  if ((event.key === " " || event.key === "Enter") && !event.repeat) {
+    event.preventDefault();
+    micHeld = true;
+    startRecording();
+  }
+});
+micButton.addEventListener("keyup", (event) => {
+  if (event.key === " " || event.key === "Enter") stopRecording();
+});
+speakToggle.addEventListener("change", () => {
+  if (!speakToggle.checked) {
+    stopReplyAudio();
+    setVoiceState("");
+  }
+});
 
 async function resolvePendingAction(approved) {
   if (!conversationId || !pendingConfirmationId || confirmationResolving) return;
@@ -782,6 +974,7 @@ form.addEventListener("submit", async (event) => {
   }
 
   clearError();
+  setVoiceState();
   appendMessage("user", message);
   input.value = "";
   input.style.height = "auto";
@@ -824,6 +1017,7 @@ input.addEventListener("input", () => {
 
 newChatButton.addEventListener("click", async () => {
   if (isSending || documentUploadPending) return;
+  stopReplyAudio();
   newChatButton.disabled = true;
   clearError();
   try {
@@ -836,5 +1030,6 @@ newChatButton.addEventListener("click", async () => {
 });
 
 refreshHealth();
+loadVoiceStatus();
 window.setInterval(refreshHealth, 10000);
 startConversation().catch((error) => showError(error.message));
