@@ -33,7 +33,7 @@ Communicates with the local Ollama API. Keeps model configuration separate from 
 Loads the user-editable `profile.json` before each model request and provides its validated preferences as separate system context alongside the in-memory conversation. The web client can also attach one explicitly uploaded `.txt` or `.pdf` to a conversation. `documents.py` validates and extracts uploads locally in memory; question-relevant page/paragraph excerpts are passed as separate untrusted document context through the shared Ollama request path, capped at 12,000 characters. Replacing the selected document resets that conversation's history. Profile values are user data, not instructions or authorization. Missing or invalid profiles use generic defaults.
 
 ### Memory
-`storage.py` owns the SQLite schema and parameterized CRUD operations for tasks and notes. The default database is `data/project_u.sqlite3`, created automatically and kept local. Flask exposes explicit task and note APIs used by the web interface; chat does not create or modify these records.
+`storage.py` owns the SQLite schema and parameterized CRUD operations for tasks and notes. Tasks have an optional `due_at` (`YYYY-MM-DD` or a UTC `YYYY-MM-DD HH:MM:SSZ` timestamp), validated by `storage.validate_due_at` and shared by the API, tool schemas, and UI; older databases gain the column on startup. `update_task` changes only the fields it is given, so completing a task never alters its due date. The default database is `data/project_u.sqlite3`, created automatically and kept local. Flask exposes explicit task and note APIs used by the web interface; chat changes these records only through the registered tools in `tool_registry.py`.
 
 ### Tools
 Provides narrowly scoped functions for approved operations, such as managing tasks, reading selected files, and opening applications.
@@ -51,7 +51,7 @@ Provides a single, consistent interface for interacting with U.
 - Never store API keys, passwords, or secrets in source control.
 - Do not send personal files to external services without explicit user approval.
 - Keep the local SQLite database out of version control.
-- Task and note changes require explicit UI/API requests; the LLM cannot create or modify them.
+- Task and note changes come from explicit UI/API requests or validated tool calls; model-requested writes run directly only for clear user requests and otherwise require confirmation.
 - Uploaded documents are processed locally; request parsing may temporarily spool upload data, but no file is retained after the request. Extracted text is conversation-scoped memory only and is never added to profile or SQLite storage.
 - Limit document uploads and extracted context; scanned PDFs are not OCR'd and large documents may be represented only by selected excerpts.
 - Uploaded documents are processed locally, held only in memory, and never added to profile or SQLite storage.

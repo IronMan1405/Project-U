@@ -30,8 +30,9 @@ from storage import (
     initialize_database,
     list_notes,
     list_tasks,
-    set_task_completed,
     update_note,
+    update_task,
+    validate_due_at,
 )
 
 
@@ -304,9 +305,13 @@ def create_app(database_path: str | Path | None = None) -> Flask:
             return jsonify(error="Title must be between 1 and 200 characters."), 400
         if not isinstance(description, str) or len(description) > 5000:
             return jsonify(error="Description must be 5,000 characters or fewer."), 400
-        if due_at is not None and not isinstance(due_at, str):
-            return jsonify(error="due_at must be a string."), 400
-        task = create_task(title.strip(), description, due_at, app.config["DATABASE_PATH"])
+        try:
+            due_at = validate_due_at(due_at)
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
+        task = create_task(
+            title.strip(), description, app.config["DATABASE_PATH"], due_at=due_at
+        )
         return jsonify(task=task), 201
 
     @app.patch("/api/tasks/<int:task_id>")
@@ -315,11 +320,19 @@ def create_app(database_path: str | Path | None = None) -> Flask:
         if unavailable:
             return unavailable
         data = request.get_json(silent=True)
-        if not isinstance(data, dict) or not isinstance(data.get("completed"), bool):
-            return jsonify(error="completed must be a boolean."), 400
-        task = set_task_completed(
-            task_id, data["completed"], data.get("due_at"), app.config["DATABASE_PATH"]
-        )
+        if not isinstance(data, dict) or not ({"completed", "due_at"} & data.keys()):
+            return jsonify(error="Send completed and/or due_at to update a task."), 400
+        changes = {}
+        if "completed" in data:
+            if not isinstance(data["completed"], bool):
+                return jsonify(error="completed must be a boolean."), 400
+            changes["completed"] = data["completed"]
+        if "due_at" in data:
+            try:
+                changes["due_at"] = validate_due_at(data["due_at"])
+            except ValueError as error:
+                return jsonify(error=str(error)), 400
+        task = update_task(task_id, app.config["DATABASE_PATH"], **changes)
         return jsonify(task=task)
 
     @app.delete("/api/tasks/<int:task_id>")

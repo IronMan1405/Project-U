@@ -101,6 +101,12 @@
           <label class="visually-hidden" for="task-description">Task description (optional)</label>
           <textarea id="task-description" name="description" rows="2" maxlength="5000"
             placeholder="Description (optional)"></textarea>
+          <div class="due-fields">
+            <label for="task-due-date">Due</label>
+            <input id="task-due-date" name="due_date" type="date">
+            <label class="visually-hidden" for="task-due-time">Due time (optional)</label>
+            <input id="task-due-time" name="due_time" type="time">
+          </div>
           <button class="primary-action" type="submit">Add task</button>
         </form>
         <p class="feature-empty" id="tasks-empty" hidden>No tasks yet. Add one above.</p>
