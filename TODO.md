@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** v1.1 conversational intelligence (after the v1.0 release). P1–P5 are implemented and tested; review and commit remain.
+**Current milestone:** v1.2 natural voice interaction. The must-have items are implemented and tested; a real-voice check of the silence threshold, review, and commit remain.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -98,6 +98,19 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Update README and ARCHITECTURE for the v1.1 behaviour
 - [ ] Review the v1.1 diff and commit
 - P6 (limit stored web conversations) is not planned for v1.1.
+
+### 7. v1.2 Natural Voice Interaction
+- [x] Read-only voice audit with local latency measurements
+- [x] Refuse cross-site state-changing requests (Origin check), with tests
+- [x] Deterministic `reply_kind` classifier for short yes/no replies, and a speech-output concurrency test
+- [x] Voice-safe confirmations: spoken prompt; a spoken "yes" is not sent; a spoken "no" acts as Cancel
+- [x] Opt-in Hands-free mode (off by default): auto-send transcripts, speak replies and errors
+- [x] Loudness check before whisper.cpp so silent recordings report "No speech was detected"
+- [x] Automated tests, `VOICE_SMOKE=1`, and live browser regression with real Gemma
+- [x] Update README, ARCHITECTURE, and FUTURE for v1.2 voice behaviour
+- [ ] Check the silence threshold with your own quiet speech on a real microphone
+- [ ] Review the v1.2 diff and commit
+- [ ] Separate experiment: `think: false` for faster replies, adopted only if the regression scripts still pass
 
 ## Scope Rules
 - One feature at a time.

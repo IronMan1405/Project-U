@@ -9,6 +9,8 @@ const micButton = document.querySelector("#mic-button");
 const voiceStateElement = document.querySelector("#voice-state");
 const speakToggle = document.querySelector("#speak-replies");
 const speakToggleLabel = document.querySelector("#speak-toggle-label");
+const handsFreeToggle = document.querySelector("#hands-free");
+const handsFreeLabel = document.querySelector("#hands-free-label");
 const errorMessage = document.querySelector("#error-message");
 const healthDot = document.querySelector("#health-dot");
 const healthLabel = document.querySelector("#health-label");
@@ -77,6 +79,10 @@ let micHeld = false;
 let transcribing = false;
 let replyAudio = null;
 let replyRequest = 0;
+// True while the current exchange was started hands-free; its replies, confirmation
+// prompts, and errors are then spoken even if "Speak replies" is off.
+let voiceTurn = false;
+let sendingFromVoice = false;
 
 function showError(message) {
   errorMessage.textContent = message;
@@ -368,19 +374,39 @@ function showPendingConfirmation(pending) {
   confirmationPanel.hidden = false;
 }
 
+function speechWanted() {
+  return voiceStatus.speech_output && (speakToggle.checked || voiceTurn);
+}
+
 function acceptTurnResult(result) {
   renderToolActivities(result.activities);
-  if (result.notice) appendMessage("assistant", result.notice);
+  const spoken = [];
+  if (result.notice) {
+    appendMessage("assistant", result.notice);
+    spoken.push(result.notice);
+  }
   if (result.pending_confirmation) {
     showPendingConfirmation(result.pending_confirmation);
-    return;
+    const voiceHint = voiceStatus.speech_input ? ", or say no to cancel" : "";
+    spoken.push(
+      `Waiting for your confirmation: ${result.pending_confirmation.summary}. ` +
+      `Press Confirm to approve it, or Cancel${voiceHint}.`,
+    );
+  } else {
+    pendingConfirmationId = null;
+    confirmationPanel.hidden = true;
+    if (result.response) {
+      const content = appendMessage("assistant", result.response);
+      spoken.push(content.textContent);
+    }
   }
-  pendingConfirmationId = null;
-  confirmationPanel.hidden = true;
-  if (result.response) {
-    const content = appendMessage("assistant", result.response);
-    if (speakToggle.checked) speakReply(content.textContent);
-  }
+  if (speechWanted() && spoken.length) speakReply(spoken.join(" "));
+}
+
+function reportVoiceError(message) {
+  // Errors are spoken only during a hands-free exchange, never for typed messages.
+  showError(message);
+  if (voiceTurn && voiceStatus.speech_output) speakReply(message);
 }
 
 // --- Voice: push-to-talk transcription for review, optional spoken replies -----------
@@ -398,6 +424,7 @@ async function loadVoiceStatus() {
   const canRecord = Boolean(navigator.mediaDevices?.getUserMedia) && typeof MediaRecorder !== "undefined";
   micButton.hidden = !(voiceStatus.speech_input && canRecord);
   speakToggleLabel.hidden = !voiceStatus.speech_output;
+  handsFreeLabel.hidden = micButton.hidden;
 }
 
 function preferredRecordingType() {
@@ -469,22 +496,53 @@ async function finishRecording() {
   transcribing = true;
   setBusy(isSending);
   setVoiceState("Transcribing locally…");
+  const handsFree = handsFreeToggle.checked;
+  let transcript = null;
   try {
     const formData = new FormData();
     formData.append("audio", recording, "recording");
-    const result = await apiRequest("/api/voice/transcribe", { method: "POST", body: formData });
-    const existing = input.value.trim();
-    input.value = existing ? `${existing} ${result.text}` : result.text;
-    input.dispatchEvent(new Event("input"));
-    setVoiceState("Review the transcript, then press Enter to send.");
+    transcript = await apiRequest("/api/voice/transcribe", { method: "POST", body: formData });
   } catch (error) {
     setVoiceState("");
-    showError(error.message || "The recording could not be transcribed.");
+    voiceTurn = handsFree;
+    reportVoiceError(error.message || "The recording could not be transcribed.");
   } finally {
     transcribing = false;
     setBusy(isSending);
     input.focus();
   }
+  if (transcript) handleTranscript(transcript.text, transcript.reply_kind, handsFree);
+}
+
+function handleTranscript(text, replyKind, handsFree) {
+  if (pendingConfirmationId && replyKind === "affirm") {
+    // Voice never approves an action, and sending "yes" as a message would cancel it.
+    voiceTurn = handsFree;
+    const message = "Voice can't approve actions. Press Confirm to approve it, or say no to cancel.";
+    setVoiceState(message);
+    if (speechWanted()) speakReply(message);
+    return;
+  }
+  if (pendingConfirmationId && replyKind === "decline") {
+    voiceTurn = handsFree;
+    setVoiceState("");
+    resolvePendingAction(false);
+    return;
+  }
+  const existing = input.value.trim();
+  if (handsFree && !existing) {
+    input.value = text;
+    sendingFromVoice = true;
+    form.requestSubmit();
+    return;
+  }
+  input.value = existing ? `${existing} ${text}` : text;
+  input.dispatchEvent(new Event("input"));
+  setVoiceState(
+    handsFree
+      ? "Added to the text you were typing; review it, then press Enter to send."
+      : "Review the transcript, then press Enter to send.",
+  );
 }
 
 function stopReplyAudio() {
@@ -510,7 +568,7 @@ async function speakReply(text) {
       throw new Error(result?.error || "Local speech output failed.");
     }
     const audio = await response.blob();
-    if (request !== replyRequest || !speakToggle.checked) return;
+    if (request !== replyRequest) return;
     replyAudio = new Audio(URL.createObjectURL(audio));
     replyAudio.addEventListener("ended", stopReplyAudio, { once: true });
     if (response.headers.get("X-Speech-Truncated") === "1") {
@@ -555,6 +613,13 @@ speakToggle.addEventListener("change", () => {
     setVoiceState("");
   }
 });
+handsFreeToggle.addEventListener("change", () => {
+  if (!handsFreeToggle.checked) {
+    voiceTurn = false;
+    stopReplyAudio();
+  }
+  setVoiceState(handsFreeToggle.checked ? "Hands-free: hold the mic, speak, and release to send." : "");
+});
 
 async function resolvePendingAction(approved) {
   if (!conversationId || !pendingConfirmationId || confirmationResolving) return;
@@ -575,7 +640,7 @@ async function resolvePendingAction(approved) {
     });
     acceptTurnResult(result);
   } catch (error) {
-    showError(error.message || "The pending action could not be resolved.");
+    reportVoiceError(error.message || "The pending action could not be resolved.");
   } finally {
     confirmationResolving = false;
     confirmActionButton.disabled = false;
@@ -980,6 +1045,8 @@ form.addEventListener("submit", async (event) => {
 
   clearError();
   setVoiceState();
+  voiceTurn = sendingFromVoice;
+  sendingFromVoice = false;
   if (pendingConfirmationId) {
     // The server cancels the pending action before handling this message.
     pendingConfirmationId = null;
@@ -1005,7 +1072,7 @@ form.addEventListener("submit", async (event) => {
       documentDetail.textContent = `${selectedDocumentDetail} · Last answer used ${scope}`;
     }
   } catch (error) {
-    showError(error.message || "Could not reach the local assistant backend.");
+    reportVoiceError(error.message || "Could not reach the local assistant backend.");
   } finally {
     stopActivityPolling();
     setBusy(false);

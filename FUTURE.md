@@ -34,6 +34,15 @@ in `TODO.md`.
   spoken reply is unavailable.
 - Long replies are spoken only up to about 1,500 characters.
 - The terminal client has no voice support.
+- The silence check uses a fixed threshold (`SPEECH_LEVEL_DBFS`, −57 dBFS for at
+  least 0.12 s) chosen from one quiet room; a noisier room or a very quiet voice
+  may need it adjusted. Brief noises can pass it, after which whisper.cpp may
+  still occasionally return a stray word.
+- Short spoken yes/no replies during a confirmation are recognised from a fixed
+  phrase list, so unusual phrasings are treated as ordinary messages (which
+  cancel the waiting action rather than approve it).
+- Speech is not streamed: a spoken reply starts only after the whole reply is
+  ready, and you cannot speak while U is generating a reply.
 
 ### Model behaviour
 - Tool results state exactly what a search covered, but Gemma may still omit

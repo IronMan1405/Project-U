@@ -272,20 +272,55 @@ unchanged either way.
 In Chat, hold the microphone button (or hold Space/Enter on it) while speaking
 and release to stop; recordings are capped at `max_seconds` (60 by default).
 FFmpeg converts the browser recording to 16 kHz mono WAV and whisper.cpp
-transcribes it. The transcript is placed in the message box for you to review
-and edit; nothing is sent until you press Enter, so voice requests use the same
-chat path, tool rules, and Confirm/Cancel buttons as typed ones. Confirmations
-are never accepted by voice.
+transcribes it. Voice requests always go through the same chat path, tool
+rules, and Confirm/Cancel buttons as typed ones.
+
+- **Review mode (default).** The transcript is placed in the message box for you
+  to review and edit; nothing is sent until you press Enter.
+- **Hands-free (opt-in, off by default).** Tick "Hands-free" to send each
+  transcript automatically when you release the button, and to hear the reply,
+  any confirmation prompt, and any error for that exchange spoken aloud, even if
+  "Speak replies" is off. If you had already typed something in the message box,
+  the transcript is added to it for review instead of being sent. The setting is
+  not remembered; reloading the page turns it off.
+
+**Confirmations by voice.** Only the Confirm button approves an action. While an
+action waits for confirmation:
+- saying just "yes", "okay", "go ahead", or a similar short approval does not
+  approve it and is not sent; U asks you to press Confirm instead;
+- saying just "no", "cancel", "never mind", or a similar short refusal acts
+  exactly like the Cancel button, so the action is not run;
+- saying anything longer, such as "no, open the March one instead", is an
+  ordinary new message, which cancels the waiting action (see "Changing your
+  mind") and is then answered.
+
+Only a short reply on its own is treated this way; the classification is a fixed
+list of phrases, not the model's judgement.
+
+**Silent recordings.** whisper.cpp tends to transcribe silence as "you", so
+before running it U measures the converted recording. Unless at least 0.12
+seconds of it reaches −57 dBFS (measured in 30 ms windows), U skips whisper.cpp
+and reports "No speech was detected" in both modes; nothing is sent. The
+threshold was chosen from a quiet room's microphone noise floor (loudest window
+about −59 dBFS) and the quietest speech whisper.cpp still transcribed correctly in
+that room (about −55 dBFS). Brief noises such as typing can still pass the check;
+whisper.cpp then usually returns nothing, which is reported the same way. If your
+quiet speech is rejected, lower `SPEECH_LEVEL_DBFS` in `voice.py`; U logs each
+recording's measured level (numbers only) at INFO level to help with tuning.
 
 "Speak replies" (off by default) reads each final reply aloud with `say`, using
-`say_voice` if set (list voices with `say -v '?'`). Long replies are spoken up
-to about 1,500 characters. Turning the toggle off, recording, or starting a new
-conversation stops playback.
+`say_voice` if set (list voices with `say -v '?'`). When speech is on, the
+confirmation prompt and cancellation messages are spoken too. Long replies are
+spoken up to about 1,500 characters. Turning the toggle off, turning
+Hands-free off, recording, or starting a new conversation stops playback.
 
 Recordings are limited to 3 MiB and WebM, Ogg, or MP4 audio; conversion,
 transcription, and speech each have a timeout, and one transcription runs at a
 time. Audio and text exist only in a private temporary directory during a
-request and are deleted afterwards; they are never logged or stored. To run the
+request and are deleted afterwards; they are never logged or stored (only the
+loudness numbers above are logged). Requests that change anything, including
+uploading a recording, are refused (HTTP 403) when they come from another
+website, so other pages cannot make U transcribe or speak. To run the
 local speech round-trip test (no microphone needed):
 
 ```sh
