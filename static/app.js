@@ -134,10 +134,14 @@ function setBusy(busy) {
   isSending = busy;
   const controlsBusy =
     busy || documentUploadPending || confirmationResolving || pendingConfirmationId !== null || transcribing;
-  sendButton.disabled = controlsBusy;
-  micButton.disabled = controlsBusy && recorder === null;
+  // A pending confirmation does not block typing: sending a new message cancels it.
+  const composerBusy = busy || documentUploadPending || confirmationResolving || transcribing;
+  sendButton.disabled = composerBusy;
+  micButton.disabled = composerBusy && recorder === null;
   newChatButton.disabled = controlsBusy;
-  input.disabled = controlsBusy;
+  input.disabled = composerBusy;
+  confirmActionButton.disabled = busy || confirmationResolving;
+  cancelActionButton.disabled = busy || confirmationResolving;
   documentFileInput.disabled = controlsBusy;
   uploadDocumentButton.disabled = controlsBusy || documentFileInput.files.length === 0;
   clearDocumentButton.disabled = controlsBusy || selectedDocument === null;
@@ -366,6 +370,7 @@ function showPendingConfirmation(pending) {
 
 function acceptTurnResult(result) {
   renderToolActivities(result.activities);
+  if (result.notice) appendMessage("assistant", result.notice);
   if (result.pending_confirmation) {
     showPendingConfirmation(result.pending_confirmation);
     return;
@@ -975,6 +980,11 @@ form.addEventListener("submit", async (event) => {
 
   clearError();
   setVoiceState();
+  if (pendingConfirmationId) {
+    // The server cancels the pending action before handling this message.
+    pendingConfirmationId = null;
+    confirmationPanel.hidden = true;
+  }
   appendMessage("user", message);
   input.value = "";
   input.style.height = "auto";

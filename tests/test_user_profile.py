@@ -124,7 +124,7 @@ class SharedProfileContextTests(unittest.TestCase):
         self.assertIn('"explanation_detail": "brief"', first_messages[0]["content"])
         self.assertIn('"explanation_detail": "detailed"', second_messages[0]["content"])
         self.assertEqual(
-            second_messages[2:],
+            [m for m in second_messages if m["role"] != "system"],
             [
                 {"role": "user", "content": "first question"},
                 {"role": "assistant", "content": "first answer"},
@@ -175,7 +175,7 @@ class SharedProfileContextTests(unittest.TestCase):
         self.assertEqual(second.status_code, 200)
         second_messages = ask.call_args_list[1].args[2]
         self.assertEqual(
-            second_messages[2:],
+            [m for m in second_messages if m["role"] != "system"],
             [
                 {"role": "user", "content": "17 × 23?"},
                 {"role": "assistant", "content": "391"},

@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** v1.0 release hardening. The audit's security, due-time, and Ollama-failure fixes are done; the manual end-to-end pass, the voice go/no-go, and the release commit remain.
+**Current milestone:** v1.1 conversational intelligence (after the v1.0 release). P1–P5 are implemented and tested; review and commit remain.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -86,6 +86,18 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Update README with installation, startup, and usage instructions
 - [x] Test core features end to end by hand, following the README on a fresh setup
 - [x] Fix any important bugs found in that pass
+
+### 6. v1.1 Conversational Intelligence
+- [x] Inspect multi-turn behaviour, follow-ups, confirmations, and failures (live Gemma script)
+- [x] P1: Stable prompt order so Ollama can reuse its prompt cache (date/time and document context after earlier turns)
+- [x] P3: Deterministic cancellation; queued actions after a declined one never run
+- [x] P5: `find_files` retries once with file-type words as an extension filter, within the same scan limit
+- [x] P2: Bound history (~48,000 → ~28,800 characters) by whole turns; do not store hidden model thinking
+- [x] P4: A new message while a confirmation is pending cancels it first; the old confirmation becomes invalid
+- [x] Regression tests, live voice smoke test, and the real-Gemma multi-turn script
+- [x] Update README and ARCHITECTURE for the v1.1 behaviour
+- [ ] Review the v1.1 diff and commit
+- P6 (limit stored web conversations) is not planned for v1.1.
 
 ## Scope Rules
 - One feature at a time.

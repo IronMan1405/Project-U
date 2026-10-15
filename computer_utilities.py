@@ -154,6 +154,17 @@ def _is_hidden(name: str, entry_stat: os.stat_result) -> bool:
     return name.startswith(".") or bool(getattr(entry_stat, "st_flags", 0) & stat.UF_HIDDEN)
 
 
+# Words people use for a kind of file rather than part of its name. Used only for a
+# retry when a multi-word search finds nothing ("budget spreadsheets" -> budget in .xlsx...).
+TYPE_WORDS = {
+    **dict.fromkeys(("spreadsheet", "spreadsheets"), (".xlsx", ".xls", ".csv", ".numbers")),
+    **dict.fromkeys(("pdf", "pdfs"), (".pdf",)),
+    **dict.fromkeys(("document", "documents", "doc", "docs"), (".docx", ".doc", ".pdf", ".txt", ".md", ".rtf", ".pages")),
+    **dict.fromkeys(("image", "images", "photo", "photos", "picture", "pictures"), (".png", ".jpg", ".jpeg", ".heic", ".gif")),
+    **dict.fromkeys(("presentation", "presentations", "slides", "slideshow"), (".pptx", ".ppt", ".key")),
+}
+
+
 def find_files(
     settings: UtilitySettings,
     query: str,
@@ -162,8 +173,9 @@ def find_files(
 ) -> dict:
     """Keyword file-name search of approved roots; contents are never read.
 
-    Roots are walked breadth-first and in turn, SEARCH_CHUNK entries at a time, so the
-    shared entry budget is spread across roots instead of being spent on the first one.
+    If a multi-word search finds nothing and some words only describe a kind of file
+    (TYPE_WORDS), it is retried once with those words as an extension filter, using what
+    is left of the same entry budget.
     """
     if len(query) > MAX_QUERY_CHARS:
         raise UtilityError(f"query must be at most {MAX_QUERY_CHARS} characters.")
@@ -175,6 +187,39 @@ def find_files(
     if not labels:
         raise UtilityError("No approved folders are configured.")
 
+    scan = _scan(settings, labels, terms, {suffix} if suffix else None, MAX_SCANNED_ENTRIES)
+    examined = scan["examined"]
+    retry = None
+    name_terms = [term for term in terms if term not in TYPE_WORDS]
+    type_terms = [term for term in terms if term in TYPE_WORDS]
+    remaining = MAX_SCANNED_ENTRIES - examined
+    if not scan["results"] and suffix is None and type_terms and name_terms and remaining > 0:
+        suffixes = {extension for term in type_terms for extension in TYPE_WORDS[term]}
+        scan = _scan(settings, labels, name_terms, suffixes, remaining)
+        examined += scan["examined"]
+        retry = {"query_terms": name_terms, "file_types": sorted(suffixes), "type_words": type_terms}
+    return {
+        "query_terms": terms,
+        "file_type": suffix,
+        "folders_searched": labels,
+        "results": scan["results"],
+        "truncated": scan["budget_exhausted"] or scan["results_full"],
+        "result_limit_reached": scan["results_full"],
+        "incomplete_folders": scan["incomplete"],
+        "entries_examined": examined,
+        "retry": retry,
+    }
+
+
+def _scan(
+    settings: UtilitySettings,
+    labels: list[str],
+    terms: list[str],
+    suffixes: set[str] | None,
+    budget: int,
+) -> dict:
+    """Walk the approved roots breadth-first and in turn, SEARCH_CHUNK entries at a time,
+    so the entry budget is spread across roots instead of being spent on the first one."""
     directories = {label: deque([(settings.folders[label], 0)]) for label in labels}
     pending = {label: deque() for label in labels}  # (DirEntry, depth) awaiting examination
     has_work = lambda label: bool(directories[label] or pending[label])
@@ -196,7 +241,7 @@ def find_files(
                         continue
                     pending[label].extend((entry, depth) for entry in entries)
                     continue
-                if examined >= MAX_SCANNED_ENTRIES:
+                if examined >= budget:
                     budget_exhausted = True
                     break
                 entry, depth = pending[label].popleft()
@@ -214,7 +259,7 @@ def find_files(
                     continue
                 if not stat.S_ISREG(entry_stat.st_mode) or not name_matches(entry.name, terms):
                     continue
-                if suffix and Path(entry.name).suffix.lower() != suffix:
+                if suffixes and Path(entry.name).suffix.lower() not in suffixes:
                     continue
                 if len(results) >= MAX_FILE_RESULTS:
                     results_full = True
@@ -229,16 +274,12 @@ def find_files(
                         .isoformat(timespec="seconds"),
                     }
                 )
-    incomplete = [label for label in labels if has_work(label)] if budget_exhausted else []
     return {
-        "query_terms": terms,
-        "file_type": suffix,
-        "folders_searched": labels,
         "results": results,
-        "truncated": budget_exhausted or results_full,
-        "result_limit_reached": results_full,
-        "incomplete_folders": incomplete,
-        "entries_examined": examined,
+        "examined": examined,
+        "budget_exhausted": budget_exhausted,
+        "results_full": results_full,
+        "incomplete": [label for label in labels if has_work(label)] if budget_exhausted else [],
     }
 
 
