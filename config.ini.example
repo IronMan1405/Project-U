@@ -1,3 +1,13 @@
 [ollama]
 endpoint = http://127.0.0.1:11434
 model = gemma4:e4b
+
+[utilities]
+# Comma-separated macOS applications U may open, always after your confirmation.
+allowed_apps = Calendar, Notes
+
+[utility_folders]
+# Label = folder. U may search file names in these folders and open documents in them
+# (opening always asks first). Folders must be inside your home folder; ~/Library and
+# hidden folders are refused. Remove this section to disable file search and opening.
+Documents = ~/Documents

@@ -9,7 +9,8 @@ from uuid import UUID, uuid4
 from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
-from config import load_settings
+from config import load_settings, load_utility_settings
+from computer_utilities import UtilitySettings
 from documents import (
     MAX_ACTIVE_DOCUMENTS,
     MAX_UPLOAD_BYTES,
@@ -19,6 +20,7 @@ from documents import (
     extract_document,
 )
 from assistant_runtime import AssistantRuntime, RuntimeBusyError, TurnResult
+from tool_registry import ToolRegistry
 from storage import (
     DATABASE_PATH,
     RecordNotFound,
@@ -36,7 +38,10 @@ from storage import (
 )
 
 
-def create_app(database_path: str | Path | None = None) -> Flask:
+def create_app(
+    database_path: str | Path | None = None,
+    utility_settings: UtilitySettings | None = None,
+) -> Flask:
     app = Flask(__name__)
     conversations: dict[str, AssistantRuntime] = {}
     conversation_documents: dict[str, SelectedDocument] = {}
@@ -50,6 +55,8 @@ def create_app(database_path: str | Path | None = None) -> Flask:
     except (OSError, ValueError, KeyError) as error:
         endpoint, model = None, None
         config_error = str(error)
+    if utility_settings is None:
+        utility_settings = load_utility_settings()
 
     try:
         initialize_database(app.config["DATABASE_PATH"])
@@ -129,6 +136,9 @@ def create_app(database_path: str | Path | None = None) -> Flask:
                 endpoint,
                 model,
                 database_path=app.config["DATABASE_PATH"],
+                tool_registry=ToolRegistry(
+                    app.config["DATABASE_PATH"], utilities=utility_settings
+                ),
                 activity_callback=update_activity,
             )
             conversation_activity[conversation_id] = {

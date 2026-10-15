@@ -112,8 +112,9 @@ with an explanation.
 Terminal and web chat share `assistant_runtime.py` and Ollama's native tool-call
 protocol. U can list/create/complete/reopen/delete tasks and set, change, or clear a
 task's due date; list/read/create/edit/
-delete notes; report local time, battery, memory, and disk status; and request a
-website opening in the default browser. Task and note actions use the existing
+delete notes; report local time, battery, memory, and disk status; request a
+website opening in the default browser; and, when configured, search approved
+folders by file name, open documents from them, and open approved applications. Task and note actions use the existing
 SQLite storage layer. No model-generated shell commands or code are executed.
 
 The runtime allows at most four tool executions per user turn. Read-only tools
@@ -124,6 +125,40 @@ for a yes/no response. Tool errors and unavailable system readings are reported
 as such rather than guessed. Each model request includes the current local date
 and time so U can resolve dates such as "tomorrow" or "Friday"; when a requested
 due date is ambiguous, U is instructed to ask rather than guess.
+
+### Approved computer utilities
+
+These tools are off until you configure them in `config.ini` (see
+`config.ini.example`); restart U after editing it.
+
+- `[utility_folders]` lists `Label = folder` pairs. Folders must exist inside
+  your home folder; your whole home folder, `~/Library`, and hidden folders are
+  refused, and invalid entries are skipped with a warning.
+- `[utilities] allowed_apps` is a comma-separated list of macOS app names.
+
+`find_files` matches file names (never contents) in those folders and their
+subfolders only. Every query word must appear in the name, ignoring case, spaces,
+underscores, punctuation, and camelCase/PascalCase, so "performance sheet" finds
+`PerformanceSheet.pdf`, `performance_sheet.pdf`, and `Performance Sheet.pdf`. An
+optional `file_type` (e.g. `pdf`) filters by extension. The model may name only
+an approved root (folder label), never a path or subfolder; subfolders such as
+`Desktop/Projects/` are reached only by searching their approved root. Hidden
+items, symbolic links, and app/system packages are skipped; the search goes at most
+four levels deep, examines at most 5,000 entries in total (shared in turns across
+roots so no root is starved), and returns at most 20 matches as
+`Label/relative/path`. Results state the words searched and name any root the
+entry limit cut short. It is read-only and runs without confirmation.
+
+`open_file` opens one of those `Label/relative/path` values in its default macOS
+app after you confirm. Every path component is checked without following
+symbolic links; hidden items, package contents, directories, `.`/`..`, and paths
+outside the folder are refused, and only `.pdf .txt .md .csv .docx .xlsx .pptx
+.png .jpg .jpeg` files open. The checks run again after you confirm, just
+before opening.
+
+`open_application` opens an app from `allowed_apps` (exact name) after you
+confirm. Both open tools run the fixed `/usr/bin/open` executable with an
+argument list, never a shell, and are macOS-only.
 
 Assistant responses render Markdown with locally served `markdown-it` 15.0.2
 and DOMPurify 3.4.16 bundles in `static/vendor/`. Raw HTML is disabled, parsed

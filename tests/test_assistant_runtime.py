@@ -682,11 +682,12 @@ class TerminalRuntimeTests(unittest.TestCase):
         ]
         original_runtime = AssistantRuntime
 
-        def runtime_factory(endpoint, model, model_client, activity_callback):
+        def runtime_factory(endpoint, model, model_client, activity_callback, tool_registry):
+            # Keep the terminal's utility settings but point storage at the test database.
             return original_runtime(
                 endpoint,
                 model,
-                database_path=database_path,
+                tool_registry=ToolRegistry(database_path, utilities=tool_registry.utilities),
                 model_client=model_client,
                 activity_callback=activity_callback,
             )

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlsplit
 
+import computer_utilities
+from computer_utilities import UtilityError, UtilitySettings
 from storage import (
     DUE_AT_PATTERN,
     RecordNotFound,
@@ -152,6 +154,8 @@ def validate_arguments(schema: dict, value: object) -> dict:
             if "pattern" in definition and not re.search(definition["pattern"], item):
                 detail = definition.get("description")
                 raise ToolError(f"{name} has an invalid format." + (f" {detail}" if detail else ""))
+            if "enum" in definition and item not in definition["enum"]:
+                raise ToolError(f"{name} must be one of: {', '.join(definition['enum'])}.")
             if name == "title" and not item.strip():
                 raise ToolError("title must contain non-whitespace text.")
             if "minLength" in definition and len(item) < definition["minLength"]:
@@ -240,9 +244,13 @@ class ToolRegistry:
         self,
         database_path: str | Path | None = None,
         browser_open: Callable[..., bool] | None = None,
+        utilities: UtilitySettings | None = None,
+        open_runner: Callable[[list[str]], bool] | None = None,
     ):
         self.database_path = database_path
         self.browser_open = browser_open or webbrowser.open
+        self.utilities = utilities or UtilitySettings()
+        self.open_runner = open_runner or computer_utilities.run_open
         task_id = _positive_id_schema()
         note_id = _positive_id_schema()
         due_at_description = (
@@ -377,6 +385,75 @@ class ToolRegistry:
                 always_confirm=True,
             ),
         }
+        self._register_utilities()
+
+    def _register_utilities(self) -> None:
+        folder_labels = list(self.utilities.folders)
+        if folder_labels:
+            self._definitions["find_files"] = ToolDefinition(
+                "find_files",
+                "Search file names (not contents) in the user's approved root folders and "
+                f"their subfolders. Approved roots: {', '.join(folder_labels)}. Returns at most "
+                f"{computer_utilities.MAX_FILE_RESULTS} matches as 'Root/subfolder/file'. "
+                "Each call is one search: report exactly what it returned, and only say you "
+                "searched again after calling this tool again.",
+                _object_schema(
+                    {
+                        "query": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": computer_utilities.MAX_QUERY_CHARS,
+                            "description": "Words from the file name, e.g. 'performance sheet'. "
+                            "Every word must appear in the name; case, spaces, underscores "
+                            "and CamelCase are ignored, so the exact file name is not needed.",
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Optional approved root to limit the search to: one of "
+                            f"{', '.join(folder_labels)}. Not a subfolder name; subfolders "
+                            "are searched automatically.",
+                        },
+                        "file_type": {
+                            "type": "string",
+                            "pattern": r"^\.?[A-Za-z0-9]{1,10}$",
+                            "description": "Optional file extension filter, e.g. 'pdf'.",
+                        },
+                    },
+                    ("query",),
+                ),
+                self._find_files,
+            )
+            self._definitions["open_file"] = ToolDefinition(
+                "open_file",
+                "Ask to open a document from an approved folder in its default macOS app. "
+                "Requires user confirmation. Only use a path returned by find_files. "
+                f"Allowed types: {', '.join(sorted(computer_utilities.OPENABLE_EXTENSIONS))}.",
+                _object_schema(
+                    {
+                        "path": {
+                            "type": "string",
+                            "minLength": 3,
+                            "maxLength": computer_utilities.MAX_OPEN_PATH_CHARS,
+                            "description": "Exact 'Folder/relative/path' value from find_files.",
+                        }
+                    },
+                    ("path",),
+                ),
+                self._open_file,
+                always_confirm=True,
+            )
+        if self.utilities.apps:
+            self._definitions["open_application"] = ToolDefinition(
+                "open_application",
+                "Ask to open an approved macOS application. Requires user confirmation. "
+                f"Approved applications: {', '.join(self.utilities.apps)}.",
+                _object_schema(
+                    {"name": {"type": "string", "enum": list(self.utilities.apps)}},
+                    ("name",),
+                ),
+                self._open_application,
+                always_confirm=True,
+            )
 
     def definitions(self) -> list[dict]:
         return [definition.ollama_definition() for definition in self._definitions.values()]
@@ -399,6 +476,20 @@ class ToolRegistry:
                 raise ToolError(str(error)) from error
         if name == "open_website":
             arguments = {"url": validate_http_url(arguments["url"])}
+        if name == "find_files" and arguments.get("folder") is not None:
+            try:
+                root = computer_utilities.resolve_search_root(self.utilities, arguments["folder"])
+            except UtilityError as error:
+                raise ToolError(str(error)) from error
+            arguments = {**arguments, "folder": root}
+        if name == "open_file":
+            try:
+                display_path, _ = computer_utilities.resolve_approved_file(
+                    self.utilities, arguments["path"]
+                )
+            except UtilityError as error:
+                raise ToolError(str(error)) from error
+            arguments = {"path": display_path}
         direct_intent = _explicit_write_requested(name, user_message)
         if name in {"create_note", "update_note"}:
             supplied_content = _normalized_content(arguments["content"])
@@ -455,6 +546,14 @@ class ToolRegistry:
             return f"Delete note {arguments['note_id']}"
         if name == "open_website":
             return f"Open website: {arguments['url']}"
+        if name == "open_application":
+            return f"Open application: {arguments['name']}"
+        if name == "open_file":
+            return f"Open file: {arguments['path']}"
+        if name == "find_files":
+            scope = arguments.get("folder") or "approved folders"
+            kind = f" {arguments['file_type'].lstrip('.')}" if arguments.get("file_type") else ""
+            return f"Search {scope} for{kind} file names matching {arguments['query']!r}"
         return name.replace("_", " ").capitalize()
 
     def _create_task(self, arguments: dict) -> ToolOutcome:
@@ -656,6 +755,57 @@ class ToolRegistry:
         except OSError:
             return {"available": False, "reason": "Disk usage is unavailable."}
 
+    def _find_files(self, arguments: dict) -> ToolOutcome:
+        try:
+            found = computer_utilities.find_files(
+                self.utilities,
+                arguments["query"],
+                arguments.get("folder"),
+                arguments.get("file_type"),
+            )
+        except UtilityError as error:
+            return _utility_failure(error)
+        kind = f" {found['file_type']}" if found["file_type"] else ""
+        message = (
+            f"Searched {', '.join(found['folders_searched'])} (including subfolders) for"
+            f"{kind} file names containing all of: {', '.join(found['query_terms'])}. "
+            f"Found {len(found['results'])} file(s)."
+        )
+        if found["incomplete_folders"]:
+            message += (
+                f" The {computer_utilities.MAX_SCANNED_ENTRIES:,}-entry search limit was reached "
+                f"before finishing: {', '.join(found['incomplete_folders'])}; matches there may "
+                "be missing. Searching one root with folder, or a more specific query, can help."
+            )
+        elif found["result_limit_reached"]:
+            message += " The result limit was reached; more matches may exist."
+        return ToolOutcome(True, message, found)
+
+    def _open_application(self, arguments: dict) -> ToolOutcome:
+        try:
+            name = computer_utilities.resolve_app_name(self.utilities, arguments["name"])
+        except UtilityError as error:
+            return _utility_failure(error)
+        if not computer_utilities.open_supported():
+            return ToolOutcome(False, "Opening applications is only supported on macOS.")
+        if not self.open_runner(["-a", name]):
+            return ToolOutcome(False, f"macOS could not open {name}.")
+        return ToolOutcome(True, f"Requested macOS to open {name}.", {"name": name})
+
+    def _open_file(self, arguments: dict) -> ToolOutcome:
+        # Re-check at execution time: the file may have changed while awaiting confirmation.
+        try:
+            display_path, file_path = computer_utilities.resolve_approved_file(
+                self.utilities, arguments["path"]
+            )
+        except UtilityError as error:
+            return _utility_failure(error)
+        if not computer_utilities.open_supported():
+            return ToolOutcome(False, "Opening files is only supported on macOS.")
+        if not self.open_runner([str(file_path)]):
+            return ToolOutcome(False, f"macOS could not open {display_path}.")
+        return ToolOutcome(True, f"Requested macOS to open {display_path}.", {"path": display_path})
+
     def _open_website(self, arguments: dict) -> ToolOutcome:
         url = validate_http_url(arguments["url"])
         try:
@@ -666,6 +816,10 @@ class ToolRegistry:
         if not accepted:
             return ToolOutcome(False, "The default browser did not accept the URL.")
         return ToolOutcome(True, "The default browser accepted the URL.", {"url": url})
+
+
+def _utility_failure(error: UtilityError) -> ToolOutcome:
+    return ToolOutcome(False, str(error))
 
 
 def sys_platform_is_macos() -> bool:
