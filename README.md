@@ -4,10 +4,15 @@ A local assistant with a terminal client and a lightweight web chat interface, p
 
 ## Setup
 
-Requires Python 3 and Ollama with a model already installed. If `config.ini` is
-not present, create it from the example:
+Requires macOS, Python 3.11 or newer (the test suite is run with Python 3.14),
+and Ollama with a model already installed. From the project directory, create
+the virtual environment, install the dependencies, and create `config.ini` from
+the example:
 
 ```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 cp config.ini.example config.ini
 ```
 
@@ -15,7 +20,13 @@ Set `model` in `config.ini` to a model shown by `ollama list`. The default
 configuration uses `gemma4:e4b` and the local Ollama endpoint
 `http://127.0.0.1:11434`. Make sure Ollama is running before starting U.
 
-Run the automated profile and client tests with:
+The example configuration also turns on the approved computer utilities (for
+`~/Documents` and the Calendar and Notes apps) and voice; see those sections
+below to adjust or remove them. Its tool paths assume Homebrew on Apple Silicon
+(`/opt/homebrew`); on an Intel Mac, Homebrew installs to `/usr/local`, so check
+`command -v ffmpeg whisper-cli` and update the `[voice]` paths.
+
+Run the automated tests with:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
@@ -43,23 +54,22 @@ authorization.
 From the project directory, run:
 
 ```sh
-python3 main.py
+.venv/bin/python main.py
 ```
 
 Enter a message to chat. Type `/quit` or `/exit` to leave.
 
 ## Web interface
 
-Install the web dependency and start the local server:
+After the setup above, start the local server:
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python web_app.py
+.venv/bin/python web_app.py
 ```
 
-Open <http://127.0.0.1:5000>. The server binds to localhost and uses the same
+Open <http://127.0.0.1:5000> (or <http://localhost:5000>). The server binds to
+127.0.0.1 and rejects requests addressed to any other host name with HTTP 400, so
+web pages on other sites cannot use its API. It uses the same
 `config.ini` and Ollama model as the terminal client. Conversation history is
 kept in server memory for each open conversation and cleared when a new one is
 started or the server stops. The status indicator checks Ollama and the
@@ -72,8 +82,9 @@ reopen, and delete records. Notes preserve their text and newlines. Records are
 stored locally in `data/project_u.sqlite3`; the directory and schema are created
 automatically the first time U starts. Data persists across restarts and is
 excluded from Git. Removing the database file while U is stopped permanently
-deletes its tasks and notes. These operations are explicit UI/API actions and
-are not performed automatically by the model.
+deletes its tasks and notes. In chat, U can also manage tasks and notes, but only
+through the validated assistant tools described under "Assistant tools"; the
+model has no other way to change records.
 
 Tasks can have an optional due date. `due_at` is either a calendar date
 (`YYYY-MM-DD`) or a UTC time (`YYYY-MM-DD HH:MM:SSZ`, optional fractional
@@ -84,6 +95,14 @@ or remove it. Incomplete tasks past their due date are marked "Overdue".
 `PATCH /api/tasks/<id>` accepts `completed`, `due_at`, or both; `"due_at": null`
 clears the due date, and a field left out of the request is left unchanged.
 Databases created before due dates existed gain the column automatically.
+
+In chat, the assistant passes due times as your local wall-clock time
+(`YYYY-MM-DD HH:MM`, 24-hour), or with an explicit offset such as `+05:30` only
+when you name another time zone. Python converts them to the stored UTC form
+using this Mac's time-zone rules, including daylight saving; a local time that a
+daylight-saving change skips or repeats is rejected rather than guessed. The
+confirmation and tool result show the stored time converted back to local time,
+so what U reports is what was saved.
 
 ## Selected documents
 
@@ -123,13 +142,17 @@ requests it; ambiguous writes, every deletion, and every website opening pause
 for explicit approval. Web users get Confirm/Cancel controls; the terminal asks
 for a yes/no response. Tool errors and unavailable system readings are reported
 as such rather than guessed. Each model request includes the current local date
-and time so U can resolve dates such as "tomorrow" or "Friday"; when a requested
-due date is ambiguous, U is instructed to ask rather than guess.
+and time so U can resolve dates such as "tomorrow" or "Friday" into local
+dates and times (U converts them to UTC itself); when the day itself is unclear,
+U is instructed to ask rather than guess.
 
 ### Approved computer utilities
 
-These tools are off until you configure them in `config.ini` (see
-`config.ini.example`); restart U after editing it.
+These tools are controlled by `config.ini`; restart U after editing it.
+`config.ini.example` enables `find_files`/`open_file` for `~/Documents` and
+`open_application` for Calendar and Notes, so copying it turns them on. Remove
+the `[utility_folders]` section (or empty `allowed_apps`) to turn the matching
+tools off; without them, the tools are not offered to the model.
 
 - `[utility_folders]` lists `Label = folder` pairs. Folders must exist inside
   your home folder; your whole home folder, `~/Library`, and hidden folders are
@@ -168,16 +191,20 @@ macOS `say`. No audio or text leaves the machine. One-time setup (the only step
 that uses the network):
 
 ```sh
-brew install whisper.cpp
+brew install ffmpeg whisper.cpp
 mkdir -p data/models
 curl -fL --proto '=https' --tlsv1.2 -o data/models/ggml-base.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 ```
 
 Compare `shasum -a 256 data/models/ggml-base.en.bin` with the SHA-256 shown for
-the file on Hugging Face, then copy the `[voice]` section from
-`config.ini.example` into `config.ini` and restart U. Without that section,
-voice controls are hidden and typed chat is unchanged.
+the file on Hugging Face. `config.ini.example` already contains the `[voice]`
+section (copy it into an existing `config.ini` if needed), then restart U. The
+example paths are for Homebrew on Apple Silicon; on an Intel Mac use the paths
+from `command -v ffmpeg whisper-cli` (usually `/usr/local/bin`). If FFmpeg,
+whisper.cpp, or the model is missing, U logs a warning and hides push-to-talk;
+without the `[voice]` section, all voice controls are hidden. Typed chat is
+unchanged either way.
 
 In Chat, hold the microphone button (or hold Space/Enter on it) while speaking
 and release to stop; recordings are capped at `max_seconds` (60 by default).

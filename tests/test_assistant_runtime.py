@@ -1,11 +1,13 @@
 import json
 import tempfile
 import io
+import socket
 import threading
 import unittest
+import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import assistant_runtime
 import main
@@ -309,8 +311,8 @@ class AssistantRuntimeTests(unittest.TestCase):
         create_due = definitions["create_task"]["properties"]["due_at"]
         update_due = definitions["set_task_due_date"]["properties"]["due_at"]
         for schema in (create_due, update_due):
-            self.assertEqual(schema["pattern"], storage.DUE_AT_PATTERN)
-            self.assertIn("YYYY-MM-DD", schema["description"])
+            self.assertEqual(schema["pattern"], storage.TOOL_DUE_AT_PATTERN)
+            self.assertIn("YYYY-MM-DD HH:MM", schema["description"])
         self.assertEqual(update_due["type"], ["string", "null"])
         self.assertEqual(definitions["set_task_due_date"]["required"], ["task_id", "due_at"])
 
@@ -325,11 +327,11 @@ class AssistantRuntimeTests(unittest.TestCase):
             tool_registry.validate_arguments(pattern_schema, {"code": "abcd"})
 
         for name, arguments in (
-            ("create_task", {"title": "Bad", "due_at": "2026-11-03T10:00:00Z"}),
             ("create_task", {"title": "Bad", "due_at": "2026-02-30"}),
             ("create_task", {"title": "Bad", "due_at": "Friday"}),
             ("create_task", {"title": "Bad", "due_at": None}),
-            ("set_task_due_date", {"task_id": 1, "due_at": "2026-11-03 10:00:00"}),
+            ("create_task", {"title": "Bad", "due_at": "2026-11-03 5:00"}),
+            ("set_task_due_date", {"task_id": 1, "due_at": "2026-11-03 10:00 PM"}),
             ("set_task_due_date", {"task_id": 1, "due_at": "2026-04-31"}),
             ("set_task_due_date", {"task_id": 1}),
             ("set_task_due_date", {"task_id": 1, "due_at": 3}),
@@ -345,7 +347,7 @@ class AssistantRuntimeTests(unittest.TestCase):
             "Please create a task to file taxes due 2026-11-03.",
         )
         self.assertFalse(create.always_confirm)
-        self.assertEqual(create.summary, "Create task: File taxes (due 2026-11-03)")
+        self.assertEqual(create.summary, "Create task: File taxes (due Tue 2026-11-03)")
         task_id = registry.execute(create).data["id"]
         self.assertEqual(storage.list_tasks(self.database_path)[0]["due_at"], "2026-11-03")
 
@@ -355,10 +357,13 @@ class AssistantRuntimeTests(unittest.TestCase):
             "Please change the due date of task 1 to Nov 4 at 5pm UTC.",
         )
         self.assertFalse(change.always_confirm)
-        self.assertEqual(change.summary, f"Set due date of task {task_id} to 2026-11-04 17:00:00Z")
+        local = storage.describe_due_at("2026-11-04 17:00:00Z")
+        self.assertEqual(change.summary, f"Set due date of task {task_id} to {local}")
         changed = registry.execute(change)
         self.assertTrue(changed.ok)
         self.assertEqual(changed.data["due_at"], "2026-11-04 17:00:00Z")
+        self.assertEqual(changed.data["due_local"], local)
+        self.assertEqual(changed.message, f"Task due date set to {local}.")
 
         complete = registry.prepare(
             "set_task_completed", {"task_id": task_id, "completed": True}, "Please complete task 1."
@@ -429,20 +434,20 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertIn("2026-10-15", date_context)
         self.assertIn("Thursday", date_context)
         self.assertIn("UTC+05:30", date_context)
-        self.assertIn("'tomorrow at 5 AM' -> 2026-10-15 23:30:00Z", date_context)
+        self.assertIn("'tomorrow at 5 AM' -> 2026-10-16 05:00", date_context)
         self.assertEqual(storage.list_tasks(self.database_path)[0]["due_at"], "2026-10-16")
 
-    def test_date_context_gives_computed_due_at_examples_for_any_offset(self):
+    def test_date_context_gives_local_due_at_examples_for_any_offset(self):
         from datetime import datetime, timedelta, timezone
 
         cases = (
-            # (local now, offset, tomorrow, tomorrow 5 AM in UTC, today 6 PM in UTC)
+            # (local now, offset, tomorrow, tomorrow 5 AM local, today 6 PM local)
             (datetime(2026, 10, 15, 14, 5), timedelta(hours=5, minutes=30),
-             "2026-10-16", "2026-10-15 23:30:00Z", "2026-10-15 12:30:00Z"),
+             "2026-10-16", "2026-10-16 05:00", "2026-10-15 18:00"),
             (datetime(2026, 10, 15, 22, 0), timedelta(hours=-7),
-             "2026-10-16", "2026-10-16 12:00:00Z", "2026-10-16 01:00:00Z"),
+             "2026-10-16", "2026-10-16 05:00", "2026-10-15 18:00"),
             (datetime(2026, 12, 31, 9, 0), timedelta(0),
-             "2027-01-01", "2027-01-01 05:00:00Z", "2026-12-31 18:00:00Z"),
+             "2027-01-01", "2027-01-01 05:00", "2026-12-31 18:00"),
         )
         for local_now, offset, tomorrow, tomorrow_5am, today_6pm in cases:
             now = local_now.replace(tzinfo=timezone(offset))
@@ -450,22 +455,25 @@ class AssistantRuntimeTests(unittest.TestCase):
                 context = assistant_runtime.date_context(now)
                 self.assertIn(f"{local_now:%A %Y-%m-%d %H:%M}", context)
                 self.assertIn(f"'tomorrow' -> {tomorrow};", context)
-                self.assertIn(f"'tomorrow at 5 AM' -> {tomorrow_5am}", context)
-                self.assertIn(f"'today at 6 PM' -> {today_6pm}", context)
+                self.assertIn(f"'tomorrow at 5 AM' -> {tomorrow_5am};", context)
+                self.assertIn(f"'today at 6 PM' -> {today_6pm}.", context)
+                self.assertNotIn("Z;", context)
                 for example in (tomorrow, tomorrow_5am, today_6pm):
-                    self.assertEqual(storage.validate_due_at(example), example)
+                    self.assertTrue(storage.normalize_due_at(example))
 
         context = assistant_runtime.date_context(cases[0][0].replace(tzinfo=timezone(cases[0][1])))
         for instruction in (
             "due_at is a machine-format value, never natural language",
             "Specific times are supported",
             "never drop a time the user gave",
-            "'YYYY-MM-DD HH:MM:SSZ' in UTC",
+            "'YYYY-MM-DD HH:MM' in 24-hour local time",
+            "Do not convert to UTC or apply the offset",
             "Relative days and clock times are not ambiguous",
+            "use the local time the tool result gives",
         ):
             self.assertIn(instruction, context)
 
-    def test_due_at_tool_descriptions_allow_times_in_canonical_utc_format(self):
+    def test_due_at_tool_descriptions_ask_for_local_time_not_utc(self):
         registry = ToolRegistry(self.database_path)
         functions = {item["function"]["name"]: item["function"] for item in registry.definitions()}
         for name in ("create_task", "set_task_due_date"):
@@ -473,26 +481,25 @@ class AssistantRuntimeTests(unittest.TestCase):
                 self.assertIn("specific time", functions[name]["description"])
                 description = functions[name]["parameters"]["properties"]["due_at"]["description"]
                 self.assertIn("Specific times are supported", description)
-                self.assertIn("'YYYY-MM-DD HH:MM:SSZ' in UTC", description)
+                self.assertIn("'YYYY-MM-DD HH:MM' (24-hour)", description)
+                self.assertIn("do not convert to UTC", description)
                 self.assertIn("never natural language", description)
                 self.assertNotIn("ask the user", description)
 
-        # A converted "tomorrow at 5 AM" is accepted and stored exactly as given.
-        create = registry.prepare(
-            "create_task",
-            {"title": "Work out", "due_at": "2026-10-15 23:30:00Z"},
-            "Please add a task to work out tomorrow at 5am.",
+        created = registry.execute(
+            registry.prepare(
+                "create_task",
+                {"title": "Work out", "due_at": "2026-10-16 05:00"},
+                "Please add a task to work out tomorrow at 5am.",
+            )
         )
-        self.assertFalse(create.always_confirm)
-        self.assertEqual(create.summary, "Create task: Work out (due 2026-10-15 23:30:00Z)")
-        created = registry.execute(create)
-        self.assertTrue(created.ok)
-        self.assertEqual(
-            storage.list_tasks(self.database_path)[0]["due_at"], "2026-10-15 23:30:00Z"
-        )
+        stored = storage.list_tasks(self.database_path)[0]["due_at"]
+        self.assertEqual(stored, storage.normalize_due_at("2026-10-16 05:00"))
+        self.assertTrue(stored.endswith("Z"))
+        self.assertIn("05:00", created.data["due_local"])
 
-        # Unconverted natural language is still rejected, with format guidance for the model.
-        for value in ("tomorrow at 5am", "2026-10-16 05:00", "2026-10-16T05:00:00+05:30"):
+        # Natural language is still rejected, with format guidance for the model.
+        for value in ("tomorrow at 5am", "5am", "2026-10-16 5am"):
             with self.subTest(value=value):
                 with self.assertRaises(ToolError) as raised:
                     registry.prepare(
@@ -500,7 +507,7 @@ class AssistantRuntimeTests(unittest.TestCase):
                         {"task_id": created.data["id"], "due_at": value},
                         "Please set the due date of task 1 to tomorrow at 5am.",
                     )
-                self.assertIn("YYYY-MM-DD HH:MM:SSZ", str(raised.exception))
+                self.assertIn("YYYY-MM-DD HH:MM", str(raised.exception))
 
     def test_system_info_is_structured_and_reports_unavailable_values(self):
         registry = ToolRegistry(self.database_path)
@@ -667,6 +674,103 @@ class RuntimeWebApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         browser.assert_called_once_with("https://example.com", new=2, autoraise=True)
+
+
+class OllamaFailureTests(unittest.TestCase):
+    """Ollama failures must return clear errors and leave the conversation usable."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.temp_dir.name) / "data" / "failure.sqlite3"
+        with unittest.mock.patch.object(web_app, "load_settings", return_value=("http://ollama.test", "test-model")):
+            self.app = web_app.create_app(self.database_path)
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def chat(self, conversation_id, message):
+        return self.client.post("/api/chat", json={"conversation_id": conversation_id, "message": message})
+
+    def http_error(self, code, body):
+        return urllib.error.HTTPError("http://ollama.test/api/chat", code, "error", {}, io.BytesIO(body))
+
+    def test_failures_return_clear_status_and_the_next_turn_recovers(self):
+        cases = [
+            ("connection refused", urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), 503, "Could not connect to Ollama"),
+            ("request timeout", TimeoutError("timed out"), 503, "Could not connect to Ollama: timed out"),
+            ("socket timeout", socket.timeout("timed out"), 503, "Could not connect to Ollama"),
+            ("malformed JSON", json.JSONDecodeError("Expecting value", "<html>", 0), 502, "Could not read Ollama's response"),
+            ("unexpected response", ValueError("Ollama returned an unexpected response."), 502, "Could not read Ollama's response"),
+            ("HTTP 500", self.http_error(500, b'{"error": "model runner crashed"}'), 502, "Ollama request failed (HTTP 500): model runner crashed"),
+            ("HTTP 404 plain text", self.http_error(404, b"not found"), 502, "Ollama request failed (HTTP 404): not found"),
+        ]
+        for label, error, status, message in cases:
+            with self.subTest(case=label):
+                model = Mock(side_effect=[error, {"role": "assistant", "content": "Back online."}])
+                with unittest.mock.patch.object(assistant_runtime, "ask_ollama", model):
+                    conversation_id = self.client.post("/api/conversations", json={}).get_json()["conversation_id"]
+                    failed = self.chat(conversation_id, "First question")
+                    activity = self.client.get(f"/api/conversations/{conversation_id}/activity").get_json()
+                    recovered = self.chat(conversation_id, "Second question")
+
+                self.assertEqual(failed.status_code, status)
+                self.assertIn(message, failed.get_json()["error"])
+                self.assertEqual(activity["activity"]["status"], "idle")
+                self.assertEqual(recovered.status_code, 200)
+                self.assertEqual(recovered.get_json()["response"], "Back online.")
+                # The failed turn left nothing behind: the retry sends only the new message.
+                retry_messages = model.call_args_list[1].args[2]
+                conversation = [m for m in retry_messages if m["role"] != "system"]
+                self.assertEqual(conversation, [{"role": "user", "content": "Second question"}])
+
+    def test_malformed_tool_calls_fail_cleanly_without_side_effects(self):
+        model = Mock(
+            side_effect=[
+                {"role": "assistant", "content": "", "tool_calls": "create_task"},
+                {"role": "assistant", "content": 42},
+                {"role": "assistant", "content": "Fine now."},
+            ]
+        )
+        with unittest.mock.patch.object(assistant_runtime, "ask_ollama", model):
+            conversation_id = self.client.post("/api/conversations", json={}).get_json()["conversation_id"]
+            bad_calls = self.chat(conversation_id, "Please create a task to test")
+            bad_content = self.chat(conversation_id, "Hello")
+            good = self.chat(conversation_id, "Hello again")
+        self.assertEqual(bad_calls.status_code, 502)
+        self.assertEqual(bad_content.status_code, 502)
+        self.assertEqual(good.status_code, 200)
+        self.assertEqual(storage.list_tasks(self.database_path), [])
+        conversation = [m for m in model.call_args_list[2].args[2] if m["role"] != "system"]
+        self.assertEqual(conversation, [{"role": "user", "content": "Hello again"}])
+
+    def test_health_check_failures(self):
+        def tags(body):
+            response = MagicMock()
+            response.__enter__.return_value = io.BytesIO(body)
+            return response
+
+        cases = [
+            ("down", urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), 503, "Ollama is unavailable"),
+            ("timeout", TimeoutError("timed out"), 503, "Ollama is unavailable: timed out"),
+            ("invalid JSON", tags(b"<html>"), 503, "Ollama is unavailable"),
+            ("JSON list", tags(b'["test-model"]'), 503, "unexpected health response"),
+            ("model missing", tags(b'{"models": [{"name": "other:latest"}]}'), 503, "'test-model' is not available"),
+        ]
+        for label, outcome, status, message in cases:
+            with self.subTest(case=label):
+                kwargs = {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
+                with unittest.mock.patch.object(web_app.urllib.request, "urlopen", **kwargs):
+                    response = self.client.get("/api/health")
+                self.assertEqual(response.status_code, status)
+                self.assertFalse(response.get_json()["connected"])
+                self.assertIn(message, response.get_json()["error"])
+
+        with unittest.mock.patch.object(
+            web_app.urllib.request, "urlopen", return_value=tags(b'{"models": [{"name": "test-model"}]}')
+        ):
+            healthy = self.client.get("/api/health")
+        self.assertEqual((healthy.status_code, healthy.get_json()), (200, {"connected": True, "model": "test-model"}))
 
 
 class TerminalRuntimeTests(unittest.TestCase):

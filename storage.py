@@ -1,7 +1,7 @@
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -42,6 +42,85 @@ def validate_due_at(value: str | None) -> str | None:
     except ValueError as error:
         raise ValueError(f"due_at must be {DUE_AT_FORMAT_DESCRIPTION}.") from error
     return value
+
+
+# Assistant-tool input for due dates. The model writes what the user said: a date, or a
+# local wall-clock time; an explicit offset or Z only when the user names another zone.
+# normalize_due_at converts these to the canonical storage format above in Python, so the
+# model never does timezone arithmetic. "Local" means this Mac's system time zone.
+TOOL_DUE_AT_PATTERN = (
+    r"^\d{4}-\d{2}-\d{2}"
+    r"( \d{2}:\d{2}:\d{2}(\.\d{1,6})?Z|[ T]\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?)?$"
+)
+TOOL_DUE_AT_FORMAT_DESCRIPTION = (
+    "'YYYY-MM-DD' for a day, or 'YYYY-MM-DD HH:MM' (24-hour) for a time in the user's "
+    "local time zone; add '+HH:MM', '-HH:MM' or 'Z' only for a time in another zone"
+)
+_TOOL_DUE_TIME = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:\d{2})?$"
+)
+
+
+def _local_wall_time(moment: datetime) -> datetime:
+    """Attach this Mac's time zone to a naive local time, refusing DST gaps and overlaps."""
+    first = moment.replace(fold=0).astimezone()
+    second = moment.replace(fold=1).astimezone()
+    if first.utcoffset() != second.utcoffset() or first.replace(tzinfo=None) != moment:
+        raise ValueError(
+            f"{moment:%Y-%m-%d %H:%M} is skipped or repeated by a daylight-saving change in "
+            "the local time zone; give the time with an explicit UTC offset."
+        )
+    return first
+
+
+def normalize_due_at(value: str | None) -> str | None:
+    """Convert an assistant-tool due date to canonical storage form (date or UTC ...Z).
+
+    Dates and canonical UTC values are kept exactly. Local times are converted with the
+    system time zone's rules; explicit offsets are honoured. Anything else is rejected.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("due_at must be a date string or null.")
+    try:
+        return validate_due_at(value)
+    except ValueError:
+        pass
+    match = _TOOL_DUE_TIME.fullmatch(value)
+    if not match:
+        raise ValueError(f"due_at must be {TOOL_DUE_AT_FORMAT_DESCRIPTION}.")
+    year, month, day, hour, minute, second, zone = match.groups()
+    try:
+        moment = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second or 0))
+    except ValueError as error:
+        raise ValueError(f"due_at {value!r} is not a real date and time.") from error
+    if zone is None:
+        aware = _local_wall_time(moment)
+    elif zone == "Z":
+        aware = moment.replace(tzinfo=timezone.utc)
+    else:
+        hours, minutes = int(zone[1:3]), int(zone[4:6])
+        if hours > 14 or minutes > 59:
+            raise ValueError(f"due_at has an invalid UTC offset {zone}.")
+        offset = timedelta(hours=hours, minutes=minutes)
+        aware = moment.replace(tzinfo=timezone(offset if zone[0] == "+" else -offset))
+    return aware.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+
+
+def describe_due_at(due_at: str | None) -> str:
+    """Human-readable local form of a stored due_at, e.g. 'Fri 2026-10-16 05:00 IST, UTC+05:30'."""
+    if not due_at:
+        return ""
+    if len(due_at) == 10:
+        return f"{datetime.strptime(due_at, '%Y-%m-%d'):%a} {due_at}"
+    stamp = due_at[:-1]
+    fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in stamp else "%Y-%m-%d %H:%M:%S"
+    local = datetime.strptime(stamp, fmt).replace(tzinfo=timezone.utc).astimezone()
+    offset = local.strftime("%z")
+    utc_offset = f"UTC{offset[:3]}:{offset[3:]}"
+    zone = utc_offset if local.tzname() in (None, utc_offset) else f"{local.tzname()}, {utc_offset}"
+    return f"{local:%a %Y-%m-%d %H:%M} {zone}"
 
 
 @contextmanager
