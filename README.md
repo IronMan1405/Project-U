@@ -32,6 +32,13 @@ Run the automated tests with:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
+The browser's end-of-speech detector has its own tests, run with Node's built-in
+test runner (no packages to install):
+
+```sh
+node --test tests/js/
+```
+
 ## Profile and preferences
 
 U reads `profile.json` from the project directory before each model request, so
@@ -278,11 +285,45 @@ rules, and Confirm/Cancel buttons as typed ones.
 - **Review mode (default).** The transcript is placed in the message box for you
   to review and edit; nothing is sent until you press Enter.
 - **Hands-free (opt-in, off by default).** Tick "Hands-free" to send each
-  transcript automatically when you release the button, and to hear the reply,
-  any confirmation prompt, and any error for that exchange spoken aloud, even if
-  "Speak replies" is off. If you had already typed something in the message box,
-  the transcript is added to it for review instead of being sent. The setting is
-  not remembered; reloading the page turns it off.
+  transcript automatically, and to hear the reply, any confirmation prompt, and
+  any error for that exchange spoken aloud, even if "Speak replies" is off. If you
+  had already typed something in the message box, the transcript is added to it
+  for review instead of being sent. The setting is not remembered; reloading the
+  page turns it off.
+
+**Automatic end-of-speech detection (Hands-free only).** In Hands-free mode,
+*tap* the microphone and speak: recording stops by itself once you have been
+quiet for `end_silence_ms` (1,200 ms by default) after speaking, but never
+sooner than `min_recording_ms` (600 ms) after it started, and the existing
+`max_seconds` limit still applies. Tap again to stop at once. Pressing and
+holding still works and is fully manual: hold past about 0.4 s and the recording
+stops only when you release. If no speech is heard within 6 seconds, the
+recording is discarded and nothing is uploaded. Review mode is unchanged: hold to
+talk, release to stop. This is end-of-speech detection for one recording at a
+time, not a continuous conversation: U does not start listening again on its
+own after it replies.
+
+The detector runs in the browser on the same microphone stream that is
+recorded. It compares loudness with the noise level measured at the start of
+each recording, so it is a simple energy check, not true speech recognition, and
+it is not perfectly reliable:
+- steady background sound (a fan, a TV, other people talking) can keep a
+  recording open until you tap or `max_seconds` is reached;
+- speech that is not clearly louder than steady background noise (about 6 dB),
+  or very quiet speech close to the room's noise level, may not be recognised as
+  speech, and the recording is then discarded after 6 seconds; use press-and-hold
+  in that case;
+- a pause longer than `end_silence_ms` ends the recording mid-sentence; raise it
+  if that happens often;
+- if the browser has not allowed audio processing to start, the page says
+  automatic stop is unavailable and you tap to stop.
+
+The server's own silence check below still applies to every recording that is
+uploaded. Both timings are set in the `[voice]` section of `config.ini`
+(`end_silence_ms` 500–4,000, `min_recording_ms` 200–3,000 and shorter than
+`max_seconds`); other values are ignored with a warning. Switching to another tab
+or window, or the microphone disconnecting, stops a recording without uploading
+it, in both modes.
 
 **Confirmations by voice.** Only the Confirm button approves an action. While an
 action waits for confirmation:

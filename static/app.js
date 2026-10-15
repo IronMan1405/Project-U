@@ -70,7 +70,15 @@ let selectedDocumentDetail = "";
 let pendingConfirmationId = null;
 let confirmationResolving = false;
 let activityPollTimer = null;
-let voiceStatus = { speech_input: false, speech_output: false, max_seconds: 60 };
+const DEFAULT_VOICE_STATUS = {
+  speech_input: false,
+  speech_output: false,
+  max_seconds: 60,
+  end_silence_ms: 1200,
+  min_recording_ms: 600,
+  no_speech_timeout_ms: 6000,
+};
+let voiceStatus = { ...DEFAULT_VOICE_STATUS };
 let recorder = null;
 let recordingStream = null;
 let recordingChunks = [];
@@ -417,9 +425,9 @@ function setVoiceState(message = "") {
 
 async function loadVoiceStatus() {
   try {
-    voiceStatus = await apiRequest("/api/voice/status");
+    voiceStatus = { ...DEFAULT_VOICE_STATUS, ...(await apiRequest("/api/voice/status")) };
   } catch {
-    voiceStatus = { speech_input: false, speech_output: false, max_seconds: 60 };
+    voiceStatus = { ...DEFAULT_VOICE_STATUS };
   }
   const canRecord = Boolean(navigator.mediaDevices?.getUserMedia) && typeof MediaRecorder !== "undefined";
   micButton.hidden = !(voiceStatus.speech_input && canRecord);
@@ -432,34 +440,158 @@ function preferredRecordingType() {
   return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
 }
 
+// Recording lifecycle. Review mode: hold to talk, release to stop (unchanged). Hands-free:
+// a tap starts listening and end-of-speech detection (static/voice_activity.js) stops it
+// after a pause following speech; tapping again stops at once; press-and-hold still stops on
+// release. Every exit path goes through stopRecording() (first reason wins) and
+// teardownRecording(), which stops all tracks, the level monitor, and timers.
+const HOLD_TO_TALK_MS = 400;
+const LEVEL_POLL_MS = 50;
+const DISCARD_MESSAGES = {
+  no_speech: "Didn't hear any speech, so nothing was sent.",
+  page_hidden: "Stopped listening because the page was hidden; nothing was sent.",
+  track_ended: "The microphone stopped, so nothing was sent.",
+};
+let listeningSession = 0; // bumped on start and teardown, so late callbacks are ignored
+let startPending = false; // waiting for the microphone stream
+let cancelPendingStart = false;
+let autoStopRecording = false;
+let stopReason = null;
+let pressStartedAt = 0;
+let holdTimer = null;
+let holdActive = false; // a hands-free press held past HOLD_TO_TALK_MS: manual control only
+let levelMonitor = null;
+let audioContext = null;
+let recordingTrack = null;
+
+function ensureAudioContext() {
+  // Created or resumed during the tap itself, because browsers only allow audio
+  // processing to start from a user gesture.
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  if (!audioContext) {
+    try {
+      audioContext = new AudioContextClass();
+    } catch {
+      return;
+    }
+  }
+  if (audioContext.state === "suspended") audioContext.resume().catch(() => {});
+}
+
+function onTrackEnded() {
+  stopRecording("track_ended");
+}
+
 function releaseMicrophone() {
+  recordingTrack?.removeEventListener("ended", onTrackEnded);
+  recordingTrack = null;
   recordingStream?.getTracks().forEach((track) => track.stop());
   recordingStream = null;
 }
 
-async function startRecording() {
-  if (recorder || transcribing || micButton.disabled) return;
+function stopLevelMonitor() {
+  levelMonitor?.stop();
+  levelMonitor = null;
+}
+
+function teardownRecording() {
+  listeningSession += 1;
+  window.clearTimeout(recordingTimer);
+  recordingTimer = null;
+  stopLevelMonitor();
+  releaseMicrophone();
+  recorder = null;
+  recordingChunks = [];
+  micHeld = false;
+  autoStopRecording = false;
+  holdActive = false;
+  window.clearTimeout(holdTimer);
+  holdTimer = null;
+  micButton.classList.remove("recording");
+  micButton.setAttribute("aria-pressed", "false");
+}
+
+// Measures the same MediaStream the MediaRecorder uploads. Returns null when the audio
+// context is not running (for example still suspended), so the caller falls back to manual stop.
+function startLevelMonitor(stream, session) {
+  if (!audioContext || audioContext.state !== "running" || !window.VoiceActivity) return null;
+  let source;
+  let analyser;
+  try {
+    source = audioContext.createMediaStreamSource(stream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    source.connect(analyser);
+  } catch {
+    return null;
+  }
+  const detector = window.VoiceActivity.createEndOfSpeechDetector({
+    endSilenceMs: voiceStatus.end_silence_ms,
+    minRecordingMs: voiceStatus.min_recording_ms,
+    noSpeechTimeoutMs: voiceStatus.no_speech_timeout_ms,
+    maxMs: voiceStatus.max_seconds * 1000,
+  });
+  const samples = new Float32Array(analyser.fftSize);
+  const startedAt = performance.now();
+  const timer = window.setInterval(() => {
+    if (session !== listeningSession) return;
+    analyser.getFloatTimeDomainData(samples);
+    const decision = detector.update(window.VoiceActivity.rmsDb(samples), performance.now() - startedAt);
+    if (decision) stopRecording(decision.reason);
+  }, LEVEL_POLL_MS);
+  return {
+    stop() {
+      window.clearInterval(timer);
+      try {
+        source.disconnect();
+        analyser.disconnect();
+      } catch {
+        // already disconnected
+      }
+    },
+  };
+}
+
+async function startRecording(autoStop) {
+  if (recorder || startPending || transcribing || micButton.disabled) return;
   clearError();
   stopReplyAudio();
+  const session = ++listeningSession;
+  startPending = true;
+  cancelPendingStart = false;
+  autoStopRecording = autoStop;
+  let stream;
   try {
-    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch {
+    startPending = false;
+    autoStopRecording = false;
     setVoiceState("");
     showError("Microphone access was denied or is unavailable.");
     return;
   }
-  if (!micHeld) {
-    releaseMicrophone();
+  startPending = false;
+  // Cancelled while the microphone was opening: a review-mode release, a second tap, the
+  // page being hidden, or a newer recording.
+  if (session !== listeningSession || cancelPendingStart || document.visibilityState === "hidden") {
+    stream.getTracks().forEach((track) => track.stop());
+    cancelPendingStart = false;
+    if (session === listeningSession) autoStopRecording = false;
     return;
   }
+  recordingStream = stream;
   const mimeType = preferredRecordingType();
   try {
-    recorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined);
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
   } catch {
-    releaseMicrophone();
+    teardownRecording();
     showError("This browser cannot record audio in a supported format.");
     return;
   }
+  recordingTrack = stream.getAudioTracks()[0] || null;
+  recordingTrack?.addEventListener("ended", onTrackEnded);
+  stopReason = null;
   recordingChunks = [];
   recorder.addEventListener("dataavailable", (event) => {
     if (event.data.size > 0) recordingChunks.push(event.data);
@@ -468,24 +600,59 @@ async function startRecording() {
   recorder.start();
   micButton.classList.add("recording");
   micButton.setAttribute("aria-pressed", "true");
-  setVoiceState(`Listening… release to stop (up to ${voiceStatus.max_seconds}s)`);
-  recordingTimer = window.setTimeout(stopRecording, voiceStatus.max_seconds * 1000);
+  recordingTimer = window.setTimeout(() => stopRecording("max_duration"), voiceStatus.max_seconds * 1000);
+  if (autoStop && holdActive) {
+    setVoiceState("Listening… release to stop.");
+  } else if (autoStop) {
+    levelMonitor = startLevelMonitor(stream, session);
+    setVoiceState(
+      levelMonitor
+        ? "Listening… stops when you pause (tap the mic to stop now)."
+        : "Listening… automatic stop is unavailable here, so tap the mic to stop.",
+    );
+  } else {
+    setVoiceState(`Listening… release to stop (up to ${voiceStatus.max_seconds}s)`);
+  }
 }
 
-function stopRecording() {
+function stopRecording(reason = "manual") {
   micHeld = false;
+  if (startPending) {
+    cancelPendingStart = true;
+    return;
+  }
+  if (!recorder || recorder.state === "inactive" || stopReason) return;
+  stopReason = reason;
   window.clearTimeout(recordingTimer);
-  if (recorder && recorder.state !== "inactive") recorder.stop();
+  recordingTimer = null;
+  stopLevelMonitor();
+  try {
+    recorder.stop();
+  } catch {
+    finishRecording();
+  }
 }
 
 async function finishRecording() {
+  const reason = stopReason || "manual";
+  stopReason = null;
   const type = recorder?.mimeType || recordingChunks[0]?.type || "";
   const recording = new Blob(recordingChunks, { type });
-  recorder = null;
-  recordingChunks = [];
-  releaseMicrophone();
-  micButton.classList.remove("recording");
-  micButton.setAttribute("aria-pressed", "false");
+  const handsFree = handsFreeToggle.checked;
+  teardownRecording();
+  if (DISCARD_MESSAGES[reason]) {
+    setBusy(isSending);
+    if (reason === "track_ended") {
+      showError(DISCARD_MESSAGES[reason]);
+    } else {
+      setVoiceState(DISCARD_MESSAGES[reason]);
+      if (reason === "no_speech" && handsFree) {
+        voiceTurn = true;
+        if (speechWanted()) speakReply(DISCARD_MESSAGES[reason]);
+      }
+    }
+    return;
+  }
   if (recording.size === 0) {
     setVoiceState("");
     showError("Nothing was recorded. Hold the button while you speak.");
@@ -496,7 +663,6 @@ async function finishRecording() {
   transcribing = true;
   setBusy(isSending);
   setVoiceState("Transcribing locally…");
-  const handsFree = handsFreeToggle.checked;
   let transcript = null;
   try {
     const formData = new FormData();
@@ -583,6 +749,38 @@ async function speakReply(text) {
   }
 }
 
+function micPressStart() {
+  const handsFree = handsFreeToggle.checked;
+  if (handsFree && (recorder || startPending)) {
+    stopRecording("manual"); // a second tap stops immediately
+    return;
+  }
+  pressStartedAt = performance.now();
+  micHeld = true;
+  if (handsFree) {
+    ensureAudioContext();
+    // Holding the button means manual control: automatic stopping is switched off.
+    holdTimer = window.setTimeout(() => {
+      if (!micHeld || !autoStopRecording) return;
+      holdActive = true;
+      stopLevelMonitor();
+      if (recorder) setVoiceState("Listening… release to stop.");
+    }, HOLD_TO_TALK_MS);
+  }
+  startRecording(handsFree);
+}
+
+function micPressEnd() {
+  if (!micHeld) return; // e.g. the release of a second tap, which already stopped
+  micHeld = false;
+  window.clearTimeout(holdTimer);
+  holdTimer = null;
+  // Review mode always stops on release; hands-free stops on release only after a hold.
+  if (!autoStopRecording || holdActive || performance.now() - pressStartedAt >= HOLD_TO_TALK_MS) {
+    stopRecording("manual");
+  }
+}
+
 micButton.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
   event.preventDefault();
@@ -591,21 +789,26 @@ micButton.addEventListener("pointerdown", (event) => {
   } catch {
     // Without capture, releasing over the button still stops recording.
   }
-  micHeld = true;
-  startRecording();
+  micPressStart();
 });
 for (const eventName of ["pointerup", "pointercancel"]) {
-  micButton.addEventListener(eventName, stopRecording);
+  micButton.addEventListener(eventName, micPressEnd);
 }
 micButton.addEventListener("keydown", (event) => {
   if ((event.key === " " || event.key === "Enter") && !event.repeat) {
     event.preventDefault();
-    micHeld = true;
-    startRecording();
+    micPressStart();
   }
 });
 micButton.addEventListener("keyup", (event) => {
-  if (event.key === " " || event.key === "Enter") stopRecording();
+  if (event.key === " " || event.key === "Enter") micPressEnd();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && (recorder || startPending)) stopRecording("page_hidden");
+});
+window.addEventListener("pagehide", () => {
+  if (recorder || startPending) stopRecording("page_hidden");
+  teardownRecording();
 });
 speakToggle.addEventListener("change", () => {
   if (!speakToggle.checked) {
@@ -618,7 +821,9 @@ handsFreeToggle.addEventListener("change", () => {
     voiceTurn = false;
     stopReplyAudio();
   }
-  setVoiceState(handsFreeToggle.checked ? "Hands-free: hold the mic, speak, and release to send." : "");
+  setVoiceState(
+    handsFreeToggle.checked ? "Hands-free: tap the mic and speak; it stops when you pause and sends." : "",
+  );
 });
 
 async function resolvePendingAction(approved) {

@@ -26,6 +26,13 @@ CONVERT_TIMEOUT_SECONDS = 20
 TRANSCRIBE_TIMEOUT_SECONDS = 60
 SPEAK_TIMEOUT_SECONDS = 60
 DEFAULT_MAX_SECONDS = 60
+# Hands-free automatic end-of-speech detection (done in the browser; see
+# static/voice_activity.js). These are passed to the page through /api/voice/status.
+DEFAULT_END_SILENCE_MS = 1200
+DEFAULT_MIN_RECORDING_MS = 600
+END_SILENCE_MS_RANGE = (500, 4000)
+MIN_RECORDING_MS_RANGE = (200, 3000)
+NO_SPEECH_TIMEOUT_MS = 6000
 # Loudness check on the converted 16 kHz mono WAV, before whisper.cpp runs (whisper
 # transcribes silence as "you"). A recording counts as speech only if at least
 # MIN_SPEECH_SECONDS of 30 ms windows reach SPEECH_LEVEL_DBFS. The threshold sits just
@@ -71,6 +78,8 @@ class VoiceSettings:
     language: str = "en"
     max_seconds: int = DEFAULT_MAX_SECONDS
     speech_output: bool = False
+    end_silence_ms: int = DEFAULT_END_SILENCE_MS
+    min_recording_ms: int = DEFAULT_MIN_RECORDING_MS
 
     @property
     def stt_available(self) -> bool:
@@ -125,7 +134,32 @@ def build_voice_settings(values: dict[str, str], base_directory: Path) -> VoiceS
         max_seconds = DEFAULT_MAX_SECONDS
     max_seconds = min(max(max_seconds, 1), 120)
     speech_output = values.get("speech_output", "on").strip().lower() not in {"off", "no", "false", "0"}
-    return VoiceSettings(ffmpeg, whisper_cli, model, voice, language, max_seconds, speech_output)
+    end_silence_ms = _bounded_ms(values, "end_silence_ms", DEFAULT_END_SILENCE_MS, END_SILENCE_MS_RANGE)
+    min_recording_ms = _bounded_ms(values, "min_recording_ms", DEFAULT_MIN_RECORDING_MS, MIN_RECORDING_MS_RANGE)
+    if min_recording_ms >= max_seconds * 1000:
+        logger.warning("Voice: min_recording_ms must be shorter than max_seconds; using the default.")
+        min_recording_ms = min(DEFAULT_MIN_RECORDING_MS, max_seconds * 500)
+    return VoiceSettings(
+        ffmpeg, whisper_cli, model, voice, language, max_seconds, speech_output,
+        end_silence_ms, min_recording_ms,
+    )
+
+
+def _bounded_ms(values: dict[str, str], name: str, default: int, bounds: tuple[int, int]) -> int:
+    """Read a whole number of milliseconds within bounds; anything else uses the default."""
+    raw = values.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Voice: %s must be a whole number of milliseconds; using %d.", name, default)
+        return default
+    low, high = bounds
+    if not low <= value <= high:
+        logger.warning("Voice: %s must be between %d and %d; using %d.", name, low, high, default)
+        return default
+    return value
 
 
 def _run(arguments: list[str], timeout: int, action: str) -> subprocess.CompletedProcess:

@@ -43,6 +43,12 @@ in `TODO.md`.
   cancel the waiting action rather than approve it).
 - Speech is not streamed: a spoken reply starts only after the whole reply is
   ready, and you cannot speak while U is generating a reply.
+- Hands-free end-of-speech detection is an energy check against each recording's
+  starting noise level, not speech recognition: steady background sound can keep
+  a recording open until `max_seconds`, speech not clearly louder than steady
+  noise (about 6 dB) or very close to the room's noise level can be discarded as
+  "no speech", and pauses longer than `end_silence_ms` end a recording early.
+  U does not yet start listening again by itself after replying.
 
 ### Model behaviour
 - Tool results state exactly what a search covered, but Gemma may still omit
