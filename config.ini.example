@@ -14,7 +14,9 @@ Documents = ~/Documents
 
 [voice]
 # Local push-to-talk. Remove this section to turn voice off. Install with
-# `brew install whisper.cpp` and place ggml-base.en.bin in data/models/ (see README).
+# `brew install ffmpeg whisper.cpp` and place ggml-base.en.bin in data/models/ (see README).
+# These paths are for Homebrew on Apple Silicon. On an Intel Mac, Homebrew uses
+# /usr/local/bin instead; run `command -v ffmpeg whisper-cli` to find the right paths.
 ffmpeg = /opt/homebrew/bin/ffmpeg
 whisper_cli = /opt/homebrew/bin/whisper-cli
 whisper_model = data/models/ggml-base.en.bin

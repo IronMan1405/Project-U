@@ -15,20 +15,22 @@ from urllib.parse import urlsplit
 import computer_utilities
 from computer_utilities import UtilityError, UtilitySettings
 from storage import (
-    DUE_AT_PATTERN,
+    TOOL_DUE_AT_FORMAT_DESCRIPTION,
+    TOOL_DUE_AT_PATTERN,
     RecordNotFound,
     create_note,
     create_task,
     delete_note,
     delete_task,
+    describe_due_at,
     get_note,
     initialize_database,
     list_notes,
     list_tasks,
+    normalize_due_at,
     set_task_completed,
     update_note,
     update_task,
-    validate_due_at,
 )
 
 
@@ -254,11 +256,9 @@ class ToolRegistry:
         task_id = _positive_id_schema()
         note_id = _positive_id_schema()
         due_at_description = (
-            "Machine-format due date, never natural language. Use YYYY-MM-DD when the user "
-            "gives only a day, or 'YYYY-MM-DD HH:MM:SSZ' in UTC when they give a time. "
-            "Specific times are supported: convert the user's local date and time to UTC "
-            "using the current date and UTC offset in the system context before calling "
-            "(for example, 5 AM local at UTC-04:00 is 09:00:00Z on the same day)."
+            f"Machine-format due date, never natural language: {TOOL_DUE_AT_FORMAT_DESCRIPTION}. "
+            "Specific times are supported: write the user's local date and time as they said it "
+            "(e.g. 'tomorrow at 5 AM' -> '<tomorrow> 05:00'); do not convert to UTC, U does that."
         )
         self._definitions = {
             "create_task": ToolDefinition(
@@ -271,7 +271,7 @@ class ToolRegistry:
                         "description": {"type": "string", "maxLength": 5000},
                         "due_at": {
                             "type": "string",
-                            "pattern": DUE_AT_PATTERN,
+                            "pattern": TOOL_DUE_AT_PATTERN,
                             "description": f"Optional. {due_at_description}",
                         },
                     },
@@ -306,7 +306,7 @@ class ToolRegistry:
                         "task_id": task_id,
                         "due_at": {
                             "type": ["string", "null"],
-                            "pattern": DUE_AT_PATTERN,
+                            "pattern": TOOL_DUE_AT_PATTERN,
                             "description": f"{due_at_description} Use null to clear.",
                         },
                     },
@@ -470,8 +470,10 @@ class ToolRegistry:
             raise ToolError("The requested tool is not available.")
         arguments = validate_arguments(definition.parameters, raw_arguments)
         if arguments.get("due_at") is not None:
+            # Normalize once, here, so the confirmation summary and the stored value are
+            # the same instant: local wall times become canonical UTC in Python.
             try:
-                validate_due_at(arguments["due_at"])
+                arguments = {**arguments, "due_at": normalize_due_at(arguments["due_at"])}
             except ValueError as error:
                 raise ToolError(str(error)) from error
         if name == "open_website":
@@ -527,7 +529,7 @@ class ToolRegistry:
     @staticmethod
     def _summary(name: str, arguments: dict) -> str:
         if name == "create_task":
-            due = f" (due {arguments['due_at']})" if arguments.get("due_at") else ""
+            due = f" (due {describe_due_at(arguments['due_at'])})" if arguments.get("due_at") else ""
             return f"Create task: {arguments['title']}{due}"
         if name == "set_task_completed":
             state = "complete" if arguments["completed"] else "reopen"
@@ -535,7 +537,7 @@ class ToolRegistry:
         if name == "set_task_due_date":
             if arguments["due_at"] is None:
                 return f"Clear due date of task {arguments['task_id']}"
-            return f"Set due date of task {arguments['task_id']} to {arguments['due_at']}"
+            return f"Set due date of task {arguments['task_id']} to {describe_due_at(arguments['due_at'])}"
         if name == "delete_task":
             return f"Delete task {arguments['task_id']}"
         if name == "create_note":
@@ -563,7 +565,10 @@ class ToolRegistry:
             self.database_path,
             due_at=arguments.get("due_at"),
         )
-        return ToolOutcome(True, "Task created.", task)
+        if task["due_at"] is None:
+            return ToolOutcome(True, "Task created.", task)
+        due = describe_due_at(task["due_at"])
+        return ToolOutcome(True, f"Task created, due {due}.", {**task, "due_local": due})
 
     def _list_tasks(self, arguments: dict) -> ToolOutcome:
         tasks = list_tasks(self.database_path)
@@ -573,6 +578,7 @@ class ToolRegistry:
             bounded_tasks.append(
                 {
                     **task,
+                    **({"due_local": describe_due_at(task["due_at"])} if task["due_at"] else {}),
                     "description": description[:MAX_TASK_DESCRIPTION_RESULT],
                     "description_truncated": len(description) > MAX_TASK_DESCRIPTION_RESULT,
                 }
@@ -592,8 +598,10 @@ class ToolRegistry:
 
     def _set_task_due_date(self, arguments: dict) -> ToolOutcome:
         task = update_task(arguments["task_id"], self.database_path, due_at=arguments["due_at"])
-        message = "Task due date cleared." if task["due_at"] is None else "Task due date set."
-        return ToolOutcome(True, message, task)
+        if task["due_at"] is None:
+            return ToolOutcome(True, "Task due date cleared.", task)
+        due = describe_due_at(task["due_at"])
+        return ToolOutcome(True, f"Task due date set to {due}.", {**task, "due_local": due})
 
     def _delete_task(self, arguments: dict) -> ToolOutcome:
         delete_task(arguments["task_id"], self.database_path)

@@ -4,7 +4,7 @@ import secrets
 import threading
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -17,15 +17,11 @@ MAX_MODEL_ROUNDS_PER_TURN = 8
 logger = logging.getLogger(__name__)
 
 
-def _utc_due_at(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-
-
 def date_context(now: datetime) -> str:
-    """Describe the current local time and how to turn natural-language dates into due_at.
+    """Describe the current local time and how to write due dates for the task tools.
 
-    The examples are computed from the supplied clock so a small model can copy the
-    pattern instead of doing timezone arithmetic from scratch.
+    Times are passed as local wall-clock values; the tool layer converts them to UTC in
+    Python, so the model never does timezone arithmetic.
     """
     if now.tzinfo is None:
         now = now.astimezone()
@@ -33,24 +29,23 @@ def date_context(now: datetime) -> str:
     utc_offset = f"UTC{offset[:3]}:{offset[3:]}"
     zone = utc_offset if now.tzname() in (None, utc_offset) else f"{now.tzname()}, {utc_offset}"
     tomorrow = now.date() + timedelta(days=1)
-    tomorrow_5am = datetime.combine(tomorrow, time(5, 0), tzinfo=now.tzinfo)
-    today_6pm = datetime.combine(now.date(), time(18, 0), tzinfo=now.tzinfo)
     return (
         f"Current local date and time: {now:%A %Y-%m-%d %H:%M} ({zone}). "
         "Task due dates: due_at is a machine-format value, never natural language. "
-        "Before calling create_task or set_task_due_date, convert the user's words into exactly one of: "
+        "Before calling create_task or set_task_due_date, write the user's words as exactly one of: "
         "(1) date only, when the user gives no time: YYYY-MM-DD (the local calendar date); "
-        "(2) date and time: 'YYYY-MM-DD HH:MM:SSZ' in UTC, converting the user's local time "
-        f"with the {utc_offset} offset above. "
+        "(2) date and time: 'YYYY-MM-DD HH:MM' in 24-hour local time, exactly as the user said it. "
+        "Do not convert to UTC or apply the offset; U converts local times itself. "
+        "Add '+HH:MM', '-HH:MM' or 'Z' only if the user names a different time zone. "
         "Specific times are supported: never drop a time the user gave, and never put words such as "
         "'tomorrow' or '5am' in due_at. "
         f"Examples for right now: 'tomorrow' -> {tomorrow:%Y-%m-%d}; "
-        f"'tomorrow at 5 AM' -> {_utc_due_at(tomorrow_5am)} "
-        f"(05:00 local on {tomorrow:%Y-%m-%d} at {utc_offset}); "
-        f"'today at 6 PM' -> {_utc_due_at(today_6pm)}. "
+        f"'tomorrow at 5 AM' -> {tomorrow:%Y-%m-%d} 05:00; "
+        f"'today at 6 PM' -> {now:%Y-%m-%d} 18:00. "
         "Resolve weekdays such as 'Friday' to the next upcoming date. "
         "Relative days and clock times are not ambiguous; convert them. "
-        "Ask the user only when the day itself is unclear, such as 'sometime soon'."
+        "Ask the user only when the day itself is unclear, such as 'sometime soon'. "
+        "When reporting a due time, use the local time the tool result gives."
     )
 
 

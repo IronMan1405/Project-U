@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** Selected-file and PDF support complete; next milestone is approved computer utilities.
+**Current milestone:** v1.0 release hardening. The audit's security, due-time, and Ollama-failure fixes are done; the manual end-to-end pass, the voice go/no-go, and the release commit remain.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -78,11 +78,14 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [ ] Decide on October 20 whether voice is stable enough for v1.0
 
 ### 5. Release & Polish
-- [ ] Test core features end to end
-- [ ] Fix important bugs and usability issues
-- [ ] Verify graceful handling of Ollama/server failures
-- [ ] Review local storage, privacy, and safety
-- [ ] Update README with installation, startup, and usage instructions
+- [x] Release-readiness audit (October 15)
+- [x] Fix the trusted-host (DNS-rebinding) issue: only `127.0.0.1`/`localhost` Host names are accepted
+- [x] Convert assistant due times to UTC in Python instead of relying on the model
+- [x] Verify graceful handling of Ollama/server failures (automated tests)
+- [x] Review local storage, privacy, and safety (audit; see `FUTURE.md` for known limitations)
+- [x] Update README with installation, startup, and usage instructions
+- [ ] Test core features end to end by hand, following the README on a fresh setup
+- [ ] Fix any important bugs found in that pass
 - [ ] Create a final release commit by October 21
 
 ## Scope Rules

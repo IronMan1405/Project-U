@@ -16,7 +16,7 @@ U is a personal utility, not an autonomous AI agent or a general-purpose operati
 - **LLM runtime:** Ollama
 - **LLM:** Existing locally installed model
 - **Database:** SQLite
-- **Interface:** To be decided after the initial working prototype
+- **Interface:** Local Flask web UI at `http://127.0.0.1:5000` plus a terminal client (`main.py`)
 - **Version control:** Git and GitHub
 
 Prefer existing capabilities and minimal dependencies. Do not introduce additional frameworks without a clear need.
@@ -33,7 +33,7 @@ Communicates with the local Ollama API. Keeps model configuration separate from 
 Loads the user-editable `profile.json` before each model request and provides its validated preferences as separate system context alongside the in-memory conversation. The web client can also attach one explicitly uploaded `.txt` or `.pdf` to a conversation. `documents.py` validates and extracts uploads locally in memory; question-relevant page/paragraph excerpts are passed as separate untrusted document context through the shared Ollama request path, capped at 12,000 characters. Replacing the selected document resets that conversation's history. Profile values are user data, not instructions or authorization. Missing or invalid profiles use generic defaults.
 
 ### Memory
-`storage.py` owns the SQLite schema and parameterized CRUD operations for tasks and notes. Tasks have an optional `due_at` (`YYYY-MM-DD` or a UTC `YYYY-MM-DD HH:MM:SSZ` timestamp), validated by `storage.validate_due_at` and shared by the API, tool schemas, and UI; older databases gain the column on startup. `update_task` changes only the fields it is given, so completing a task never alters its due date. The default database is `data/project_u.sqlite3`, created automatically and kept local. Flask exposes explicit task and note APIs used by the web interface; chat changes these records only through the registered tools in `tool_registry.py`.
+`storage.py` owns the SQLite schema and parameterized CRUD operations for tasks and notes. Tasks have an optional `due_at` (`YYYY-MM-DD` or a UTC `YYYY-MM-DD HH:MM:SSZ` timestamp), validated by `storage.validate_due_at` and shared by the API, tool schemas, and UI; older databases gain the column on startup. `update_task` changes only the fields it is given, so completing a task never alters its due date. The assistant tools accept due times as local wall-clock values (`YYYY-MM-DD HH:MM`, or with an explicit offset); `storage.normalize_due_at` converts them to UTC in Python using the system time zone and rejects times that a daylight-saving change skips or repeats, so the model never does timezone arithmetic. The web API itself accepts only the canonical formats. The default database is `data/project_u.sqlite3`, created automatically and kept local. Flask exposes explicit task and note APIs used by the web interface; chat changes these records only through the registered tools in `tool_registry.py`.
 
 ### Tools
 Provides narrowly scoped functions for approved operations, such as managing tasks, reading selected files, and opening applications. `computer_utilities.py` holds the approved computer utilities: `config.py` loads allowlisted folders and macOS apps from `config.ini`, and `tool_registry.py` offers `find_files` (bounded, read-only file-name search), `open_file` (confirmed, path-contained, document types only), and `open_application` (confirmed, allowlist only) only when they are configured. Launches use the fixed `/usr/bin/open` executable with argument lists, never a shell.
@@ -58,8 +58,7 @@ Provides a single, consistent interface for interacting with U.
 - Task and note changes come from explicit UI/API requests or validated tool calls; model-requested writes run directly only for clear user requests and otherwise require confirmation.
 - Uploaded documents are processed locally; request parsing may temporarily spool upload data, but no file is retained after the request. Extracted text is conversation-scoped memory only and is never added to profile or SQLite storage.
 - Limit document uploads and extracted context; scanned PDFs are not OCR'd and large documents may be represented only by selected excerpts.
-- Uploaded documents are processed locally, held only in memory, and never added to profile or SQLite storage.
-- Limit document uploads and extracted context; scanned PDFs are not OCR'd and large documents may be represented only by selected excerpts.
+- The web server binds to `127.0.0.1` and accepts only the `127.0.0.1` and `localhost` Host names (Flask `TRUSTED_HOSTS`), so pages on other hostnames, including DNS-rebinding pages, cannot read data or approve actions.
 
 ## 5. Development Rules
 
@@ -71,9 +70,9 @@ Provides a single, consistent interface for interacting with U.
 - Record deferred ideas in FUTURE.md rather than implementing them.
 - Commit working milestones to Git.
 
-## 6. Initial Milestone
+## 6. Initial Milestone (historical, completed)
 
-Build a minimal Python application that:
+This section records the first milestone's scope and is kept for history; sections 2–4 describe the current architecture. The first milestone was to build a minimal Python application that:
 
 1. Starts from the project directory.
 2. Accepts a text message.

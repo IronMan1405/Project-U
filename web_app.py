@@ -52,6 +52,9 @@ def create_app(
     conversation_activity: dict[str, dict] = {}
     app.config["DATABASE_PATH"] = Path(database_path) if database_path else DATABASE_PATH
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES + 64 * 1024
+    # Only the loopback names the server is reached by. Rejecting every other Host header
+    # (400) stops DNS-rebinding pages from reading data or approving tool actions.
+    app.config["TRUSTED_HOSTS"] = ["127.0.0.1", "localhost"]
 
     try:
         endpoint, model = load_settings()
@@ -111,6 +114,8 @@ def create_app(
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             reason = getattr(error, "reason", error)
             return jsonify(connected=False, error=f"Ollama is unavailable: {reason}"), 503
+        if not isinstance(result, dict):
+            return jsonify(connected=False, error="Ollama returned an unexpected health response."), 503
 
         available_models = {
             entry.get("name") or entry.get("model")
