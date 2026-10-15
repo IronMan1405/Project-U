@@ -2,6 +2,7 @@ import configparser
 from pathlib import Path
 
 from computer_utilities import UtilitySettings, build_utility_settings
+from voice import VoiceSettings, build_voice_settings
 
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.ini"
@@ -32,3 +33,11 @@ def load_utility_settings(
     folders = dict(parser.items("utility_folders")) if parser.has_section("utility_folders") else {}
     apps = parser.get("utilities", "allowed_apps", fallback="").split(",")
     return build_utility_settings(folders, apps, home)
+
+
+def load_voice_settings(config_path: Path = CONFIG_PATH) -> VoiceSettings:
+    """Read the [voice] section; without it, push-to-talk and spoken replies are off."""
+    parser = configparser.ConfigParser(interpolation=None)
+    if not parser.read(config_path) or not parser.has_section("voice"):
+        return VoiceSettings()
+    return build_voice_settings(dict(parser.items("voice")), Path(config_path).resolve().parent)

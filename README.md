@@ -160,6 +160,48 @@ before opening.
 confirm. Both open tools run the fixed `/usr/bin/open` executable with an
 argument list, never a shell, and are macOS-only.
 
+### Voice (push-to-talk)
+
+Voice is optional and fully local: speech is transcribed by
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) and replies are spoken by
+macOS `say`. No audio or text leaves the machine. One-time setup (the only step
+that uses the network):
+
+```sh
+brew install whisper.cpp
+mkdir -p data/models
+curl -fL --proto '=https' --tlsv1.2 -o data/models/ggml-base.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+```
+
+Compare `shasum -a 256 data/models/ggml-base.en.bin` with the SHA-256 shown for
+the file on Hugging Face, then copy the `[voice]` section from
+`config.ini.example` into `config.ini` and restart U. Without that section,
+voice controls are hidden and typed chat is unchanged.
+
+In Chat, hold the microphone button (or hold Space/Enter on it) while speaking
+and release to stop; recordings are capped at `max_seconds` (60 by default).
+FFmpeg converts the browser recording to 16 kHz mono WAV and whisper.cpp
+transcribes it. The transcript is placed in the message box for you to review
+and edit; nothing is sent until you press Enter, so voice requests use the same
+chat path, tool rules, and Confirm/Cancel buttons as typed ones. Confirmations
+are never accepted by voice.
+
+"Speak replies" (off by default) reads each final reply aloud with `say`, using
+`say_voice` if set (list voices with `say -v '?'`). Long replies are spoken up
+to about 1,500 characters. Turning the toggle off, recording, or starting a new
+conversation stops playback.
+
+Recordings are limited to 3 MiB and WebM, Ogg, or MP4 audio; conversion,
+transcription, and speech each have a timeout, and one transcription runs at a
+time. Audio and text exist only in a private temporary directory during a
+request and are deleted afterwards; they are never logged or stored. To run the
+local speech round-trip test (no microphone needed):
+
+```sh
+VOICE_SMOKE=1 .venv/bin/python -m unittest tests.test_voice -v
+```
+
 Assistant responses render Markdown with locally served `markdown-it` 15.0.2
 and DOMPurify 3.4.16 bundles in `static/vendor/`. Raw HTML is disabled, parsed
 output is sanitized against an allowlist, and unsafe URL schemes are removed.

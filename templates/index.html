@@ -77,12 +77,26 @@
             <label class="visually-hidden" for="message-input">Message U</label>
             <textarea id="message-input" name="message" rows="1" maxlength="20000"
               placeholder="Message U..." autocomplete="off" required></textarea>
+            <button class="mic-button" id="mic-button" type="button" aria-pressed="false"
+              aria-label="Hold to talk" title="Hold to talk; release to transcribe" hidden>
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"></rect>
+                <path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round"></path>
+              </svg>
+            </button>
             <button class="send-button" id="send-button" type="submit" aria-label="Send message" title="Send message">
               <span aria-hidden="true">&#8593;</span>
             </button>
           </form>
           <div class="composer-notes">
             <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
+            <span class="voice-controls">
+              <span class="voice-state" id="voice-state" aria-live="polite"></span>
+              <label class="speak-toggle" id="speak-toggle-label" hidden>
+                <input type="checkbox" id="speak-replies"> Speak replies
+              </label>
+            </span>
             <span>Stop the server with Ctrl+C in its terminal.</span>
           </div>
         </footer>

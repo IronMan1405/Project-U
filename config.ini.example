@@ -11,3 +11,15 @@ allowed_apps = Calendar, Notes
 # (opening always asks first). Folders must be inside your home folder; ~/Library and
 # hidden folders are refused. Remove this section to disable file search and opening.
 Documents = ~/Documents
+
+[voice]
+# Local push-to-talk. Remove this section to turn voice off. Install with
+# `brew install whisper.cpp` and place ggml-base.en.bin in data/models/ (see README).
+ffmpeg = /opt/homebrew/bin/ffmpeg
+whisper_cli = /opt/homebrew/bin/whisper-cli
+whisper_model = data/models/ggml-base.en.bin
+language = en
+max_seconds = 60
+# Spoken replies use macOS `say`; leave say_voice empty for the system voice.
+speech_output = on
+say_voice =
