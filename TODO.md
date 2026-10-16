@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** v1.2 continuous voice loop. The voice-state indicator and Stop speaking control are implemented and tested; your real-browser checks, review, and commit remain.
+**Current milestone:** v1.2 continuous voice loop. Interrupting a spoken reply (barge-in) is implemented and tested; your real-browser checks, review, and commit remain.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -125,8 +125,11 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Clear Listening / Transcribing / Thinking / Speaking / paused / error indicator, derived from the loop (`viewState`), and a Stop speaking control (`stop_speaking`)
 - [x] Indicator and Stop speaking `node:test` tests; live browser regression with real Gemma
 - [ ] Check the indicator and Stop speaking in Chrome and Safari (including a screen reader and keyboard)
-- [ ] Review the voice-indicator diff and commit
-- [ ] Interruption handling (stopping a spoken reply by voice; Gemma generation cannot be interrupted yet)
+- [x] Review the voice-indicator diff and commit
+- [x] Interrupt a spoken reply by tapping the mic (barge-in): one recording, one submission, confirmations stay pending, Review mode stays manual; Gemma generation still cannot be interrupted
+- [x] Barge-in `node:test` tests; live browser regression with real Gemma
+- [ ] Check barge-in in Chrome and Safari (tap, keyboard, confirmation prompt, Review mode)
+- [ ] Review the barge-in diff and commit
 - [ ] Optional wake-word support (last; needs its own decision)
 
 ## Scope Rules

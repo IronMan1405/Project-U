@@ -96,6 +96,8 @@ let replyRequest = 0;
 let voiceTurn = false;
 let sendingFromVoice = false;
 let replyFinish = null; // resolves the current speakReply() promise
+const SPEAK_BUSY_RETRIES = 12; // up to about 3 s for the previous synthesis to finish
+const SPEAK_BUSY_RETRY_MS = 250;
 let voiceLoop = window.VoiceLoop.createVoiceLoop();
 
 // The hands-free loop (static/voice_loop.js) decides when to listen again; this reports
@@ -136,6 +138,7 @@ function renderVoiceView() {
     (micButton.hidden ? input : micButton).focus();
   }
   stopSpeakingButton.hidden = hideStop;
+  updateMicLabel(!hideStop);
   voiceBar.classList.toggle("is-active", state !== "idle" || !hideStop);
 }
 
@@ -838,11 +841,20 @@ function speakReply(text) {
   };
   (async () => {
     try {
-      const response = await fetch("/api/voice/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
+      // The server synthesizes one reply at a time. A reply that follows a stopped or
+      // replaced one within a second or two can get 429 while that synthesis finishes, so
+      // retry briefly, only while this is still the current request.
+      let response;
+      for (let attempt = 0; ; attempt += 1) {
+        response = await fetch("/api/voice/speak", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (response.status !== 429 || attempt >= SPEAK_BUSY_RETRIES || request !== replyRequest) break;
+        await new Promise((resolve) => window.setTimeout(resolve, SPEAK_BUSY_RETRY_MS));
+      }
+      if (request !== replyRequest) return; // stopped or replaced meanwhile (already resolved)
       if (!response.ok) {
         const result = await response.json().catch(() => null);
         throw new Error(result?.error || "Local speech output failed.");
@@ -948,12 +960,18 @@ stopSpeakingButton.addEventListener("click", () => {
   renderVoiceView();
 });
 
-function updateMicLabel() {
+// The mic's accessible name follows the mode. While a hands-free reply is playing, tapping it
+// (or pressing Space/Enter on it) interrupts the reply and starts listening (barge-in).
+function updateMicLabel(speaking = false) {
   const handsFree = handsFreeToggle.checked;
-  micButton.setAttribute("aria-label", handsFree ? "Tap to talk" : "Hold to talk");
-  micButton.title = handsFree
-    ? "Tap to talk; it stops when you pause (tap again to stop now)"
-    : "Hold to talk; release to transcribe";
+  const label = handsFree ? (speaking ? "Interrupt and talk" : "Tap to talk") : "Hold to talk";
+  if (micButton.getAttribute("aria-label") === label) return;
+  micButton.setAttribute("aria-label", label);
+  micButton.title = !handsFree
+    ? "Hold to talk; release to transcribe"
+    : speaking
+      ? "Interrupt the reply and talk; it stops when you pause"
+      : "Tap to talk; it stops when you pause (tap again to stop now)";
 }
 
 handsFreeToggle.addEventListener("change", () => {
