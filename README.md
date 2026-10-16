@@ -39,6 +39,45 @@ own tests, run with Node's built-in test runner (no packages to install):
 node --test tests/js/
 ```
 
+## The command center
+
+The web UI is a K.R.I.S. (Knowledge, Reasoning & Intelligent System) command
+center. The K.R.I.S. wordmark is centred at the top, with the local model status
+on the left and New conversation on the right. Below it, on a desktop-width
+window, are three columns:
+- **Left:** three boxes. **System** is always shown: CPU, memory, GPU and thermal
+  readings are not implemented and say "Not connected" (never invented numbers),
+  followed by the model and voice availability reported by the server and whether
+  Hands-free is on. Below it, **Inbox / Calendar** switches between two tabs that
+  say plainly they are not connected: K.R.I.S. has no mail or calendar
+  integration yet. Below that, **Alerts** lists current problems (model
+  unavailable, errors, an action waiting for approval, Hands-free paused) with a
+  count beside its heading.
+- **Centre:** the K.R.I.S. energy core, the main visual element, with its status
+  beneath it. Its look follows the real state of the page: Standing by,
+  Listening, Transcribing, Thinking, Speaking, Waiting for confirmation (amber),
+  Hands-free paused, Error, and Offline when the model is unreachable. Only the
+  core lives here, so switching views never replaces it.
+- **Right:** the workspace with **Chat** (the transcript and any Confirm/Cancel
+  prompt), **Tasks**, **Notes** and **Files** (the document picker). Below it,
+  the **Console** is a read-only, terminal-style log of what happened on this page
+  (tool use, voice states, errors, model status); it runs no commands and is not
+  saved. At the bottom, a switchable panel shows **Activity** (the tools used in the
+  latest request) and **Utilities**.
+
+The command bar along the bottom (message box, microphone, Stop speaking, and the
+Hands-free and Speak replies toggles) is always available. Sending a message, or a
+pending confirmation, switches the workspace back to Chat. The switchable panels
+are standard tabs: click them, or use the arrow keys, Home and End.
+
+The two side columns always share one width, so the core sits on the page's
+centre line. Below 1180 px wide, the core and the three left boxes share the left
+column. At 820 px and below, everything stacks into one scrolling column (core,
+workspace, console, activity/utilities, system, inbox/calendar, alerts) with the
+command bar pinned to the bottom. Animations stop when
+the system asks for reduced motion. The server, terminal client and model prompts
+still call the assistant "U"; only the web UI has been renamed so far.
+
 ## Profile and preferences
 
 U reads `profile.json` from the project directory before each model request, so
@@ -84,7 +123,7 @@ configured model. Stop the server with `Ctrl+C` in its terminal.
 
 ## Tasks and notes
 
-Use the Tasks and Notes tabs in the web interface to create, edit, complete,
+Use the Tasks and Notes tabs in the web interface's workspace panel to create, edit, complete,
 reopen, and delete records. Notes preserve their text and newlines. Records are
 stored locally in `data/project_u.sqlite3`; the directory and schema are created
 automatically the first time U starts. Data persists across restarts and is

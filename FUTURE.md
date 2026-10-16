@@ -63,6 +63,18 @@ in `TODO.md`.
 - Tool results state exactly what a search covered, but Gemma may still omit
   details such as an incomplete search when it summarizes them.
 
+### Command-center UI
+- CPU, memory, GPU and thermal rows in the System panel say "Not connected";
+  there is no hardware telemetry API.
+- Inbox and Calendar are placeholders that say they are not connected; there is
+  no mail or calendar integration.
+- The Console only lists events seen by the open page; it is cleared on reload
+  and runs no commands.
+- Only the web UI is named K.R.I.S.; the runtime's prompts and messages and the
+  terminal client still call the assistant "U".
+- The energy core shows the page's state; it does not react to the actual
+  microphone or speech volume.
+
 ### Application
 - The web UI runs on Flask's built-in development server, which is adequate for
   a single local user on `127.0.0.1` but not for any other deployment.

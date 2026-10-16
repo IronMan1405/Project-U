@@ -46,6 +46,16 @@ const confirmationPanel = document.querySelector("#confirmation-panel");
 const confirmationSummary = document.querySelector("#confirmation-summary");
 const confirmActionButton = document.querySelector("#confirm-action");
 const cancelActionButton = document.querySelector("#cancel-action");
+const chatView = document.querySelector("#chat-view");
+const coreElement = document.querySelector("#core");
+const coreStatus = document.querySelector("#core-status");
+const telemetryModel = document.querySelector("#telemetry-model");
+const telemetryVoiceIn = document.querySelector("#telemetry-voice-in");
+const telemetryVoiceOut = document.querySelector("#telemetry-voice-out");
+const telemetryHandsFree = document.querySelector("#telemetry-hands-free");
+const alertList = document.querySelector("#alert-list");
+const activityLog = document.querySelector("#activity-log");
+const alertsCount = document.querySelector("#alerts-count");
 
 const markdownParser = window.markdownit({ html: false, linkify: false });
 markdownParser.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
@@ -140,7 +150,114 @@ function renderVoiceView() {
   stopSpeakingButton.hidden = hideStop;
   updateMicLabel(!hideStop);
   voiceBar.classList.toggle("is-active", state !== "idle" || !hideStop);
+  renderCore(view.state);
+  setTelemetry(telemetryHandsFree, handsFreeToggle.checked ? "On" : "Off", handsFreeToggle.checked ? "active" : "muted");
+  renderAlerts();
 }
+
+// --- Command center: the core, telemetry, alerts and the activity log --------------
+// All of these only display facts the page already has; none of them changes behaviour.
+
+const CORE_LABELS = { idle: "Standing by", offline: "Offline" };
+let assistantOnline = null; // null until the first health check
+let renderedCoreState = "";
+function renderCore(viewStateName) {
+  // The core reflects the assistant as a whole, so a typed request still shows Thinking and
+  // a typed request's Confirm/Cancel prompt shows Waiting for confirmation.
+  let state = viewStateName;
+  if (state === "idle" && !confirmationPanel.hidden) state = "awaiting_confirmation";
+  else if (state === "idle" && assistantOnline === false) state = "offline";
+  if (state === renderedCoreState) return;
+  renderedCoreState = state;
+  coreElement.dataset.state = state;
+  coreStatus.dataset.state = state;
+  coreStatus.textContent = CORE_LABELS[state] || window.VoiceLoop.VIEW_LABELS[state] || state;
+  if (state !== "idle" && state !== "offline") {
+    const tone = state === "error" ? "danger" : state === "paused" || state === "awaiting_confirmation" ? "warning" : "";
+    logActivity(coreStatus.textContent, tone);
+  }
+}
+
+function setTelemetry(element, text, tone) {
+  if (element.textContent !== text) element.textContent = text;
+  if (element.dataset.tone !== tone) element.dataset.tone = tone;
+}
+
+let renderedAlerts = "";
+function renderAlerts() {
+  const alerts = [];
+  if (assistantOnline === false) alerts.push(["danger", "Model", healthLabel.title || healthLabel.textContent]);
+  if (!errorMessage.hidden && errorMessage.textContent) alerts.push(["danger", "Error", errorMessage.textContent]);
+  if (!confirmationPanel.hidden) alerts.push(["warning", "Needs approval", confirmationSummary.textContent]);
+  if (voiceLoop.notice) alerts.push([voiceLoop.notice.kind === "error" ? "danger" : "warning", "Hands-free", voiceLoop.notice.message]);
+  const key = JSON.stringify(alerts);
+  if (key === renderedAlerts) return;
+  renderedAlerts = key;
+  alertsCount.textContent = alerts.length ? String(alerts.length) : ""; // count beside the Alerts heading
+  alertList.replaceChildren(...alerts.map(([kind, title, text]) => {
+    const item = document.createElement("li");
+    item.className = "alert-item";
+    item.dataset.kind = kind;
+    const label = document.createElement("span");
+    label.className = "alert-kind";
+    label.textContent = title;
+    item.append(label, text);
+    return item;
+  }));
+}
+
+const ACTIVITY_LOG_LIMIT = 60;
+let lastActivityText = "";
+function logActivity(text, kind = "") {
+  if (!text || text === lastActivityText) return;
+  lastActivityText = text;
+  const line = document.createElement("li");
+  line.className = "activity-line";
+  if (kind) line.dataset.kind = kind;
+  const time = document.createElement("span");
+  time.className = "activity-time";
+  time.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const body = document.createElement("span");
+  body.className = "activity-text";
+  body.textContent = text;
+  line.append(time, body);
+  activityLog.append(line);
+  while (activityLog.childElementCount > ACTIVITY_LOG_LIMIT) activityLog.firstElementChild.remove();
+  activityLog.scrollTop = activityLog.scrollHeight;
+}
+
+// The confirmation panel is shown and hidden from several places; keep the core and alerts in step.
+new MutationObserver(renderVoiceView).observe(confirmationPanel, { attributes: true, attributeFilter: ["hidden"] });
+
+function showChatView() {
+  if (chatView.hidden) switchView("chat");
+}
+
+// Switchable side panels ([data-tabs]): a standard tab list. Arrow keys, Home and End move
+// between tabs; only the selected tab is in the Tab order. Panels keep their content when hidden.
+function setupPanelTabs(group) {
+  const tabs = [...group.querySelectorAll('[role="tab"]')];
+  const select = (tab, focus = false) => {
+    for (const other of tabs) {
+      const selected = other === tab;
+      other.setAttribute("aria-selected", String(selected));
+      other.tabIndex = selected ? 0 : -1;
+      document.getElementById(other.getAttribute("aria-controls")).hidden = !selected;
+    }
+    if (focus) tab.focus();
+  };
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => select(tab));
+    tab.addEventListener("keydown", (event) => {
+      const index = tabs.indexOf(tab);
+      const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      select(tabs[(next + tabs.length) % tabs.length], true);
+    });
+  }
+}
+document.querySelectorAll("[data-tabs]").forEach(setupPanelTabs);
 
 // Called only by the loop, after a completed reply, never on page load.
 async function resumeListening() {
@@ -166,6 +283,7 @@ function reportTurn(turn, outcome, speech) {
 function showError(message) {
   errorMessage.textContent = message;
   errorMessage.hidden = false;
+  logActivity(message, "danger");
   renderVoiceView();
 }
 
@@ -181,7 +299,7 @@ function appendMessage(role, content) {
 
   const label = document.createElement("span");
   label.className = "message-role";
-  label.textContent = role === "user" ? "YOU" : "U";
+  label.textContent = role === "user" ? "YOU" : "KRIS";
 
   const text = document.createElement("div");
   text.className = "message-content";
@@ -245,12 +363,24 @@ async function refreshHealth() {
     healthDot.classList.toggle("disconnected", result.connected !== true);
     healthLabel.textContent = result.connected ? `${result.model} ready` : "Assistant unavailable";
     healthLabel.title = result.error || "Ollama and the configured model are ready.";
+    setHealthTelemetry(result.connected === true, result.connected ? result.model : "Unavailable");
   } catch {
     healthDot.classList.remove("connected");
     healthDot.classList.add("disconnected");
     healthLabel.textContent = "Backend unavailable";
     healthLabel.title = "Could not reach the local assistant backend.";
+    setHealthTelemetry(false, "Backend unavailable");
   }
+}
+
+function setHealthTelemetry(online, text) {
+  if (online !== assistantOnline) {
+    logActivity(online ? `Model ready: ${text}` : healthLabel.title, online ? "" : "danger");
+  }
+  assistantOnline = online;
+  setTelemetry(telemetryModel, text, online ? "ok" : "danger");
+  telemetryModel.title = healthLabel.title;
+  renderVoiceView();
 }
 
 async function startConversation(previousId = null) {
@@ -406,10 +536,12 @@ function showLiveActivity(activity) {
   }
   toolActivity.replaceChildren();
   const label = document.createElement("span");
+  // The runtime's "thinking" summary still names the assistant "U"; the UI says K.R.I.S.
   label.textContent = activity.status === "running"
     ? `${toolLabel(activity.tool)}...`
-    : activity.summary || "Assistant action";
+    : activity.status === "thinking" ? "K.R.I.S. is thinking..." : activity.summary || "Assistant action";
   toolActivity.append(label);
+  if (activity.status !== "thinking") logActivity(label.textContent, "tool"); // the core already logs Thinking
   toolActivity.hidden = false;
 }
 
@@ -447,6 +579,7 @@ function renderToolActivities(activities) {
     const result = activity.status === "success" ? "Done" : activity.status;
     line.textContent = `${toolLabel(activity.tool)}: ${activity.summary} (${result})`;
     toolActivity.append(line);
+    logActivity(line.textContent, activity.status === "success" ? "tool" : "warning");
   }
   toolActivity.hidden = false;
 }
@@ -455,6 +588,8 @@ function showPendingConfirmation(pending) {
   pendingConfirmationId = pending.confirmation_id;
   confirmationSummary.textContent = `${pending.summary} ${pending.message}`;
   confirmationPanel.hidden = false;
+  showChatView(); // the Confirm and Cancel buttons must be visible
+  messagesElement.lastElementChild?.scrollIntoView({ block: "nearest" }); // the panel pushes messages down
 }
 
 function speechWanted() {
@@ -509,6 +644,14 @@ async function loadVoiceStatus() {
   micButton.hidden = !(voiceStatus.speech_input && canRecord);
   speakToggleLabel.hidden = !voiceStatus.speech_output;
   handsFreeLabel.hidden = micButton.hidden;
+  setTelemetry(
+    telemetryVoiceIn,
+    !micButton.hidden ? "Ready" : voiceStatus.speech_input ? "Browser can't record" : "Not configured",
+    micButton.hidden ? "muted" : "ok",
+  );
+  setTelemetry(telemetryVoiceOut, voiceStatus.speech_output ? "Ready" : "Not configured",
+    voiceStatus.speech_output ? "ok" : "muted");
+  renderVoiceView();
 }
 
 function preferredRecordingType() {
@@ -1416,6 +1559,7 @@ form.addEventListener("submit", async (event) => {
   }
   if (!fromVoice) dispatchLoop({ type: "typed_message" }); // typing takes over from the loop
   const turn = voiceLoop.turn;
+  showChatView(); // the command bar works from any view; the exchange shows in the transcript
 
   clearError();
   setVoiceState();

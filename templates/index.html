@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#111416">
-  <title>U | Local Assistant</title>
+  <meta name="theme-color" content="#05080d">
+  <title>K.R.I.S. | Command Center</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="{{ url_for('static', filename='vendor/markdown-it.umd.min.js') }}" defer></script>
   <script src="{{ url_for('static', filename='vendor/purify.min.js') }}" defer></script>
@@ -15,160 +15,295 @@
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <a class="wordmark" href="/" aria-label="U home">U<span class="wordmark-period">.</span></a>
-      <div class="connection" aria-live="polite">
-        <span id="health-dot" class="health-dot" aria-hidden="true"></span>
-        <span id="health-label">Checking local model</span>
+      <div class="topbar-side">
+        <div class="connection" aria-live="polite">
+          <span id="health-dot" class="health-dot" aria-hidden="true"></span>
+          <span id="health-label">Checking local model</span>
+        </div>
       </div>
-      <button class="new-chat" id="new-chat" type="button">
-        <span aria-hidden="true">+</span> New conversation
-      </button>
+      <a class="wordmark" href="/" aria-label="K.R.I.S. home">
+        <span class="wordmark-name">K.R.I.S.</span>
+        <span class="wordmark-sub">Knowledge · Reasoning · Intelligent System</span>
+      </a>
+      <div class="topbar-side topbar-actions">
+        <button class="new-chat" id="new-chat" type="button">
+          <span aria-hidden="true">+</span> New conversation
+        </button>
+      </div>
     </header>
 
-    <main class="workspace">
-      <nav class="workspace-tabs" aria-label="Workspace">
-        <button class="workspace-tab active" type="button" data-view="chat" aria-pressed="true">Chat</button>
-        <button class="workspace-tab" type="button" data-view="tasks" aria-pressed="false">Tasks</button>
-        <button class="workspace-tab" type="button" data-view="notes" aria-pressed="false">Notes</button>
-      </nav>
-
-      <div class="feature-error" id="feature-error" role="alert" hidden></div>
-
-      <section class="view-panel chat-view" id="chat-view" aria-label="Chat">
-        <section class="document-panel" aria-label="Selected document">
-          <div class="document-panel-info">
-            <span class="eyebrow">DOCUMENT CONTEXT</span>
-            <span id="document-status" role="status">No document selected</span>
-            <span id="document-detail" hidden></span>
-          </div>
-          <div class="document-panel-actions">
-            <label class="file-picker" for="document-file">Choose file</label>
-            <input id="document-file" type="file" accept=".txt,.pdf,text/plain,application/pdf">
-            <button class="primary-action" id="upload-document" type="button" disabled>Upload</button>
-            <button class="delete-action" id="clear-document" type="button" disabled>Clear</button>
-          </div>
-        </section>
-        <div class="tool-activity" id="tool-activity" role="status" aria-live="polite" hidden></div>
-        <section class="confirmation-panel" id="confirmation-panel" aria-label="Confirm assistant action" hidden>
-          <div>
-            <span class="eyebrow">ACTION NEEDS APPROVAL</span>
-            <p id="confirmation-summary"></p>
-          </div>
-          <div class="confirmation-actions">
-            <button class="primary-action" id="confirm-action" type="button">Confirm</button>
-            <button class="secondary-action" id="cancel-action" type="button">Cancel</button>
-          </div>
-        </section>
-        <div class="conversation" aria-label="Conversation">
-          <div class="empty-state" id="empty-state">
-            <span class="eyebrow">YOUR LOCAL ASSISTANT</span>
-            <h1>What can I help with?</h1>
-            <p>Start a conversation with U.</p>
-          </div>
-          <div class="messages" id="messages" aria-live="polite"></div>
-          <div class="request-state" id="request-state" hidden>
-            <span class="thinking-mark" aria-hidden="true"></span>
-            <span>U is thinking</span>
-          </div>
-        </div>
-
-        <div class="error-message" id="error-message" role="alert" hidden></div>
-
-        <footer class="composer-area">
-          <div class="voice-bar" id="voice-bar">
-            <span class="voice-indicator" id="voice-indicator" data-state="idle" role="status"
-              aria-live="polite" aria-atomic="true">
-              <span class="voice-indicator-dot" aria-hidden="true"></span>
-              <span id="voice-indicator-label"></span>
-            </span>
-            <button class="stop-speaking" id="stop-speaking" type="button" hidden>
-              <span aria-hidden="true">&#9632;</span> Stop speaking
-            </button>
-          </div>
-          <form class="composer" id="chat-form">
-            <label class="visually-hidden" for="message-input">Message U</label>
-            <textarea id="message-input" name="message" rows="1" maxlength="20000"
-              placeholder="Message U..." autocomplete="off" required></textarea>
-            <button class="mic-button" id="mic-button" type="button" aria-pressed="false"
-              aria-label="Hold to talk" title="Hold to talk; release to transcribe" hidden>
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"></rect>
-                <path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" fill="none" stroke="currentColor"
-                  stroke-width="2" stroke-linecap="round"></path>
-              </svg>
-            </button>
-            <button class="send-button" id="send-button" type="submit" aria-label="Send message" title="Send message">
-              <span aria-hidden="true">&#8593;</span>
-            </button>
-          </form>
-          <div class="composer-notes">
-            <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
-            <span class="voice-controls">
-              <span class="voice-state" id="voice-state" aria-live="polite"></span>
-              <label class="speak-toggle" id="hands-free-label" hidden
-                title="Send what you say automatically and speak the replies">
-                <input type="checkbox" id="hands-free"> Hands-free
-              </label>
-              <label class="speak-toggle" id="speak-toggle-label" hidden>
-                <input type="checkbox" id="speak-replies"> Speak replies
-              </label>
-            </span>
-            <span>Stop the server with Ctrl+C in its terminal.</span>
-          </div>
-        </footer>
-      </section>
-
-      <section class="view-panel feature-view" id="tasks-view" aria-labelledby="tasks-heading" hidden>
-        <header class="feature-heading">
-          <div>
-            <span class="eyebrow">LOCAL TASKS</span>
-            <h1 id="tasks-heading">Tasks</h1>
-          </div>
-        </header>
-        <form class="entry-form" id="task-form">
-          <label class="visually-hidden" for="task-title">Task title</label>
-          <input id="task-title" name="title" maxlength="200" placeholder="Add a task..." required>
-          <label class="visually-hidden" for="task-description">Task description (optional)</label>
-          <textarea id="task-description" name="description" rows="2" maxlength="5000"
-            placeholder="Description (optional)"></textarea>
-          <div class="due-fields">
-            <label for="task-due-date">Due</label>
-            <input id="task-due-date" name="due_date" type="date">
-            <label class="visually-hidden" for="task-due-time">Due time (optional)</label>
-            <input id="task-due-time" name="due_time" type="time">
-          </div>
-          <button class="primary-action" type="submit">Add task</button>
-        </form>
-        <p class="feature-empty" id="tasks-empty" hidden>No tasks yet. Add one above.</p>
-        <ul class="task-list" id="tasks-list" aria-label="Tasks"></ul>
-      </section>
-
-      <section class="view-panel feature-view" id="notes-view" aria-labelledby="notes-heading" hidden>
-        <header class="feature-heading">
-          <div>
-            <span class="eyebrow">LOCAL NOTES</span>
-            <h1 id="notes-heading">Notes</h1>
-          </div>
-          <button class="secondary-action" id="new-note" type="button">New note</button>
-        </header>
-        <div class="notes-layout">
-          <aside class="note-sidebar" aria-label="Saved notes">
-            <p class="feature-empty" id="notes-empty" hidden>No notes yet.</p>
-            <ul class="note-list" id="notes-list"></ul>
-          </aside>
-          <p class="note-placeholder" id="note-placeholder">Choose a note or create one.</p>
-          <form class="note-editor" id="note-form" hidden>
-            <label for="note-title">Title</label>
-            <input id="note-title" name="title" maxlength="200" required>
-            <label for="note-content">Content</label>
-            <textarea id="note-content" name="content" maxlength="200000" spellcheck="false"></textarea>
-            <div class="note-actions">
-              <button class="primary-action" type="submit">Save note</button>
-              <button class="danger-action" id="delete-note" type="button" hidden>Delete note</button>
+    <main class="command-center">
+      <!-- Left: system and incoming information, one section at a time -->
+      <aside class="cc-column cc-system" aria-label="System and incoming">
+        <section class="panel panel-system" aria-labelledby="system-heading">
+          <h2 class="panel-title" id="system-heading">System</h2>
+          <dl class="telemetry">
+            <div class="telemetry-row">
+              <dt>CPU</dt>
+              <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
             </div>
-          </form>
+            <div class="telemetry-row">
+              <dt>Memory</dt>
+              <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
+            </div>
+            <div class="telemetry-row">
+              <dt>GPU</dt>
+              <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
+            </div>
+            <div class="telemetry-row">
+              <dt>Thermals</dt>
+              <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
+            </div>
+            <div class="telemetry-row">
+              <dt>Model</dt>
+              <dd id="telemetry-model" data-tone="muted">Checking</dd>
+            </div>
+            <div class="telemetry-row">
+              <dt>Voice input</dt>
+              <dd id="telemetry-voice-in" data-tone="muted">Checking</dd>
+            </div>
+            <div class="telemetry-row">
+              <dt>Voice output</dt>
+              <dd id="telemetry-voice-out" data-tone="muted">Checking</dd>
+            </div>
+            <div class="telemetry-row">
+              <dt>Hands-free</dt>
+              <dd id="telemetry-hands-free" data-tone="muted">Off</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel tab-panel-group panel-incoming" data-tabs>
+          <div class="panel-tabs" role="tablist" aria-label="Inbox and calendar">
+            <button class="panel-tab" type="button" role="tab" id="tab-inbox" aria-controls="pane-inbox" aria-selected="true">Inbox</button>
+            <button class="panel-tab" type="button" role="tab" id="tab-calendar" aria-controls="pane-calendar" aria-selected="false" tabindex="-1">Calendar</button>
+          </div>
+          <div class="tab-pane" role="tabpanel" id="pane-inbox" aria-labelledby="tab-inbox">
+            <p class="unavailable"><span class="unavailable-mark" aria-hidden="true"></span>Inbox is not connected.</p>
+            <p class="panel-empty">K.R.I.S. has no email or message integration yet, so there is nothing to show here.</p>
+          </div>
+          <div class="tab-pane" role="tabpanel" id="pane-calendar" aria-labelledby="tab-calendar" hidden>
+            <p class="unavailable"><span class="unavailable-mark" aria-hidden="true"></span>Calendar is not connected.</p>
+            <p class="panel-empty">K.R.I.S. cannot read calendar events yet. Task due dates are in the Tasks view.</p>
+          </div>
+        </section>
+
+        <section class="panel panel-alerts" aria-labelledby="alerts-heading">
+          <h2 class="panel-title" id="alerts-heading">Alerts <span class="tab-count" id="alerts-count"></span></h2>
+          <ul class="alert-list" id="alert-list"></ul>
+          <p class="panel-empty" id="alerts-empty">No alerts.</p>
+        </section>
+      </aside>
+
+      <!-- Centre: the K.R.I.S. core. Nothing else renders here, so navigation never replaces it. -->
+      <section class="cc-column cc-center" aria-label="K.R.I.S. core">
+        <div class="core-stage">
+          <div class="core" id="core" data-state="idle" aria-hidden="true">
+            <svg class="core-svg" viewBox="0 0 200 200" focusable="false">
+              <circle class="core-halo" cx="100" cy="100" r="92"></circle>
+              <g class="core-ring core-ring-outer">
+                <circle cx="100" cy="100" r="84" class="core-ticks"></circle>
+              </g>
+              <g class="core-ring core-ring-arc">
+                <path d="M100 26 A74 74 0 0 1 174 100" class="core-arc"></path>
+                <path d="M100 174 A74 74 0 0 1 26 100" class="core-arc"></path>
+              </g>
+              <circle class="core-wave" cx="100" cy="100" r="56"></circle>
+              <circle class="core-wave core-wave-late" cx="100" cy="100" r="56"></circle>
+              <g class="core-ring core-lattice">
+                <polygon points="100,44 148.5,72 148.5,128 100,156 51.5,128 51.5,72" class="core-hex"></polygon>
+                <polygon points="100,58 136.4,121 63.6,121" class="core-tri"></polygon>
+                <polygon points="100,142 63.6,79 136.4,79" class="core-tri core-tri-alt"></polygon>
+              </g>
+              <g class="core-ring core-inner">
+                <rect x="84" y="84" width="32" height="32" class="core-diamond" transform="rotate(45 100 100)"></rect>
+              </g>
+              <circle class="core-heart" cx="100" cy="100" r="7"></circle>
+            </svg>
+          </div>
+          <span class="core-status" id="core-status">Standing by</span>
         </div>
       </section>
+
+      <!-- Right: conversation and operations -->
+      <section class="cc-column cc-ops" aria-label="Conversation and operations">
+        <section class="panel panel-workspace" aria-label="Workspace">
+          <nav class="workspace-tabs" aria-label="Workspace">
+            <button class="workspace-tab active" type="button" data-view="chat" aria-pressed="true">Chat</button>
+            <button class="workspace-tab" type="button" data-view="tasks" aria-pressed="false">Tasks</button>
+            <button class="workspace-tab" type="button" data-view="notes" aria-pressed="false">Notes</button>
+            <button class="workspace-tab" type="button" data-view="files" aria-pressed="false">Files</button>
+          </nav>
+          <div class="feature-error" id="feature-error" role="alert" hidden></div>
+          <section class="view-panel chat-view" id="chat-view" aria-label="Transcript">
+            <section class="confirmation-panel" id="confirmation-panel" aria-label="Confirm assistant action" hidden>
+              <div>
+                <span class="eyebrow">ACTION NEEDS APPROVAL</span>
+                <p id="confirmation-summary"></p>
+              </div>
+              <div class="confirmation-actions">
+                <button class="primary-action" id="confirm-action" type="button">Confirm</button>
+                <button class="secondary-action" id="cancel-action" type="button">Cancel</button>
+              </div>
+            </section>
+            <div class="conversation" aria-label="Conversation">
+              <div class="empty-state" id="empty-state">
+                <span class="eyebrow">LOCAL ASSISTANT ONLINE</span>
+                <h1>What are we working on?</h1>
+                <p>Type below, or use the microphone to talk to K.R.I.S.</p>
+              </div>
+              <div class="messages" id="messages" aria-live="polite"></div>
+              <div class="request-state" id="request-state" hidden>
+                <span class="thinking-mark" aria-hidden="true"></span>
+                <span>K.R.I.S. is thinking</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="view-panel feature-view" id="tasks-view" aria-labelledby="tasks-heading" hidden>
+            <header class="feature-heading">
+              <div>
+                <span class="eyebrow">LOCAL TASKS</span>
+                <h1 id="tasks-heading">Tasks</h1>
+              </div>
+            </header>
+            <form class="entry-form" id="task-form">
+              <label class="visually-hidden" for="task-title">Task title</label>
+              <input id="task-title" name="title" maxlength="200" placeholder="Add a task..." required>
+              <label class="visually-hidden" for="task-description">Task description (optional)</label>
+              <textarea id="task-description" name="description" rows="2" maxlength="5000"
+                placeholder="Description (optional)"></textarea>
+              <div class="due-fields">
+                <label for="task-due-date">Due</label>
+                <input id="task-due-date" name="due_date" type="date">
+                <label class="visually-hidden" for="task-due-time">Due time (optional)</label>
+                <input id="task-due-time" name="due_time" type="time">
+              </div>
+              <button class="primary-action" type="submit">Add task</button>
+            </form>
+            <p class="feature-empty" id="tasks-empty" hidden>No tasks yet. Add one above.</p>
+            <ul class="task-list" id="tasks-list" aria-label="Tasks"></ul>
+          </section>
+
+          <section class="view-panel feature-view" id="notes-view" aria-labelledby="notes-heading" hidden>
+            <header class="feature-heading">
+              <div>
+                <span class="eyebrow">LOCAL NOTES</span>
+                <h1 id="notes-heading">Notes</h1>
+              </div>
+              <button class="secondary-action" id="new-note" type="button">New note</button>
+            </header>
+            <div class="notes-layout">
+              <aside class="note-sidebar" aria-label="Saved notes">
+                <p class="feature-empty" id="notes-empty" hidden>No notes yet.</p>
+                <ul class="note-list" id="notes-list"></ul>
+              </aside>
+              <p class="note-placeholder" id="note-placeholder">Choose a note or create one.</p>
+              <form class="note-editor" id="note-form" hidden>
+                <label for="note-title">Title</label>
+                <input id="note-title" name="title" maxlength="200" required>
+                <label for="note-content">Content</label>
+                <textarea id="note-content" name="content" maxlength="200000" spellcheck="false"></textarea>
+                <div class="note-actions">
+                  <button class="primary-action" type="submit">Save note</button>
+                  <button class="danger-action" id="delete-note" type="button" hidden>Delete note</button>
+                </div>
+              </form>
+            </div>
+          </section>
+          <section class="view-panel feature-view files-view" id="files-view" aria-labelledby="files-heading" hidden>
+            <header class="feature-heading">
+              <div>
+                <span class="eyebrow">DOCUMENT CONTEXT</span>
+                <h1 id="files-heading">Files</h1>
+              </div>
+            </header>
+            <p class="panel-empty">Choose a .txt or .pdf file to use as context for this conversation. It is read
+              locally and cleared when you start a new conversation.</p>
+            <section class="document-panel" aria-label="Selected document">
+              <div class="document-panel-info">
+                <span class="eyebrow">SELECTED DOCUMENT</span>
+                <span id="document-status" role="status">No document selected</span>
+                <span id="document-detail" hidden></span>
+              </div>
+              <div class="document-panel-actions">
+                <label class="file-picker" for="document-file">Choose file</label>
+                <input id="document-file" type="file" accept=".txt,.pdf,text/plain,application/pdf">
+                <button class="primary-action" id="upload-document" type="button" disabled>Upload</button>
+                <button class="delete-action" id="clear-document" type="button" disabled>Clear</button>
+              </div>
+            </section>
+          </section>
+        </section>
+
+        <section class="panel panel-terminal" aria-labelledby="console-heading">
+          <h2 class="panel-title" id="console-heading">Console <span class="panel-title-note">read-only</span></h2>
+          <ol class="activity-log" id="activity-log" aria-label="Console output"></ol>
+          <p class="panel-empty" id="activity-empty">No output yet. Tool use, voice states and errors appear here.</p>
+        </section>
+
+        <section class="panel tab-panel-group panel-lower" data-tabs>
+          <div class="panel-tabs" role="tablist" aria-label="Activity and utilities">
+            <button class="panel-tab" type="button" role="tab" id="tab-activity" aria-controls="pane-activity" aria-selected="true">Activity</button>
+            <button class="panel-tab" type="button" role="tab" id="tab-utilities" aria-controls="pane-utilities" aria-selected="false" tabindex="-1">Utilities</button>
+          </div>
+          <div class="tab-pane" role="tabpanel" id="pane-activity" aria-labelledby="tab-activity">
+            <div class="tool-activity" id="tool-activity" role="status" aria-live="polite" hidden></div>
+            <p class="panel-empty tool-activity-empty">No tool activity for the latest request.</p>
+          </div>
+          <div class="tab-pane" role="tabpanel" id="pane-utilities" aria-labelledby="tab-utilities" hidden>
+            <p class="utility-hint">Use Chat, Tasks, Notes and Files above. In chat, K.R.I.S. can also search approved
+              folders, open files, apps and websites, and report system information, asking for your
+              confirmation where required.</p>
+          </div>
+        </section>
+      </section>
+
+      <!-- Bottom: the persistent command bar -->
+      <footer class="composer-area command-bar">
+        <div class="error-message" id="error-message" role="alert" hidden></div>
+        <div class="voice-bar" id="voice-bar">
+          <span class="voice-indicator" id="voice-indicator" data-state="idle" role="status"
+            aria-live="polite" aria-atomic="true">
+            <span class="voice-indicator-dot" aria-hidden="true"></span>
+            <span id="voice-indicator-label"></span>
+          </span>
+          <button class="stop-speaking" id="stop-speaking" type="button" hidden>
+            <span aria-hidden="true">&#9632;</span> Stop speaking
+          </button>
+        </div>
+        <form class="composer" id="chat-form">
+          <span class="composer-prompt" aria-hidden="true">&gt;</span>
+          <label class="visually-hidden" for="message-input">Message K.R.I.S.</label>
+          <textarea id="message-input" name="message" rows="1" maxlength="20000"
+            placeholder="Message K.R.I.S..." autocomplete="off" required></textarea>
+          <button class="mic-button" id="mic-button" type="button" aria-pressed="false"
+            aria-label="Hold to talk" title="Hold to talk; release to transcribe" hidden>
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+              <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"></rect>
+              <path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round"></path>
+            </svg>
+          </button>
+          <button class="send-button" id="send-button" type="submit" aria-label="Send message" title="Send message">
+            <span aria-hidden="true">&#8593;</span>
+          </button>
+        </form>
+        <div class="composer-notes">
+          <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
+          <span class="voice-controls">
+            <span class="voice-state" id="voice-state" aria-live="polite"></span>
+            <label class="speak-toggle" id="hands-free-label" hidden
+              title="Send what you say automatically and speak the replies">
+              <input type="checkbox" id="hands-free"> Hands-free
+            </label>
+            <label class="speak-toggle" id="speak-toggle-label" hidden>
+              <input type="checkbox" id="speak-replies"> Speak replies
+            </label>
+          </span>
+          <span>Stop the server with Ctrl+C in its terminal.</span>
+        </div>
+      </footer>
     </main>
   </div>
 </body>

@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** v1.2 continuous voice loop. Interrupting a spoken reply (barge-in) is implemented and tested; your real-browser checks, review, and commit remain.
+**Current milestone:** K.R.I.S. UI refactor. Milestone 1 (command-center shell) and its layout refinement (centred wordmark, core-only centre column, switchable side panels) are implemented and checked in a browser; your Chrome/Safari checks, review, and commit remain. The v1.2 barge-in checks and commit are still open below.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -131,6 +131,14 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [ ] Check barge-in in Chrome and Safari (tap, keyboard, confirmation prompt, Review mode)
 - [ ] Review the barge-in diff and commit
 - [ ] Optional wake-word support (last; needs its own decision)
+
+### 9. K.R.I.S. UI Refactor
+- [x] Milestone 1: command-center shell (energy core with state-driven looks, system status with honest hardware placeholder, alerts, activity log, utilities, persistent command bar, design tokens, responsive layout)
+- [x] Layout refinement: centred wordmark, core as the centre column's only content, workspace (Chat/Tasks/Notes/Files), read-only console, switchable System/Inbox/Calendar and Alerts/Activity/Utilities panels
+- [x] Layout corrections: balanced side columns so the core is on the page centre; left column split into System (always visible), Inbox/Calendar (tabs) and Alerts; right column keeps Transcript, Console, Activity/Utilities
+- [ ] Check Milestone 1 in Chrome and Safari (desktop, narrow window, phone width, keyboard, screen reader, reduced motion)
+- [ ] Review the Milestone 1 diff and commit
+- [ ] Next milestone (needs its own approval)
 
 ## Scope Rules
 - One feature at a time.
