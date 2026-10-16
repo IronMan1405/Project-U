@@ -91,6 +91,42 @@ let replyRequest = 0;
 // prompts, and errors are then spoken even if "Speak replies" is off.
 let voiceTurn = false;
 let sendingFromVoice = false;
+let replyFinish = null; // resolves the current speakReply() promise
+let voiceLoop = window.VoiceLoop.createVoiceLoop();
+
+// The hands-free loop (static/voice_loop.js) decides when to listen again; this reports
+// events to it and carries out its actions. Events from the wrong state are ignored there.
+function dispatchLoop(event) {
+  const { loop, actions } = window.VoiceLoop.reduce(voiceLoop, event);
+  voiceLoop = loop;
+  for (const action of actions) {
+    if (action.type === "start_listening") resumeListening();
+    else if (action.type === "stop_listening" && (recorder || startPending)) stopRecording("loop_stopped");
+    else if (action.type === "stop_playback") stopReplyAudio();
+    else if (action.type === "notify") setVoiceState(action.message);
+  }
+}
+
+// Called only by the loop, after a completed reply, never on page load.
+async function resumeListening() {
+  // A reply is reported from inside its request handler; wait until that handler has
+  // finished (cleared isSending etc.) before checking whether listening can start.
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+  const blocked =
+    !handsFreeToggle.checked || document.visibilityState === "hidden" || recorder || startPending ||
+    transcribing || isSending || confirmationResolving || pendingConfirmationId !== null ||
+    documentUploadPending;
+  const result = blocked ? "failed" : await startRecording(true);
+  if (result === "failed") dispatchLoop({ type: "listen_failed" });
+  else if (result === "cancelled") dispatchLoop({ type: "stopped_by_user" });
+}
+
+// Reports a finished chat or confirmation request, and its playback, to the loop.
+function reportTurn(turn, outcome, speech) {
+  dispatchLoop({ type: "turn_finished", turn, outcome, spoken: Boolean(speech) });
+  // A cancelled playback (null) counts as finished: it was stopped on purpose.
+  speech?.then((ok) => dispatchLoop({ type: "playback_finished", turn, ok: ok !== false }));
+}
 
 function showError(message) {
   errorMessage.textContent = message;
@@ -154,8 +190,9 @@ function setBusy(busy) {
   micButton.disabled = composerBusy && recorder === null;
   newChatButton.disabled = controlsBusy;
   input.disabled = composerBusy;
-  confirmActionButton.disabled = busy || confirmationResolving;
-  cancelActionButton.disabled = busy || confirmationResolving;
+  // Not while transcribing either, so a confirmation can't start under a pending transcript.
+  confirmActionButton.disabled = busy || confirmationResolving || transcribing;
+  cancelActionButton.disabled = busy || confirmationResolving || transcribing;
   documentFileInput.disabled = controlsBusy;
   uploadDocumentButton.disabled = controlsBusy || documentFileInput.files.length === 0;
   clearDocumentButton.disabled = controlsBusy || selectedDocument === null;
@@ -408,7 +445,8 @@ function acceptTurnResult(result) {
       spoken.push(content.textContent);
     }
   }
-  if (speechWanted() && spoken.length) speakReply(spoken.join(" "));
+  const speech = speechWanted() && spoken.length ? speakReply(spoken.join(" ")) : null;
+  return { outcome: result.pending_confirmation ? "pending" : "response", speech };
 }
 
 function reportVoiceError(message) {
@@ -448,6 +486,7 @@ function preferredRecordingType() {
 const HOLD_TO_TALK_MS = 400;
 const LEVEL_POLL_MS = 50;
 const DISCARD_MESSAGES = {
+  loop_stopped: "Stopped listening; nothing was sent.",
   no_speech: "Didn't hear any speech, so nothing was sent.",
   page_hidden: "Stopped listening because the page was hidden; nothing was sent.",
   track_ended: "The microphone stopped, so nothing was sent.",
@@ -553,8 +592,9 @@ function startLevelMonitor(stream, session) {
   };
 }
 
+// Resolves "started", "cancelled" (stopped by the user or page while opening), or "failed".
 async function startRecording(autoStop) {
-  if (recorder || startPending || transcribing || micButton.disabled) return;
+  if (recorder || startPending || transcribing || micButton.disabled) return "failed";
   clearError();
   stopReplyAudio();
   const session = ++listeningSession;
@@ -569,7 +609,7 @@ async function startRecording(autoStop) {
     autoStopRecording = false;
     setVoiceState("");
     showError("Microphone access was denied or is unavailable.");
-    return;
+    return "failed";
   }
   startPending = false;
   // Cancelled while the microphone was opening: a review-mode release, a second tap, the
@@ -578,7 +618,7 @@ async function startRecording(autoStop) {
     stream.getTracks().forEach((track) => track.stop());
     cancelPendingStart = false;
     if (session === listeningSession) autoStopRecording = false;
-    return;
+    return "cancelled";
   }
   recordingStream = stream;
   const mimeType = preferredRecordingType();
@@ -587,7 +627,7 @@ async function startRecording(autoStop) {
   } catch {
     teardownRecording();
     showError("This browser cannot record audio in a supported format.");
-    return;
+    return "failed";
   }
   recordingTrack = stream.getAudioTracks()[0] || null;
   recordingTrack?.addEventListener("ended", onTrackEnded);
@@ -613,6 +653,7 @@ async function startRecording(autoStop) {
   } else {
     setVoiceState(`Listening… release to stop (up to ${voiceStatus.max_seconds}s)`);
   }
+  return "started";
 }
 
 function stopRecording(reason = "manual") {
@@ -646,11 +687,13 @@ async function finishRecording() {
       showError(DISCARD_MESSAGES[reason]);
     } else {
       setVoiceState(DISCARD_MESSAGES[reason]);
-      if (reason === "no_speech" && handsFree) {
+      // While the loop runs, it decides what happens next (listen again, or pause).
+      if (reason === "no_speech" && handsFree && voiceLoop.state === "off") {
         voiceTurn = true;
         if (speechWanted()) speakReply(DISCARD_MESSAGES[reason]);
       }
     }
+    dispatchLoop({ type: "recording_discarded", reason }); // last: its message wins
     return;
   }
   if (recording.size === 0) {
@@ -663,6 +706,7 @@ async function finishRecording() {
   transcribing = true;
   setBusy(isSending);
   setVoiceState("Transcribing locally…");
+  dispatchLoop({ type: "recording_uploaded" });
   let transcript = null;
   try {
     const formData = new FormData();
@@ -672,6 +716,7 @@ async function finishRecording() {
     setVoiceState("");
     voiceTurn = handsFree;
     reportVoiceError(error.message || "The recording could not be transcribed.");
+    dispatchLoop({ type: "transcription_failed" });
   } finally {
     transcribing = false;
     setBusy(isSending);
@@ -681,10 +726,13 @@ async function finishRecording() {
 }
 
 function handleTranscript(text, replyKind, handsFree) {
-  if (pendingConfirmationId && replyKind === "affirm") {
+  if ((pendingConfirmationId && replyKind === "affirm") || (confirmationResolving && replyKind === "decline")) {
     // Voice never approves an action, and sending "yes" as a message would cancel it.
     voiceTurn = handsFree;
-    const message = "Voice can't approve actions. Press Confirm to approve it, or say no to cancel.";
+    const message = confirmationResolving
+      ? "The confirmation is already being handled."
+      : "Voice can't approve actions. Press Confirm to approve it, or say no to cancel.";
+    dispatchLoop({ type: "transcript_handled", outcome: "guarded" });
     setVoiceState(message);
     if (speechWanted()) speakReply(message);
     return;
@@ -692,14 +740,24 @@ function handleTranscript(text, replyKind, handsFree) {
   if (pendingConfirmationId && replyKind === "decline") {
     voiceTurn = handsFree;
     setVoiceState("");
+    dispatchLoop({ type: "transcript_handled", outcome: "cancel_requested" });
     resolvePendingAction(false);
     return;
   }
   const existing = input.value.trim();
-  if (handsFree && !existing) {
+  const busy = isSending || confirmationResolving || documentUploadPending || !conversationId;
+  if (handsFree && !existing && !busy) {
     input.value = text;
     sendingFromVoice = true;
+    dispatchLoop({ type: "transcript_handled", outcome: "submitted" });
     form.requestSubmit();
+    return;
+  }
+  if (handsFree) {
+    // Never strand an utterance: keep it in the box for the user, and stop the loop.
+    input.value = existing ? `${existing} ${text}` : text;
+    input.dispatchEvent(new Event("input"));
+    dispatchLoop({ type: "transcript_handled", outcome: "kept_for_review" });
     return;
   }
   input.value = existing ? `${existing} ${text}` : text;
@@ -718,35 +776,53 @@ function stopReplyAudio() {
     URL.revokeObjectURL(replyAudio.src);
     replyAudio = null;
   }
+  const finish = replyFinish;
+  replyFinish = null;
+  finish?.(null); // cancelled or replaced
 }
 
-async function speakReply(text) {
+// Speaks text. The promise resolves true when playback ends, false if it fails, and null if
+// it is stopped or replaced first; only the newest request ever plays.
+function speakReply(text) {
   stopReplyAudio();
   const request = replyRequest;
-  try {
-    const response = await fetch("/api/voice/speak", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    if (!response.ok) {
-      const result = await response.json().catch(() => null);
-      throw new Error(result?.error || "Local speech output failed.");
-    }
-    const audio = await response.blob();
+  const done = new Promise((resolve) => {
+    replyFinish = resolve;
+  });
+  const settle = (result) => {
     if (request !== replyRequest) return;
-    replyAudio = new Audio(URL.createObjectURL(audio));
-    replyAudio.addEventListener("ended", stopReplyAudio, { once: true });
-    if (response.headers.get("X-Speech-Truncated") === "1") {
-      setVoiceState("Speaking the beginning of a long reply.");
+    const finish = replyFinish;
+    replyFinish = null;
+    stopReplyAudio();
+    finish?.(result);
+  };
+  (async () => {
+    try {
+      const response = await fetch("/api/voice/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => null);
+        throw new Error(result?.error || "Local speech output failed.");
+      }
+      const audio = await response.blob();
+      if (request !== replyRequest) return;
+      replyAudio = new Audio(URL.createObjectURL(audio));
+      replyAudio.addEventListener("ended", () => settle(true), { once: true });
+      if (response.headers.get("X-Speech-Truncated") === "1") {
+        setVoiceState("Speaking the beginning of a long reply.");
+      }
+      await replyAudio.play();
+    } catch (error) {
+      if (request === replyRequest) {
+        setVoiceState(`Spoken reply unavailable: ${error.message}`);
+        settle(false);
+      }
     }
-    await replyAudio.play();
-  } catch (error) {
-    if (request === replyRequest) {
-      stopReplyAudio();
-      setVoiceState(`Spoken reply unavailable: ${error.message}`);
-    }
-  }
+  })();
+  return done;
 }
 
 function micPressStart() {
@@ -758,6 +834,7 @@ function micPressStart() {
   pressStartedAt = performance.now();
   micHeld = true;
   if (handsFree) {
+    dispatchLoop({ type: "start" }); // only a user tap ever starts the hands-free loop
     ensureAudioContext();
     // Holding the button means manual control: automatic stopping is switched off.
     holdTimer = window.setTimeout(() => {
@@ -767,7 +844,11 @@ function micPressStart() {
       if (recorder) setVoiceState("Listening… release to stop.");
     }, HOLD_TO_TALK_MS);
   }
-  startRecording(handsFree);
+  startRecording(handsFree).then((result) => {
+    if (!handsFree) return;
+    if (result === "failed") dispatchLoop({ type: "listen_failed" });
+    else if (result === "cancelled") dispatchLoop({ type: "stopped_by_user" });
+  });
 }
 
 function micPressEnd() {
@@ -804,10 +885,13 @@ micButton.addEventListener("keyup", (event) => {
   if (event.key === " " || event.key === "Enter") micPressEnd();
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden" && (recorder || startPending)) stopRecording("page_hidden");
+  if (document.visibilityState !== "hidden") return;
+  if (recorder || startPending) stopRecording("page_hidden");
+  dispatchLoop({ type: "page_hidden" });
 });
 window.addEventListener("pagehide", () => {
   if (recorder || startPending) stopRecording("page_hidden");
+  dispatchLoop({ type: "page_hidden" });
   teardownRecording();
 });
 speakToggle.addEventListener("change", () => {
@@ -818,6 +902,7 @@ speakToggle.addEventListener("change", () => {
 });
 handsFreeToggle.addEventListener("change", () => {
   if (!handsFreeToggle.checked) {
+    dispatchLoop({ type: "disable" });
     voiceTurn = false;
     stopReplyAudio();
   }
@@ -831,6 +916,8 @@ async function resolvePendingAction(approved) {
   confirmationResolving = true;
   confirmActionButton.disabled = true;
   cancelActionButton.disabled = true;
+  dispatchLoop({ type: "confirmation_resolving" });
+  const turn = voiceLoop.turn;
   setBusy(true);
   startActivityPolling();
   try {
@@ -843,9 +930,11 @@ async function resolvePendingAction(approved) {
         approved,
       }),
     });
-    acceptTurnResult(result);
+    const { outcome, speech } = acceptTurnResult(result);
+    reportTurn(turn, outcome, speech);
   } catch (error) {
     reportVoiceError(error.message || "The pending action could not be resolved.");
+    dispatchLoop({ type: "turn_finished", turn, outcome: "error" });
   } finally {
     confirmationResolving = false;
     confirmActionButton.disabled = false;
@@ -1242,16 +1331,20 @@ deleteNoteButton.addEventListener("click", async () => {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = input.value.trim();
-  if (!message || isSending || documentUploadPending) return;
-  if (!conversationId) {
-    showError("The conversation is still starting. Try again in a moment.");
+  const fromVoice = sendingFromVoice;
+  sendingFromVoice = false;
+  if (!message || isSending || documentUploadPending || !conversationId) {
+    if (!conversationId) showError("The conversation is still starting. Try again in a moment.");
+    // handleTranscript checks these first, so a voice message should never get here.
+    if (fromVoice) dispatchLoop({ type: "turn_finished", turn: voiceLoop.turn, outcome: "error" });
     return;
   }
+  if (!fromVoice) dispatchLoop({ type: "typed_message" }); // typing takes over from the loop
+  const turn = voiceLoop.turn;
 
   clearError();
   setVoiceState();
-  voiceTurn = sendingFromVoice;
-  sendingFromVoice = false;
+  voiceTurn = fromVoice;
   if (pendingConfirmationId) {
     // The server cancels the pending action before handling this message.
     pendingConfirmationId = null;
@@ -1271,13 +1364,15 @@ form.addEventListener("submit", async (event) => {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The assistant could not respond.");
-    acceptTurnResult(result);
+    const { outcome, speech } = acceptTurnResult(result);
+    reportTurn(turn, outcome, speech);
     if (selectedDocument && result.document_context) {
       const scope = result.document_context === "full" ? "full extracted text" : "selected excerpts only";
       documentDetail.textContent = `${selectedDocumentDetail} · Last answer used ${scope}`;
     }
   } catch (error) {
     reportVoiceError(error.message || "Could not reach the local assistant backend.");
+    dispatchLoop({ type: "turn_finished", turn, outcome: "error" });
   } finally {
     stopActivityPolling();
     setBusy(false);
@@ -1299,6 +1394,7 @@ input.addEventListener("input", () => {
 
 newChatButton.addEventListener("click", async () => {
   if (isSending || documentUploadPending) return;
+  dispatchLoop({ type: "disable" });
   stopReplyAudio();
   newChatButton.disabled = true;
   clearError();

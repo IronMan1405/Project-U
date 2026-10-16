@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** v1.2 continuous voice loop. Automatic end-of-speech detection (Hands-free) is implemented and tested; your real-microphone checks, review, and commit remain.
+**Current milestone:** v1.2 continuous voice loop. Automatic listening resumption (the Hands-free loop) is implemented and tested; your real-browser checks, review, and commit remain.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -116,11 +116,14 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Audit the recording, playback, and UI-state code for a continuous voice loop
 - [x] Automatic end-of-speech detection in Hands-free mode (tap to start, stops after a pause; `end_silence_ms`, `min_recording_ms`, 6 s no-speech discard, `max_seconds` kept)
 - [x] Detector module with `node:test` tests; Python tests for the new settings; live browser regression
-- [ ] Check end-of-speech detection on a real microphone in Chrome and Safari (quiet room, background noise, pauses, quiet speech, Bluetooth headset)
-- [ ] Review the end-of-speech diff and commit
+- [x] Check end-of-speech detection on a real microphone in Chrome and Safari (quiet room, background noise, pauses, quiet speech, Bluetooth headset)
+- [x] Review the end-of-speech diff and commit
+- [x] Automatic listening resumption after U finishes speaking: single-owner loop state machine (`static/voice_loop.js`), stops after two silences or any failure, fixes the stranded hands-free transcript race
+- [x] Loop state machine `node:test` tests and live browser regression with real Gemma
+- [ ] Check the Hands-free loop on a real microphone in Chrome and Safari
+- [ ] Review the listening-loop diff and commit
 - [ ] Clear Listening / Thinking / Speaking / error indicator and a stop-speaking control
-- [ ] Automatic listening resumption after U finishes speaking (with a loop breaker)
-- [ ] Interruption handling
+- [ ] Interruption handling (stopping a spoken reply by voice; Gemma generation cannot be interrupted yet)
 - [ ] Optional wake-word support (last; needs its own decision)
 
 ## Scope Rules
