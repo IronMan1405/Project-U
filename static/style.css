@@ -4,21 +4,23 @@
   /* Colour */
   --background: #05080d;
   --background-deep: #020409;
-  --surface: rgb(9 17 27 / 82%);
+  --surface: rgb(7 14 23 / 58%);
   --surface-raised: #0c1622;
   --field: #070f18;
   --line: #15263a;
   --line-strong: #1f3852;
   --line-hover: #2d5476;
   --focus-line: #3a92b8;
-  --text: #dbe8f0;
-  --text-dim: #a8bccb;
-  --muted: #6d8597;
+  --text-strong: #eef6fb;
+  --text: #cfdde7;
+  --text-dim: #9db2c2;
+  --muted: #62798b;
+  --faint: #3b5163;
   --accent: #5fd4f0;
   --accent-hover: #9fe7f8;
   --accent-rgb: 95 212 240;
   --on-accent: #03121a;
-  --ok: #6fd3a5;
+  --ok: #8fe3f5; /* "ready" reads as an active system state: ice blue, not a fourth hue */
   --warning: #eeb25b;
   --warning-rgb: 238 178 91;
   --danger: #ee7f76;
@@ -32,8 +34,8 @@
   --space-5: 24px;
   --space-6: 32px;
   /* Borders */
-  --radius-sm: 3px;
-  --radius: 6px;
+  --radius-sm: 2px;
+  --radius: 2px;
   --border: 1px solid var(--line);
   /* Typography */
   --font-ui: "Avenir Next", "Segoe UI", system-ui, sans-serif;
@@ -42,6 +44,7 @@
   --text-sm: 12px;
   --text-md: 14px;
   --tracking-label: 0.16em;
+  --text-2xs: 9px;
   --content-width: 820px;
 }
 
@@ -55,11 +58,15 @@ body {
   margin: 0;
   color: var(--text);
   background:
-    radial-gradient(900px 520px at 50% 18%, rgb(var(--accent-rgb) / 7%) 0%, transparent 70%),
-    linear-gradient(rgb(var(--accent-rgb) / 2.5%) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(var(--accent-rgb) / 2.5%) 1px, transparent 1px),
+    radial-gradient(760px 560px at 50% 46%, rgb(var(--accent-rgb) / 5.5%) 0%, transparent 72%),
+    linear-gradient(90deg, transparent calc(50% - 0.5px), rgb(var(--accent-rgb) / 4%) 50%, transparent calc(50% + 0.5px)),
+    linear-gradient(rgb(var(--accent-rgb) / 3%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--accent-rgb) / 3%) 1px, transparent 1px),
+    linear-gradient(rgb(var(--accent-rgb) / 1.4%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--accent-rgb) / 1.4%) 1px, transparent 1px),
     var(--background);
-  background-size: auto, 40px 40px, 40px 40px, auto;
+  background-size: auto, auto, 192px 192px, 192px 192px, 24px 24px, 24px 24px, auto;
+  background-position: 0 0, 0 0, center center, center center, center center, center center, 0 0;
   font-family: var(--font-ui);
   font-size: 15px;
   -webkit-font-smoothing: antialiased;
@@ -155,7 +162,7 @@ button {
 
 .health-dot.connected {
   background: var(--ok);
-  box-shadow: 0 0 0 3px rgb(111 211 165 / 14%);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 14%);
 }
 
 .health-dot.disconnected {
@@ -1777,10 +1784,8 @@ button {
   padding: 0;
 }
 
-.cc-center .core {
-  width: min(100%, 62vh, 460px);
-  height: auto;
-  aspect-ratio: 1;
+.core-instrument {
+  width: min(100%, 66vh, 560px);
 }
 
 .cc-center .core-status {
@@ -1964,6 +1969,580 @@ button {
   to { opacity: 0; transform: scale(0.8); }
 }
 
+/* --- HUD visual layer -------------------------------------------------------------
+   One visual language over the existing layout: hairline frames with corner brackets,
+   technical labels, a quiet colour hierarchy, and instrumentation around the core.
+   Nothing here moves a panel or changes behaviour. */
+
+/* Global frame: the whole screen reads as one instrument. Decorative and inert. */
+.hud-frame {
+  position: fixed;
+  z-index: 5;
+  inset: 6px;
+  border: 1px solid rgb(var(--accent-rgb) / 5%);
+  pointer-events: none;
+}
+
+.hud-corner,
+.hud-edge {
+  position: absolute;
+}
+
+.hud-corner {
+  width: 18px;
+  height: 18px;
+  border: 0 solid rgb(var(--accent-rgb) / 45%);
+}
+
+.hud-corner-tl { top: -1px; left: -1px; border-top-width: 1px; border-left-width: 1px; }
+.hud-corner-tr { top: -1px; right: -1px; border-top-width: 1px; border-right-width: 1px; }
+.hud-corner-bl { bottom: -1px; left: -1px; border-bottom-width: 1px; border-left-width: 1px; }
+.hud-corner-br { right: -1px; bottom: -1px; border-right-width: 1px; border-bottom-width: 1px; }
+
+.hud-edge-top,
+.hud-edge-bottom {
+  left: 50%;
+  width: 96px;
+  height: 1px;
+  transform: translateX(-50%);
+}
+
+.hud-edge-top { top: -1px; background: rgb(var(--accent-rgb) / 40%); }
+
+.hud-edge-bottom {
+  bottom: -1px;
+  background: repeating-linear-gradient(90deg, rgb(var(--accent-rgb) / 35%) 0 10px, transparent 10px 16px);
+}
+
+.hud-edge-left,
+.hud-edge-right {
+  top: 50%;
+  width: 1px;
+  height: 56px;
+  transform: translateY(-50%);
+}
+
+.hud-edge-left { left: -1px; background: rgb(var(--accent-rgb) / 30%); }
+.hud-edge-right { right: -1px; height: 20px; background: rgb(var(--warning-rgb) / 45%); } /* the one amber accent */
+
+/* Shared technical label: small, uppercase, quiet. */
+.hud-label {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+/* --- Top bar ------------------------------------------------------------------------ */
+
+/* No fill of its own: the page background runs unbroken behind the header. */
+.topbar {
+  position: relative;
+  border-bottom: 0;
+  background: none;
+}
+
+.wordmark-name {
+  padding-left: 0.42em;
+  color: var(--accent);
+  font-size: 21px;
+  letter-spacing: 0.42em;
+}
+
+.wordmark-sub {
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.26em;
+}
+
+.connection {
+  gap: var(--space-2);
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.connection .hud-label {
+  margin-right: 2px;
+}
+
+.health-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.new-chat {
+  min-height: 30px;
+  white-space: nowrap;
+  border-color: rgb(var(--accent-rgb) / 18%);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* --- Panels as instrumentation ----------------------------------------------------- */
+
+.panel {
+  border-color: rgb(var(--accent-rgb) / 9%);
+  background: linear-gradient(180deg, rgb(var(--accent-rgb) / 2.2%), transparent 120px), var(--surface);
+}
+
+/* Four corner brackets from one pseudo-element; the top pair is brighter than the bottom. */
+.panel::before {
+  --bracket-top: rgb(var(--accent-rgb) / 55%);
+  --bracket-bottom: rgb(var(--accent-rgb) / 25%);
+  inset: -1px;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background:
+    linear-gradient(var(--bracket-top), var(--bracket-top)) top left / 10px 1px no-repeat,
+    linear-gradient(var(--bracket-top), var(--bracket-top)) top left / 1px 10px no-repeat,
+    linear-gradient(var(--bracket-top), var(--bracket-top)) top right / 10px 1px no-repeat,
+    linear-gradient(var(--bracket-top), var(--bracket-top)) top right / 1px 10px no-repeat,
+    linear-gradient(var(--bracket-bottom), var(--bracket-bottom)) bottom left / 10px 1px no-repeat,
+    linear-gradient(var(--bracket-bottom), var(--bracket-bottom)) bottom left / 1px 10px no-repeat,
+    linear-gradient(var(--bracket-bottom), var(--bracket-bottom)) bottom right / 10px 1px no-repeat,
+    linear-gradient(var(--bracket-bottom), var(--bracket-bottom)) bottom right / 1px 10px no-repeat;
+}
+
+/* Section identifier set into the top edge of each panel. */
+.panel[data-section]::after {
+  position: absolute;
+  top: -6px;
+  right: 18px;
+  padding: 0 5px;
+  background: var(--background);
+  color: var(--faint);
+  content: attr(data-section);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.16em;
+  line-height: 11px;
+  pointer-events: none;
+}
+
+.panel-title {
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid rgb(var(--accent-rgb) / 6%);
+  color: var(--text-dim);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.22em;
+}
+
+/* A short cyan tick instead of a filled square. */
+.panel-title::before {
+  width: 10px;
+  height: 1px;
+  background: var(--accent);
+  opacity: 1;
+}
+
+.panel-title-note {
+  color: var(--faint);
+  font-size: 8.5px;
+  letter-spacing: 0.18em;
+}
+
+.panel-tabs,
+.panel-workspace .workspace-tabs {
+  border-bottom-color: rgb(var(--accent-rgb) / 7%);
+}
+
+.panel-tab,
+.workspace-tab {
+  min-height: 32px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+}
+
+.panel-tab[aria-selected="true"],
+.workspace-tab.active {
+  color: var(--text-strong);
+}
+
+.panel-empty {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.unavailable {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.unavailable-mark {
+  border-color: var(--faint);
+}
+
+/* --- Readouts: labels quiet, values legible --------------------------------------- */
+
+/* System clock: the panel's focal readout, at the bottom of the System box and set off
+   from the hardware rows by a divider. The date uses the same subdued colour as the
+   hardware labels. */
+.system-clock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-4) 0 var(--space-1);
+  margin-top: var(--space-2);
+  border-top: 1px solid rgb(var(--accent-rgb) / 8%);
+  text-align: center;
+}
+
+.system-time {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 34px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.15;
+}
+
+.system-date {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+}
+
+.telemetry-row {
+  padding: 6px 0;
+  border-bottom: 1px solid rgb(var(--accent-rgb) / 5%);
+}
+
+.telemetry dt {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.telemetry dd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+.telemetry dd[data-tone="muted"] { color: var(--faint); }
+.telemetry dd[data-tone="ok"] { color: var(--text-strong); }
+.telemetry dd[data-tone="active"] { color: var(--accent); }
+
+/* State markers on live values only. */
+.telemetry dd[data-tone="ok"]::before,
+.telemetry dd[data-tone="active"]::before,
+.telemetry dd[data-tone="danger"]::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.telemetry dd[data-tone="ok"]::before { background: var(--accent); }
+
+.alert-item {
+  padding: 6px var(--space-3);
+  border-left-width: 1px;
+  border-radius: 0;
+  background: linear-gradient(90deg, rgb(var(--warning-rgb) / 8%), transparent);
+  font-size: 11.5px;
+}
+
+.alert-item[data-kind="danger"] {
+  background: linear-gradient(90deg, rgb(var(--danger-rgb) / 8%), transparent);
+}
+
+.alert-kind {
+  font-size: 8.5px;
+  letter-spacing: 0.2em;
+}
+
+.tab-count {
+  border-radius: 0;
+  font-family: var(--font-mono);
+}
+
+/* --- Console ------------------------------------------------------------------------ */
+
+.panel-terminal {
+  background: linear-gradient(180deg, rgb(2 6 11 / 92%), rgb(2 6 11 / 80%));
+}
+
+.activity-log {
+  font-size: 10.5px;
+}
+
+.activity-time {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-line .activity-text {
+  color: var(--muted);
+}
+
+/* The newest line is the one that matters. */
+.activity-line:last-child .activity-text {
+  color: var(--text);
+}
+
+.activity-line[data-kind="tool"] .activity-text { color: rgb(var(--accent-rgb) / 75%); }
+.activity-line[data-kind="tool"]:last-child .activity-text { color: var(--accent-hover); }
+
+/* --- The core instrument -------------------------------------------------------------- */
+
+.core-stage {
+  gap: var(--space-4);
+}
+
+.core-instrument {
+  --inst: var(--accent);
+  position: relative;
+  flex: 0 0 auto;
+  aspect-ratio: 1;
+}
+
+.core-instrument .core {
+  position: absolute;
+  inset: 14%;
+  width: auto;
+  height: auto;
+}
+
+.instrument-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.instrument-svg * {
+  fill: none;
+  stroke: var(--inst);
+  transition: stroke 400ms ease, opacity 400ms ease;
+}
+
+.inst-ring-outer { stroke-width: 0.5; opacity: 0.2; }
+.inst-ticks { stroke-width: 0.6; opacity: 0.3; }
+.inst-cross { stroke-width: 0.8; opacity: 0.55; }
+.inst-seg { stroke-width: 1.4; stroke-dasharray: 1.6 2.4; opacity: 0.35; }
+.inst-ring-orbit { stroke-width: 0.4; stroke-dasharray: 1 4; opacity: 0.2; }
+.inst-attention { stroke: var(--warning); stroke-width: 2.2; opacity: 0; }
+
+.inst-orbit-dot {
+  fill: var(--inst) !important;
+  stroke: none !important;
+  opacity: 0.75;
+}
+
+.inst-rotor,
+.inst-orbiter {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+}
+
+.inst-rotor { animation: core-spin 180s linear infinite; }
+.inst-orbiter { animation: core-spin 60s linear infinite reverse; }
+
+/* The instrument echoes the core's state without competing with it. */
+.core-instrument[data-state="listening"] .inst-ticks { opacity: 0.5; }
+.core-instrument[data-state="listening"] .inst-seg,
+.core-instrument[data-state="speaking"] .inst-seg { opacity: 0.6; }
+.core-instrument[data-state="thinking"] .inst-seg,
+.core-instrument[data-state="transcribing"] .inst-seg { opacity: 0.6; }
+.core-instrument[data-state="thinking"] .inst-rotor,
+.core-instrument[data-state="transcribing"] .inst-rotor { animation-duration: 24s; }
+.core-instrument[data-state="awaiting_confirmation"] .inst-attention { opacity: 0.85; }
+.core-instrument[data-state="awaiting_confirmation"] .inst-seg { stroke: var(--warning); opacity: 0.45; }
+.core-instrument[data-state="error"] { --inst: var(--danger); }
+.core-instrument[data-state="paused"],
+.core-instrument[data-state="offline"] { --inst: var(--muted); }
+.core-instrument[data-state="paused"] *,
+.core-instrument[data-state="error"] *,
+.core-instrument[data-state="offline"] * { animation-play-state: paused !important; }
+
+.core-status {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+}
+
+.core-status::before {
+  width: 5px;
+  height: 5px;
+}
+
+/* Small read-only readouts under the status, separated by hairlines. */
+.core-readouts {
+  display: flex;
+  justify-content: center;
+  margin: 0;
+}
+
+.core-readouts > div {
+  min-width: 0;
+  padding: 0 var(--space-4);
+  border-left: 1px solid rgb(var(--accent-rgb) / 10%);
+  text-align: center;
+}
+
+.core-readouts > div:first-child {
+  border-left: 0;
+}
+
+.core-readouts dt {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.core-readouts dd {
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.core-readouts dd[data-tone="ok"] { color: var(--text-strong); }
+.core-readouts dd[data-tone="active"] { color: var(--accent); }
+.core-readouts dd[data-tone="danger"] { color: var(--danger-text); }
+
+/* --- Workspace content ------------------------------------------------------------- */
+
+.message-role {
+  color: var(--faint);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+}
+
+.message.assistant .message-role {
+  color: rgb(var(--accent-rgb) / 80%);
+}
+
+.message-content {
+  color: var(--text);
+}
+
+.message.user .message-content {
+  border-color: rgb(var(--accent-rgb) / 12%);
+  border-radius: var(--radius-sm);
+  background: rgb(var(--accent-rgb) / 4%);
+  color: var(--text-strong);
+}
+
+.chat-view .empty-state .eyebrow {
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.24em;
+}
+
+.chat-view .empty-state h1 {
+  color: var(--text-strong);
+  font-weight: 400;
+}
+
+.chat-view .confirmation-panel {
+  position: relative;
+  border-color: rgb(var(--warning-rgb) / 30%);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, rgb(var(--warning-rgb) / 9%), rgb(var(--warning-rgb) / 3%));
+}
+
+.chat-view .confirmation-panel .eyebrow {
+  font-size: var(--text-2xs);
+  letter-spacing: 0.22em;
+}
+
+.primary-action,
+.secondary-action,
+.danger-action {
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* --- Command bar ---------------------------------------------------------------------- */
+
+.command-bar .composer {
+  position: relative;
+  border-color: rgb(var(--accent-rgb) / 18%);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgb(6 13 21 / 96%), rgb(3 8 14 / 96%));
+  box-shadow: 0 12px 30px rgb(0 0 0 / 35%);
+}
+
+.command-bar .composer::before {
+  position: absolute;
+  inset: -1px;
+  --bracket: rgb(var(--accent-rgb) / 60%);
+  background:
+    linear-gradient(var(--bracket), var(--bracket)) top left / 14px 1px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) top left / 1px 14px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) bottom right / 14px 1px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) bottom right / 1px 14px no-repeat;
+  content: "";
+  pointer-events: none;
+}
+
+.command-bar .composer textarea {
+  color: var(--text-strong);
+}
+
+.mic-button,
+.send-button {
+  border-radius: var(--radius-sm);
+}
+
+.voice-indicator,
+.stop-speaking {
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.command-bar .composer-notes {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+}
+
+.speak-toggle {
+  color: var(--muted);
+}
+
+
 /* --- Narrower screens ------------------------------------------------------------ */
 
 /* Laptop widths: the core and the system panel share the left column. */
@@ -1977,8 +2556,8 @@ button {
     grid-template-rows: minmax(0, 1fr) auto auto;
   }
 
-  .cc-center .core {
-    width: min(100%, 40vh, 340px);
+  .core-instrument {
+    width: min(100%, 44vh, 410px);
   }
 
   /* The three left boxes sit under the core and scroll together if they run long. */
@@ -2012,8 +2591,8 @@ button {
     padding: var(--space-3) 0 var(--space-2);
   }
 
-  .cc-center .core {
-    width: min(56vw, 250px);
+  .core-instrument {
+    width: min(66vw, 300px);
   }
 
   .panel-workspace {
@@ -2091,10 +2670,16 @@ button {
   .topbar .connection {
     max-width: none;
     font-size: 10px;
+    white-space: nowrap;
   }
 
-  .cc-center .core {
-    width: min(48vw, 170px);
+  /* Phone width: keep the link status and the button; the LINK label goes. */
+  .connection .hud-label {
+    display: none;
+  }
+
+  .core-instrument {
+    width: min(58vw, 210px);
   }
 
   .panel-workspace .notes-layout {

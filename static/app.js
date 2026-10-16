@@ -49,13 +49,15 @@ const cancelActionButton = document.querySelector("#cancel-action");
 const chatView = document.querySelector("#chat-view");
 const coreElement = document.querySelector("#core");
 const coreStatus = document.querySelector("#core-status");
-const telemetryModel = document.querySelector("#telemetry-model");
-const telemetryVoiceIn = document.querySelector("#telemetry-voice-in");
-const telemetryVoiceOut = document.querySelector("#telemetry-voice-out");
-const telemetryHandsFree = document.querySelector("#telemetry-hands-free");
 const alertList = document.querySelector("#alert-list");
 const activityLog = document.querySelector("#activity-log");
 const alertsCount = document.querySelector("#alerts-count");
+const coreInstrument = document.querySelector("#core-instrument");
+const coreLink = document.querySelector("#core-link");
+const coreMode = document.querySelector("#core-mode");
+const coreLast = document.querySelector("#core-last");
+const systemTime = document.querySelector("#system-time");
+const systemDate = document.querySelector("#system-date");
 
 const markdownParser = window.markdownit({ html: false, linkify: false });
 markdownParser.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
@@ -151,7 +153,7 @@ function renderVoiceView() {
   updateMicLabel(!hideStop);
   voiceBar.classList.toggle("is-active", state !== "idle" || !hideStop);
   renderCore(view.state);
-  setTelemetry(telemetryHandsFree, handsFreeToggle.checked ? "On" : "Off", handsFreeToggle.checked ? "active" : "muted");
+  setTelemetry(coreMode, handsFreeToggle.checked ? "Hands-free" : "Review", handsFreeToggle.checked ? "active" : "");
   renderAlerts();
 }
 
@@ -170,6 +172,7 @@ function renderCore(viewStateName) {
   if (state === renderedCoreState) return;
   renderedCoreState = state;
   coreElement.dataset.state = state;
+  coreInstrument.dataset.state = state;
   coreStatus.dataset.state = state;
   coreStatus.textContent = CORE_LABELS[state] || window.VoiceLoop.VIEW_LABELS[state] || state;
   if (state !== "idle" && state !== "offline") {
@@ -217,6 +220,7 @@ function logActivity(text, kind = "") {
   const time = document.createElement("span");
   time.className = "activity-time";
   time.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  coreLast.textContent = time.textContent;
   const body = document.createElement("span");
   body.className = "activity-text";
   body.textContent = text;
@@ -225,6 +229,17 @@ function logActivity(text, kind = "") {
   while (activityLog.childElementCount > ACTIVITY_LOG_LIMIT) activityLog.firstElementChild.remove();
   activityLog.scrollTop = activityLog.scrollHeight;
 }
+
+// Local time and date in the System panel (display only), e.g. 17:46:32 and 16 OCT 2026.
+function updateClock() {
+  const now = new Date();
+  systemTime.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  systemTime.dateTime = now.toISOString();
+  const month = now.toLocaleDateString("en-GB", { month: "short" }).toUpperCase();
+  systemDate.textContent = `${String(now.getDate()).padStart(2, "0")} ${month} ${now.getFullYear()}`;
+}
+updateClock();
+window.setInterval(updateClock, 1000);
 
 // The confirmation panel is shown and hidden from several places; keep the core and alerts in step.
 new MutationObserver(renderVoiceView).observe(confirmationPanel, { attributes: true, attributeFilter: ["hidden"] });
@@ -378,8 +393,7 @@ function setHealthTelemetry(online, text) {
     logActivity(online ? `Model ready: ${text}` : healthLabel.title, online ? "" : "danger");
   }
   assistantOnline = online;
-  setTelemetry(telemetryModel, text, online ? "ok" : "danger");
-  telemetryModel.title = healthLabel.title;
+  setTelemetry(coreLink, online ? "Online" : "Offline", online ? "ok" : "danger");
   renderVoiceView();
 }
 
@@ -644,13 +658,6 @@ async function loadVoiceStatus() {
   micButton.hidden = !(voiceStatus.speech_input && canRecord);
   speakToggleLabel.hidden = !voiceStatus.speech_output;
   handsFreeLabel.hidden = micButton.hidden;
-  setTelemetry(
-    telemetryVoiceIn,
-    !micButton.hidden ? "Ready" : voiceStatus.speech_input ? "Browser can't record" : "Not configured",
-    micButton.hidden ? "muted" : "ok",
-  );
-  setTelemetry(telemetryVoiceOut, voiceStatus.speech_output ? "Ready" : "Not configured",
-    voiceStatus.speech_output ? "ok" : "muted");
   renderVoiceView();
 }
 
@@ -1127,6 +1134,7 @@ handsFreeToggle.addEventListener("change", () => {
   setVoiceState(
     handsFreeToggle.checked ? "Hands-free: tap the mic and speak; it stops when you pause and sends." : "",
   );
+  renderVoiceView(); // display only: the core's MODE readout
 });
 
 async function resolvePendingAction(approved) {

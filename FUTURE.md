@@ -72,6 +72,9 @@ in `TODO.md`.
   and runs no commands.
 - Only the web UI is named K.R.I.S.; the runtime's prompts and messages and the
   terminal client still call the assistant "U".
+- The HUD instrument and readouts around the core only reflect existing page
+  state (link, mode, last console event); the glyph itself is still the
+  milestone-1 placeholder.
 - The energy core shows the page's state; it does not react to the actual
   microphone or speech volume.
 

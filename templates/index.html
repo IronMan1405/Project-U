@@ -13,10 +13,17 @@
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body>
+  <div class="hud-frame" aria-hidden="true">
+    <span class="hud-corner hud-corner-tl"></span><span class="hud-corner hud-corner-tr"></span>
+    <span class="hud-corner hud-corner-bl"></span><span class="hud-corner hud-corner-br"></span>
+    <span class="hud-edge hud-edge-top"></span><span class="hud-edge hud-edge-bottom"></span>
+    <span class="hud-edge hud-edge-left"></span><span class="hud-edge hud-edge-right"></span>
+  </div>
   <div class="app-shell">
     <header class="topbar">
       <div class="topbar-side">
         <div class="connection" aria-live="polite">
+          <span class="hud-label" aria-hidden="true">Link</span>
           <span id="health-dot" class="health-dot" aria-hidden="true"></span>
           <span id="health-label">Checking local model</span>
         </div>
@@ -35,7 +42,7 @@
     <main class="command-center">
       <!-- Left: system and incoming information, one section at a time -->
       <aside class="cc-column cc-system" aria-label="System and incoming">
-        <section class="panel panel-system" aria-labelledby="system-heading">
+        <section class="panel panel-system" data-section="SYS·01" aria-labelledby="system-heading">
           <h2 class="panel-title" id="system-heading">System</h2>
           <dl class="telemetry">
             <div class="telemetry-row">
@@ -54,26 +61,14 @@
               <dt>Thermals</dt>
               <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
             </div>
-            <div class="telemetry-row">
-              <dt>Model</dt>
-              <dd id="telemetry-model" data-tone="muted">Checking</dd>
-            </div>
-            <div class="telemetry-row">
-              <dt>Voice input</dt>
-              <dd id="telemetry-voice-in" data-tone="muted">Checking</dd>
-            </div>
-            <div class="telemetry-row">
-              <dt>Voice output</dt>
-              <dd id="telemetry-voice-out" data-tone="muted">Checking</dd>
-            </div>
-            <div class="telemetry-row">
-              <dt>Hands-free</dt>
-              <dd id="telemetry-hands-free" data-tone="muted">Off</dd>
-            </div>
           </dl>
+          <div class="system-clock">
+            <time class="system-time" id="system-time"></time>
+            <time class="system-date" id="system-date"></time>
+          </div>
         </section>
 
-        <section class="panel tab-panel-group panel-incoming" data-tabs>
+        <section class="panel tab-panel-group panel-incoming" data-section="COM·02" data-tabs>
           <div class="panel-tabs" role="tablist" aria-label="Inbox and calendar">
             <button class="panel-tab" type="button" role="tab" id="tab-inbox" aria-controls="pane-inbox" aria-selected="true">Inbox</button>
             <button class="panel-tab" type="button" role="tab" id="tab-calendar" aria-controls="pane-calendar" aria-selected="false" tabindex="-1">Calendar</button>
@@ -88,7 +83,7 @@
           </div>
         </section>
 
-        <section class="panel panel-alerts" aria-labelledby="alerts-heading">
+        <section class="panel panel-alerts" data-section="ALR·03" aria-labelledby="alerts-heading">
           <h2 class="panel-title" id="alerts-heading">Alerts <span class="tab-count" id="alerts-count"></span></h2>
           <ul class="alert-list" id="alert-list"></ul>
           <p class="panel-empty" id="alerts-empty">No alerts.</p>
@@ -98,6 +93,16 @@
       <!-- Centre: the K.R.I.S. core. Nothing else renders here, so navigation never replaces it. -->
       <section class="cc-column cc-center" aria-label="K.R.I.S. core">
         <div class="core-stage">
+          <div class="core-instrument" id="core-instrument" data-state="idle">
+            <svg class="instrument-svg" viewBox="0 0 240 240" aria-hidden="true" focusable="false">
+              <circle class="inst-ring inst-ring-outer" cx="120" cy="120" r="117"></circle>
+              <path class="inst-ticks" d="M120.0 16.0L120.0 7.0M129.4 12.4L129.7 9.4M138.8 13.6L139.3 10.7M148.0 15.7L148.7 12.8M156.9 18.5L158.0 15.7M165.6 22.1L166.9 19.4M174.0 26.5L175.5 23.9M181.9 31.5L183.7 29.1M189.4 37.3L191.3 35.0M193.5 46.5L199.9 40.1M202.7 50.6L205.0 48.7M208.5 58.1L210.9 56.3M213.5 66.0L216.1 64.5M217.9 74.4L220.6 73.1M221.5 83.1L224.3 82.0M224.3 92.0L227.2 91.3M226.4 101.2L229.3 100.7M227.6 110.6L230.6 110.3M224.0 120.0L233.0 120.0M227.6 129.4L230.6 129.7M226.4 138.8L229.3 139.3M224.3 148.0L227.2 148.7M221.5 156.9L224.3 158.0M217.9 165.6L220.6 166.9M213.5 174.0L216.1 175.5M208.5 181.9L210.9 183.7M202.7 189.4L205.0 191.3M193.5 193.5L199.9 199.9M189.4 202.7L191.3 205.0M181.9 208.5L183.7 210.9M174.0 213.5L175.5 216.1M165.6 217.9L166.9 220.6M156.9 221.5L158.0 224.3M148.0 224.3L148.7 227.2M138.8 226.4L139.3 229.3M129.4 227.6L129.7 230.6M120.0 224.0L120.0 233.0M110.6 227.6L110.3 230.6M101.2 226.4L100.7 229.3M92.0 224.3L91.3 227.2M83.1 221.5L82.0 224.3M74.4 217.9L73.1 220.6M66.0 213.5L64.5 216.1M58.1 208.5L56.3 210.9M50.6 202.7L48.7 205.0M46.5 193.5L40.1 199.9M37.3 189.4L35.0 191.3M31.5 181.9L29.1 183.7M26.5 174.0L23.9 175.5M22.1 165.6L19.4 166.9M18.5 156.9L15.7 158.0M15.7 148.0L12.8 148.7M13.6 138.8L10.7 139.3M12.4 129.4L9.4 129.7M16.0 120.0L7.0 120.0M12.4 110.6L9.4 110.3M13.6 101.2L10.7 100.7M15.7 92.0L12.8 91.3M18.5 83.1L15.7 82.0M22.1 74.4L19.4 73.1M26.5 66.0L23.9 64.5M31.5 58.1L29.1 56.3M37.3 50.6L35.0 48.7M46.5 46.5L40.1 40.1M50.6 37.3L48.7 35.0M58.1 31.5L56.3 29.1M66.0 26.5L64.5 23.9M74.4 22.1L73.1 19.4M83.1 18.5L82.0 15.7M92.0 15.7L91.3 12.8M101.2 13.6L100.7 10.7M110.6 12.4L110.3 9.4"></path>
+              <path class="inst-cross" d="M120.0 3.0L120.0 -4.0"></path><path class="inst-cross" d="M237.0 120.0L244.0 120.0"></path><path class="inst-cross" d="M120.0 237.0L120.0 244.0"></path><path class="inst-cross" d="M3.0 120.0L-4.0 120.0"></path>
+              <g class="inst-rotor"><path class="inst-seg" d="M144.0 23.9A99 99 0 0 1 210.4 79.7"></path><path class="inst-seg" d="M216.1 144.0A99 99 0 0 1 160.3 210.4"></path><path class="inst-seg" d="M96.0 216.1A99 99 0 0 1 29.6 160.3"></path><path class="inst-seg" d="M23.9 96.0A99 99 0 0 1 79.7 29.6"></path></g>
+              <circle class="inst-ring inst-ring-orbit" cx="120" cy="120" r="94"></circle>
+              <g class="inst-orbiter"><circle class="inst-orbit-dot" cx="120" cy="26" r="1.6"></circle></g>
+              <path class="inst-attention" d="M102.8 22.5A99 99 0 0 1 137.2 22.5"></path>
+            </svg>
           <div class="core" id="core" data-state="idle" aria-hidden="true">
             <svg class="core-svg" viewBox="0 0 200 200" focusable="false">
               <circle class="core-halo" cx="100" cy="100" r="92"></circle>
@@ -121,13 +126,19 @@
               <circle class="core-heart" cx="100" cy="100" r="7"></circle>
             </svg>
           </div>
+          </div>
           <span class="core-status" id="core-status">Standing by</span>
+          <dl class="core-readouts" aria-label="Core readouts">
+            <div><dt>Link</dt><dd id="core-link">Checking</dd></div>
+            <div><dt>Mode</dt><dd id="core-mode">Review</dd></div>
+            <div><dt>Last event</dt><dd id="core-last">None</dd></div>
+          </dl>
         </div>
       </section>
 
       <!-- Right: conversation and operations -->
       <section class="cc-column cc-ops" aria-label="Conversation and operations">
-        <section class="panel panel-workspace" aria-label="Workspace">
+        <section class="panel panel-workspace" data-section="WRK·04" aria-label="Workspace">
           <nav class="workspace-tabs" aria-label="Workspace">
             <button class="workspace-tab active" type="button" data-view="chat" aria-pressed="true">Chat</button>
             <button class="workspace-tab" type="button" data-view="tasks" aria-pressed="false">Tasks</button>
@@ -236,13 +247,13 @@
           </section>
         </section>
 
-        <section class="panel panel-terminal" aria-labelledby="console-heading">
+        <section class="panel panel-terminal" data-section="CON·05" aria-labelledby="console-heading">
           <h2 class="panel-title" id="console-heading">Console <span class="panel-title-note">read-only</span></h2>
           <ol class="activity-log" id="activity-log" aria-label="Console output"></ol>
           <p class="panel-empty" id="activity-empty">No output yet. Tool use, voice states and errors appear here.</p>
         </section>
 
-        <section class="panel tab-panel-group panel-lower" data-tabs>
+        <section class="panel tab-panel-group panel-lower" data-section="OPS·06" data-tabs>
           <div class="panel-tabs" role="tablist" aria-label="Activity and utilities">
             <button class="panel-tab" type="button" role="tab" id="tab-activity" aria-controls="pane-activity" aria-selected="true">Activity</button>
             <button class="panel-tab" type="button" role="tab" id="tab-utilities" aria-controls="pane-utilities" aria-selected="false" tabindex="-1">Utilities</button>

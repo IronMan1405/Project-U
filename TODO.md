@@ -136,6 +136,8 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Milestone 1: command-center shell (energy core with state-driven looks, system status with honest hardware placeholder, alerts, activity log, utilities, persistent command bar, design tokens, responsive layout)
 - [x] Layout refinement: centred wordmark, core as the centre column's only content, workspace (Chat/Tasks/Notes/Files), read-only console, switchable System/Inbox/Calendar and Alerts/Activity/Utilities panels
 - [x] Layout corrections: balanced side columns so the core is on the page centre; left column split into System (always visible), Inbox/Calendar (tabs) and Alerts; right column keeps Transcript, Console, Activity/Utilities
+- [x] HUD visual language: hairline bracketed panels, global frame, technical typography, colour hierarchy, core instrument ring and read-only readouts (no layout changes)
+- [x] Final header and System adjustments: cyan K.R.I.S. wordmark without the header rule; System shows CPU/Memory/GPU/Thermals with a live cyan clock and date beneath them; header clock removed
 - [ ] Check Milestone 1 in Chrome and Safari (desktop, narrow window, phone width, keyboard, screen reader, reduced motion)
 - [ ] Review the Milestone 1 diff and commit
 - [ ] Next milestone (needs its own approval)

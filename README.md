@@ -46,9 +46,9 @@ center. The K.R.I.S. wordmark is centred at the top, with the local model status
 on the left and New conversation on the right. Below it, on a desktop-width
 window, are three columns:
 - **Left:** three boxes. **System** is always shown: CPU, memory, GPU and thermal
-  readings are not implemented and say "Not connected" (never invented numbers),
-  followed by the model and voice availability reported by the server and whether
-  Hands-free is on. Below it, **Inbox / Calendar** switches between two tabs that
+  rows, which are not implemented and say "Not connected" (never invented
+  numbers), and beneath them a large live clock (HH:MM:SS, ice blue) with the
+  date. Below it, **Inbox / Calendar** switches between two tabs that
   say plainly they are not connected: K.R.I.S. has no mail or calendar
   integration yet. Below that, **Alerts** lists current problems (model
   unavailable, errors, an action waiting for approval, Hands-free paused) with a
@@ -69,6 +69,16 @@ The command bar along the bottom (message box, microphone, Stop speaking, and th
 Hands-free and Speak replies toggles) is always available. Sending a message, or a
 pending confirmation, switches the workspace back to Chat. The switchable panels
 are standard tabs: click them, or use the arrow keys, Home and End.
+
+The visual layer is a restrained engineering HUD: hairline panel frames with
+corner brackets and small section identifiers (SYS·01 and so on), a thin frame
+around the whole window, technical uppercase labels, and a quiet colour scheme
+(ice blue for active elements, pale text for important values, blue-grey for
+secondary text, amber for attention and confirmations, red only for errors).
+The core sits inside a ring of tick marks and segmented arcs that follows its
+state. Under the core, LINK (model online or offline), MODE (Review or
+Hands-free) and LAST EVENT (time of the newest console line) are read-only
+readouts of existing state. The model's status is shown in the header (LINK).
 
 The two side columns always share one width, so the core sits on the page's
 centre line. Below 1180 px wide, the core and the three left boxes share the left
