@@ -50,13 +50,12 @@ in `TODO.md`.
   "no speech", and pauses longer than `end_silence_ms` end a recording early.
 - The Hands-free loop pauses after two silences or any failure and needs a tap
   to continue; it does not listen by itself while a confirmation is pending.
-  The status is shown only in the small status line (there is no dedicated
-  Listening / Thinking / Speaking indicator or stop-speaking button yet), there
-  is no wake word, and U cannot be interrupted while it is generating a reply.
+  Speech can be stopped with the Stop speaking button but not by voice, there is
+  no wake word, and U cannot be interrupted while it is generating a reply.
 - Resuming listening without a tap relies on the browser keeping microphone
-  permission for the page; a browser that asks again, or refuses without a fresh
-  tap (not yet verified in Safari), stops the loop with "The microphone could not
-  start".
+  permission for the page (verified in Chrome and Safari); a browser that asks
+  again, or refuses without a fresh tap, stops the loop with "The microphone could
+  not start".
 
 ### Model behaviour
 - Tool results state exactly what a search covered, but Gemma may still omit

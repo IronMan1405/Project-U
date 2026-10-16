@@ -75,6 +75,16 @@
         <div class="error-message" id="error-message" role="alert" hidden></div>
 
         <footer class="composer-area">
+          <div class="voice-bar" id="voice-bar">
+            <span class="voice-indicator" id="voice-indicator" data-state="idle" role="status"
+              aria-live="polite" aria-atomic="true">
+              <span class="voice-indicator-dot" aria-hidden="true"></span>
+              <span id="voice-indicator-label"></span>
+            </span>
+            <button class="stop-speaking" id="stop-speaking" type="button" hidden>
+              <span aria-hidden="true">&#9632;</span> Stop speaking
+            </button>
+          </div>
           <form class="composer" id="chat-form">
             <label class="visually-hidden" for="message-input">Message U</label>
             <textarea id="message-input" name="message" rows="1" maxlength="20000"

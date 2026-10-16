@@ -11,6 +11,10 @@ const speakToggle = document.querySelector("#speak-replies");
 const speakToggleLabel = document.querySelector("#speak-toggle-label");
 const handsFreeToggle = document.querySelector("#hands-free");
 const handsFreeLabel = document.querySelector("#hands-free-label");
+const voiceBar = document.querySelector("#voice-bar");
+const voiceIndicator = document.querySelector("#voice-indicator");
+const voiceIndicatorLabel = document.querySelector("#voice-indicator-label");
+const stopSpeakingButton = document.querySelector("#stop-speaking");
 const errorMessage = document.querySelector("#error-message");
 const healthDot = document.querySelector("#health-dot");
 const healthLabel = document.querySelector("#health-label");
@@ -105,6 +109,34 @@ function dispatchLoop(event) {
     else if (action.type === "stop_playback") stopReplyAudio();
     else if (action.type === "notify") setVoiceState(action.message);
   }
+  renderVoiceView();
+}
+
+// Shows the voice state near the microphone. The state comes from the loop (VoiceLoop.viewState)
+// plus read-only page facts; rendering never changes the loop. The live region is only
+// updated when the state changes, so screen readers are not flooded with repeats.
+let renderedVoiceState = "idle";
+function renderVoiceView() {
+  const voiceAvailable = !micButton.hidden || !speakToggleLabel.hidden;
+  const view = window.VoiceLoop.viewState(voiceLoop, {
+    speaking: replyFinish !== null,
+    recording: recorder !== null || startPending,
+    transcribing,
+    busy: isSending || confirmationResolving,
+    error: !errorMessage.hidden,
+  });
+  const state = voiceAvailable ? view.state : "idle";
+  if (state !== renderedVoiceState) {
+    renderedVoiceState = state;
+    voiceIndicator.dataset.state = state;
+    voiceIndicatorLabel.textContent = window.VoiceLoop.VIEW_LABELS[state];
+  }
+  const hideStop = !(voiceAvailable && view.canStopSpeaking);
+  if (hideStop && document.activeElement === stopSpeakingButton) {
+    (micButton.hidden ? input : micButton).focus();
+  }
+  stopSpeakingButton.hidden = hideStop;
+  voiceBar.classList.toggle("is-active", state !== "idle" || !hideStop);
 }
 
 // Called only by the loop, after a completed reply, never on page load.
@@ -131,11 +163,13 @@ function reportTurn(turn, outcome, speech) {
 function showError(message) {
   errorMessage.textContent = message;
   errorMessage.hidden = false;
+  renderVoiceView();
 }
 
 function clearError() {
   errorMessage.textContent = "";
   errorMessage.hidden = true;
+  renderVoiceView();
 }
 
 function appendMessage(role, content) {
@@ -197,6 +231,7 @@ function setBusy(busy) {
   uploadDocumentButton.disabled = controlsBusy || documentFileInput.files.length === 0;
   clearDocumentButton.disabled = controlsBusy || selectedDocument === null;
   requestState.hidden = !busy;
+  renderVoiceView();
 }
 
 async function refreshHealth() {
@@ -549,6 +584,7 @@ function teardownRecording() {
   holdTimer = null;
   micButton.classList.remove("recording");
   micButton.setAttribute("aria-pressed", "false");
+  renderVoiceView();
 }
 
 // Measures the same MediaStream the MediaRecorder uploads. Returns null when the audio
@@ -599,6 +635,7 @@ async function startRecording(autoStop) {
   stopReplyAudio();
   const session = ++listeningSession;
   startPending = true;
+  renderVoiceView();
   cancelPendingStart = false;
   autoStopRecording = autoStop;
   let stream;
@@ -638,6 +675,7 @@ async function startRecording(autoStop) {
   });
   recorder.addEventListener("stop", finishRecording, { once: true });
   recorder.start();
+  renderVoiceView();
   micButton.classList.add("recording");
   micButton.setAttribute("aria-pressed", "true");
   recordingTimer = window.setTimeout(() => stopRecording("max_duration"), voiceStatus.max_seconds * 1000);
@@ -779,6 +817,7 @@ function stopReplyAudio() {
   const finish = replyFinish;
   replyFinish = null;
   finish?.(null); // cancelled or replaced
+  renderVoiceView();
 }
 
 // Speaks text. The promise resolves true when playback ends, false if it fails, and null if
@@ -789,6 +828,7 @@ function speakReply(text) {
   const done = new Promise((resolve) => {
     replyFinish = resolve;
   });
+  renderVoiceView();
   const settle = (result) => {
     if (request !== replyRequest) return;
     const finish = replyFinish;
@@ -900,7 +940,24 @@ speakToggle.addEventListener("change", () => {
     setVoiceState("");
   }
 });
+// Stop Speaking goes through the loop, which always stops playback and, only for a
+// hands-free reply, resumes listening exactly once. In Review mode it just stops playback.
+stopSpeakingButton.addEventListener("click", () => {
+  if (stopSpeakingButton.hidden || replyFinish === null) return; // inert when nothing is speaking
+  dispatchLoop({ type: "stop_speaking" });
+  renderVoiceView();
+});
+
+function updateMicLabel() {
+  const handsFree = handsFreeToggle.checked;
+  micButton.setAttribute("aria-label", handsFree ? "Tap to talk" : "Hold to talk");
+  micButton.title = handsFree
+    ? "Tap to talk; it stops when you pause (tap again to stop now)"
+    : "Hold to talk; release to transcribe";
+}
+
 handsFreeToggle.addEventListener("change", () => {
+  updateMicLabel();
   if (!handsFreeToggle.checked) {
     dispatchLoop({ type: "disable" });
     voiceTurn = false;

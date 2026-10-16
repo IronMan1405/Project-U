@@ -2,7 +2,7 @@
 
 **Deadline:** October 21, 2026
 
-**Current milestone:** v1.2 continuous voice loop. Automatic listening resumption (the Hands-free loop) is implemented and tested; your real-browser checks, review, and commit remain.
+**Current milestone:** v1.2 continuous voice loop. The voice-state indicator and Stop speaking control are implemented and tested; your real-browser checks, review, and commit remain.
 
 ## Day 1: Foundation — COMPLETE
 - [x] Verify Python and Ollama setup
@@ -120,9 +120,12 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Review the end-of-speech diff and commit
 - [x] Automatic listening resumption after U finishes speaking: single-owner loop state machine (`static/voice_loop.js`), stops after two silences or any failure, fixes the stranded hands-free transcript race
 - [x] Loop state machine `node:test` tests and live browser regression with real Gemma
-- [ ] Check the Hands-free loop on a real microphone in Chrome and Safari
-- [ ] Review the listening-loop diff and commit
-- [ ] Clear Listening / Thinking / Speaking / error indicator and a stop-speaking control
+- [x] Check the Hands-free loop on a real microphone in Chrome and Safari
+- [x] Review the listening-loop diff and commit
+- [x] Clear Listening / Transcribing / Thinking / Speaking / paused / error indicator, derived from the loop (`viewState`), and a Stop speaking control (`stop_speaking`)
+- [x] Indicator and Stop speaking `node:test` tests; live browser regression with real Gemma
+- [ ] Check the indicator and Stop speaking in Chrome and Safari (including a screen reader and keyboard)
+- [ ] Review the voice-indicator diff and commit
 - [ ] Interruption handling (stopping a spoken reply by voice; Gemma generation cannot be interrupted yet)
 - [ ] Optional wake-word support (last; needs its own decision)
 

@@ -321,7 +321,17 @@ press Confirm or Cancel, or tap the mic and say "no" (a spoken "yes" still never
 approves anything). Once the confirmation is resolved and U has finished
 replying, listening resumes. If a transcript arrives while U is still busy with
 another request, it is never sent behind your back or lost: it is left in the
-message box for you to send, and the loop stops. This loop is the only
+message box for you to send, and the loop stops.
+
+**Voice indicator and Stop speaking.** Whenever voice is available, a small
+indicator above the message box shows what U is doing: Listening, Transcribing,
+Thinking, Speaking, Waiting for confirmation, Hands-free paused, or Error (the
+status line next to the toggles still gives the details). Screen readers hear
+each change once. While U is speaking a reply, prompt, or error, a **Stop
+speaking** button appears (it works with the keyboard too). It stops the audio
+at once; in Hands-free mode U then starts listening for your next words, exactly
+as if the reply had finished, except while an action waits for confirmation,
+when it keeps waiting. In Review mode it only stops the audio. This loop is the only
 continuous-conversation feature: there is no wake word, U cannot be interrupted
 while it is generating a reply, and replies are not streamed.
 
