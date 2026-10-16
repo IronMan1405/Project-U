@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 import computer_utilities
+import system_telemetry
 from computer_utilities import UtilityError, UtilitySettings
 from storage import (
     TOOL_DUE_AT_FORMAT_DESCRIPTION,
@@ -248,8 +249,11 @@ class ToolRegistry:
         browser_open: Callable[..., bool] | None = None,
         utilities: UtilitySettings | None = None,
         open_runner: Callable[[list[str]], bool] | None = None,
+        telemetry: "system_telemetry.TelemetryService | None" = None,
     ):
         self.database_path = database_path
+        # Read lazily: the shared service starts CPU sampling only when first used.
+        self._telemetry = telemetry
         self.browser_open = browser_open or webbrowser.open
         self.utilities = utilities or UtilitySettings()
         self.open_runner = open_runner or computer_utilities.run_open
@@ -370,7 +374,9 @@ class ToolRegistry:
             ),
             "get_system_info": ToolDefinition(
                 "get_system_info",
-                "Get the local date/time and timezone, plus available battery, memory, and disk status.",
+                "Get the local date/time and timezone, plus available battery, memory, and disk status, "
+                "and current CPU, memory and GPU utilization and the macOS thermal pressure level "
+                "(not a temperature).",
                 _object_schema({}),
                 self._get_system_info,
             ),
@@ -642,8 +648,7 @@ class ToolRegistry:
         delete_note(arguments["note_id"], self.database_path)
         return ToolOutcome(True, "Note deleted.", {"note_id": arguments["note_id"]})
 
-    @staticmethod
-    def _get_system_info(arguments: dict) -> ToolOutcome:
+    def _get_system_info(self, arguments: dict) -> ToolOutcome:
         now = datetime.now().astimezone()
         info = {
             "local_datetime": now.isoformat(timespec="seconds"),
@@ -651,6 +656,8 @@ class ToolRegistry:
             "battery": ToolRegistry._battery_status(),
             "memory": ToolRegistry._memory_status(),
             "disk": ToolRegistry._disk_status(),
+            # The same readings the System panel shows (see system_telemetry.py).
+            "telemetry": (self._telemetry or system_telemetry.shared_service()).snapshot()["metrics"],
         }
         return ToolOutcome(True, "Local system information collected.", info)
 

@@ -140,7 +140,13 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Final header and System adjustments: cyan K.R.I.S. wordmark without the header rule; System shows CPU/Memory/GPU/Thermals with a live cyan clock and date beneath them; header clock removed
 - [ ] Check Milestone 1 in Chrome and Safari (desktop, narrow window, phone width, keyboard, screen reader, reduced motion)
 - [ ] Review the Milestone 1 diff and commit
-- [ ] Next milestone (needs its own approval)
+
+### 10. System telemetry, Inbox and Calendar
+- [x] Real system telemetry: CPU, memory (used and pressure), GPU and thermal pressure from macOS without extra packages or admin rights; `GET /api/system/telemetry`; System panel polling while visible; `get_system_info` reports the same readings; tests
+- [ ] Check the readings against Activity Monitor and in Chrome and Safari
+- [ ] Review the telemetry diff and commit
+- [ ] Inbox integration (needs its own approval)
+- [ ] Calendar integration (needs its own approval)
 
 ## Scope Rules
 - One feature at a time.

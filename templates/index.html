@@ -10,6 +10,7 @@
   <script src="{{ url_for('static', filename='vendor/purify.min.js') }}" defer></script>
   <script src="{{ url_for('static', filename='voice_activity.js') }}" defer></script>
   <script src="{{ url_for('static', filename='voice_loop.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='telemetry_view.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body>
@@ -47,19 +48,19 @@
           <dl class="telemetry">
             <div class="telemetry-row">
               <dt>CPU</dt>
-              <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
+              <dd id="telemetry-cpu" data-tone="muted">Checking</dd>
             </div>
             <div class="telemetry-row">
               <dt>Memory</dt>
-              <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
+              <dd id="telemetry-memory" data-tone="muted">Checking</dd>
             </div>
             <div class="telemetry-row">
               <dt>GPU</dt>
-              <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
+              <dd id="telemetry-gpu" data-tone="muted">Checking</dd>
             </div>
             <div class="telemetry-row">
               <dt>Thermals</dt>
-              <dd data-tone="muted" title="Live hardware readings are not implemented yet.">Not connected</dd>
+              <dd id="telemetry-thermal" data-tone="muted">Checking</dd>
             </div>
           </dl>
           <div class="system-clock">

@@ -45,10 +45,9 @@ The web UI is a K.R.I.S. (Knowledgeable & Reasonably Intelligent System) command
 center. The K.R.I.S. wordmark is centred at the top, with the local model status
 on the left and New conversation on the right. Below it, on a desktop-width
 window, are three columns:
-- **Left:** three boxes. **System** is always shown: CPU, memory, GPU and thermal
-  rows, which are not implemented and say "Not connected" (never invented
-  numbers), and beneath them a large live clock (HH:MM:SS, ice blue) with the
-  date. Below it, **Inbox / Calendar** switches between two tabs that
+- **Left:** three boxes. **System** is always shown: live CPU, memory, GPU and
+  thermal readings (see "System telemetry" below), and beneath them a large live
+  clock (HH:MM, ice blue) with the date. Below it, **Inbox / Calendar** switches between two tabs that
   say plainly they are not connected: K.R.I.S. has no mail or calendar
   integration yet. Below that, **Alerts** lists current problems (model
   unavailable, errors, an action waiting for approval, Hands-free paused) with a
@@ -131,6 +130,30 @@ web pages on other sites cannot use its API. It uses the same
 kept in server memory for each open conversation and cleared when a new one is
 started or the server stops. The status indicator checks Ollama and the
 configured model. Stop the server with `Ctrl+C` in its terminal.
+
+## System telemetry
+
+On macOS the System panel shows live readings, refreshed about every 3 seconds
+while the page is visible (polling pauses when the tab is hidden). They come from
+`GET /api/system/telemetry`, which reads macOS directly with the standard library:
+no extra packages, no administrator rights, and no shell.
+
+- **CPU:** utilization over the last ~2 seconds, from the kernel's CPU counters.
+  It shows "Measuring" for the first couple of seconds after the server starts.
+- **Memory:** used / total. "Used" is app memory + wired + compressed memory, the
+  parts Activity Monitor adds up as "Memory Used". This is not the same as memory
+  *pressure*, which is shown separately in the tooltip (normal, warning,
+  critical) and colours the reading amber or red when it rises.
+- **GPU:** utilization from macOS's accelerator statistics (`ioreg`). Apple does
+  not document this value, so it may read "Unavailable" after a macOS update.
+- **Thermals:** macOS's thermal pressure level (Nominal, Fair, Serious,
+  Critical). Temperatures in °C are not shown: macOS only exposes them to
+  administrator tools or private interfaces.
+
+A reading that cannot be taken shows "Unavailable" (hover for the reason); it is
+never shown as zero. On other platforms every reading is unavailable. The
+assistant's `get_system_info` tool reports the same four readings when you ask
+how busy the Mac is.
 
 ## Tasks and notes
 

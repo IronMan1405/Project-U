@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
+import system_telemetry
 import voice
 from config import load_settings, load_utility_settings, load_voice_settings
 from computer_utilities import UtilitySettings
@@ -45,6 +46,7 @@ def create_app(
     database_path: str | Path | None = None,
     utility_settings: UtilitySettings | None = None,
     voice_settings: VoiceSettings | None = None,
+    telemetry: system_telemetry.TelemetryService | None = None,
 ) -> Flask:
     app = Flask(__name__)
     conversations: dict[str, AssistantRuntime] = {}
@@ -66,6 +68,8 @@ def create_app(
         utility_settings = load_utility_settings()
     if voice_settings is None:
         voice_settings = load_voice_settings()
+    if telemetry is None:
+        telemetry = system_telemetry.shared_service()
     # One transcription and one synthesis at a time keep local CPU/GPU use bounded.
     transcription_slot = threading.Semaphore(1)
     speech_slot = threading.Semaphore(1)
@@ -165,7 +169,7 @@ def create_app(
                 model,
                 database_path=app.config["DATABASE_PATH"],
                 tool_registry=ToolRegistry(
-                    app.config["DATABASE_PATH"], utilities=utility_settings
+                    app.config["DATABASE_PATH"], utilities=utility_settings, telemetry=telemetry
                 ),
                 activity_callback=update_activity,
             )
@@ -247,6 +251,13 @@ def create_app(
         if isinstance(error, VoiceTimeout):
             return jsonify(error=str(error)), 504
         return jsonify(error=str(error)), 422
+
+    @app.get("/api/system/telemetry")
+    def system_telemetry_status():
+        # Read-only. Each metric is independent; see system_telemetry.py for the shape.
+        response = jsonify(telemetry.snapshot())
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/voice/status")
     def voice_status():

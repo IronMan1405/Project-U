@@ -327,9 +327,11 @@ class AssistantRuntimeTests(unittest.TestCase):
             return {"role": "assistant", "content": f"Answer {len(messages)} " + big_result}
 
         runtime = self.runtime(model)
+        telemetry = Mock()
+        telemetry.snapshot.return_value = {"metrics": {}}  # keep this test independent of the machine
         with unittest.mock.patch.object(assistant_runtime, "MAX_HISTORY_CHARS", 6000), unittest.mock.patch.object(
             assistant_runtime, "HISTORY_TRIM_TARGET_CHARS", 3600
-        ):
+        ), unittest.mock.patch("system_telemetry.shared_service", return_value=telemetry):
             for index in range(12):
                 runtime.run_turn(f"Question {index}")
                 history = runtime.history
@@ -733,7 +735,9 @@ class AssistantRuntimeTests(unittest.TestCase):
                 self.assertIn("YYYY-MM-DD HH:MM", str(raised.exception))
 
     def test_system_info_is_structured_and_reports_unavailable_values(self):
-        registry = ToolRegistry(self.database_path)
+        telemetry = Mock()
+        telemetry.snapshot.return_value = {"metrics": {"cpu": {"status": "sampling", "message": "Measuring CPU use."}}}
+        registry = ToolRegistry(self.database_path, telemetry=telemetry)
         def which(name):
             return {
                 "pmset": "/usr/bin/pmset",
@@ -767,6 +771,7 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertEqual(outcome.data["battery"]["percentage"], 84)
         self.assertIn("total_bytes", outcome.data["memory"])
         self.assertIn("free_bytes", outcome.data["disk"])
+        self.assertEqual(outcome.data["telemetry"]["cpu"]["status"], "sampling")
 
     def test_large_tool_results_are_bounded_and_truthful(self):
         outcome = tool_registry.ToolOutcome(True, "Task created.", {"data": "x" * 20000})

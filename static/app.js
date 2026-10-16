@@ -56,6 +56,12 @@ const coreInstrument = document.querySelector("#core-instrument");
 const coreLink = document.querySelector("#core-link");
 const coreMode = document.querySelector("#core-mode");
 const coreLast = document.querySelector("#core-last");
+const telemetryCells = {
+  cpu: document.querySelector("#telemetry-cpu"),
+  memory: document.querySelector("#telemetry-memory"),
+  gpu: document.querySelector("#telemetry-gpu"),
+  thermal: document.querySelector("#telemetry-thermal"),
+};
 const systemTime = document.querySelector("#system-time");
 const systemDate = document.querySelector("#system-date");
 
@@ -230,16 +236,63 @@ function logActivity(text, kind = "") {
   activityLog.scrollTop = activityLog.scrollHeight;
 }
 
-// Local time and date in the System panel (display only), e.g. 17:46:32 and 16 OCT 2026.
+// Local time and date in the System panel (display only), e.g. 17:46 and 16 OCT 2026.
 function updateClock() {
   const now = new Date();
-  systemTime.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  systemTime.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   systemTime.dateTime = now.toISOString();
   const month = now.toLocaleDateString("en-GB", { month: "short" }).toUpperCase();
   systemDate.textContent = `${String(now.getDate()).padStart(2, "0")} ${month} ${now.getFullYear()}`;
 }
 updateClock();
-window.setInterval(updateClock, 1000);
+window.setInterval(updateClock, 1000); // checked every second so the minute changes on time
+
+// Live System telemetry (GET /api/system/telemetry), every few seconds while the page is
+// visible. One request at a time; a failed request shows every metric as Unavailable.
+const TELEMETRY_POLL_MS = 3000;
+let telemetryTimer = null;
+let telemetryInFlight = false;
+
+function renderTelemetry(metrics) {
+  const views = window.TelemetryView.formatAll(metrics);
+  for (const [name, cell] of Object.entries(telemetryCells)) {
+    setTelemetry(cell, views[name].text, views[name].tone);
+    cell.title = views[name].title || "";
+  }
+}
+
+function scheduleTelemetry() {
+  window.clearTimeout(telemetryTimer);
+  telemetryTimer = null;
+  if (document.visibilityState !== "hidden") {
+    telemetryTimer = window.setTimeout(refreshTelemetry, TELEMETRY_POLL_MS);
+  }
+}
+
+async function refreshTelemetry() {
+  if (telemetryInFlight || document.visibilityState === "hidden") return;
+  telemetryInFlight = true;
+  try {
+    const response = await fetch("/api/system/telemetry", { cache: "no-store" });
+    const result = await response.json();
+    renderTelemetry(response.ok ? result.metrics : null);
+  } catch {
+    renderTelemetry(null);
+  } finally {
+    telemetryInFlight = false;
+    scheduleTelemetry();
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    window.clearTimeout(telemetryTimer);
+    telemetryTimer = null;
+  } else {
+    refreshTelemetry();
+  }
+});
+refreshTelemetry();
 
 // The confirmation panel is shown and hidden from several places; keep the core and alerts in step.
 new MutationObserver(renderVoiceView).observe(confirmationPanel, { attributes: true, attributeFilter: ["hidden"] });

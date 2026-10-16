@@ -64,8 +64,11 @@ in `TODO.md`.
   details such as an incomplete search when it summarizes them.
 
 ### Command-center UI
-- CPU, memory, GPU and thermal rows in the System panel say "Not connected";
-  there is no hardware telemetry API.
+- System telemetry is macOS-only. Thermals are a pressure level, not °C, and fan
+  speeds are not shown: both need administrator tools (`powermetrics`) or
+  private interfaces. GPU utilization uses an undocumented `ioreg` field that a
+  macOS update could remove (it then reads "Unavailable"). CPU reads "Measuring"
+  for about two seconds after the server starts.
 - Inbox and Calendar are placeholders that say they are not connected; there is
   no mail or calendar integration.
 - The Console only lists events seen by the open page; it is cleared on reload
