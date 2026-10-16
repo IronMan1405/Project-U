@@ -12,9 +12,12 @@
 //   awaiting_confirmation  an action waits for Confirm/Cancel; no automatic listening
 //
 // The loop only ever starts from a user tap ("start"). It resumes listening only after a
-// completed reply (when its playback ends, or at once if nothing is spoken), and stops on
-// any failure, on Hands-free being switched off, on the page being hidden, or after
-// repeated silence, so it can never retry by itself in a loop.
+// completed reply (when its playback ends, when the user stops it with Stop Speaking, or at
+// once if nothing is spoken), and stops on any failure, on Hands-free being switched off, on
+// the page being hidden, or after repeated silence, so it can never retry by itself in a loop.
+//
+// viewState() derives what the voice indicator shows from the loop plus a few page facts; it
+// is read-only, so the UI cannot move the loop into an invalid state.
 (function (root, factory) {
   const api = factory();
   if (typeof module === "object" && module.exports) module.exports = api;
@@ -32,15 +35,27 @@
     kept_for_review: "U was still busy, so your words are in the message box. Press Enter to send them.",
   };
   const ACTIVE = new Set(["listening", "transcribing", "thinking", "speaking", "awaiting_confirmation"]);
+  // Why the loop last stopped by itself: silence or a busy page is a pause, anything else an error.
+  const PAUSE_KINDS = { silence: "paused", kept_for_review: "paused" };
 
   function createVoiceLoop() {
-    return { state: "off", silences: 0, turn: 0 };
+    return { state: "off", silences: 0, turn: 0, notice: null };
   }
 
-  const off = (loop, actions = []) => ({ loop: { ...loop, state: "off", silences: 0 }, actions });
-  const go = (loop, state, actions = [], changes = {}) => ({ loop: { ...loop, ...changes, state }, actions });
+  const off = (loop, actions = [], notice = null) => ({
+    loop: { ...loop, state: "off", silences: 0, notice },
+    actions,
+  });
+  const go = (loop, state, actions = [], changes = {}) => ({
+    loop: { ...loop, ...changes, state, notice: null },
+    actions,
+  });
   const ignore = (loop) => ({ loop, actions: [] });
-  const pause = (loop, key, extra = []) => off(loop, [...extra, { type: "notify", message: MESSAGES[key] }]);
+  const pause = (loop, key, extra = []) =>
+    off(loop, [...extra, { type: "notify", message: MESSAGES[key] }], {
+      kind: PAUSE_KINDS[key] || "error",
+      message: MESSAGES[key],
+    });
 
   // Returns { loop, actions }. Actions: start_listening, stop_listening (discard the open
   // recording), stop_playback, notify { message }. Events that do not fit the current state
@@ -51,9 +66,19 @@
       case "start": // the user tapped the mic in Hands-free mode
         return go(loop, "listening", [], { silences: 0 });
 
-      case "disable": // Hands-free switched off
+      case "disable": // Hands-free switched off (also clears any paused/error notice)
       case "page_hidden":
-        return active ? off(loop, [{ type: "stop_listening" }, { type: "stop_playback" }]) : ignore(loop);
+        if (active) return off(loop, [{ type: "stop_listening" }, { type: "stop_playback" }]);
+        return event.type === "disable" && loop.notice ? off(loop) : ignore(loop);
+
+      case "stop_speaking": // the user pressed Stop Speaking
+        // Always stop the audio. Only a hands-free reply being spoken moves on to listening,
+        // exactly once: the playback promise that resolves afterwards finds the loop no
+        // longer "speaking" and is ignored.
+        if (loop.state === "speaking") {
+          return go(loop, "listening", [{ type: "stop_playback" }, { type: "start_listening" }]);
+        }
+        return { loop, actions: [{ type: "stop_playback" }] };
 
       case "typed_message": // the user typed and sent a message: typing takes over
         return active ? off(loop, [{ type: "stop_listening" }]) : ignore(loop);
@@ -84,7 +109,7 @@
           return go(loop, "thinking", [], { silences: 0, turn: loop.turn + 1 });
         }
         if (event.outcome === "guarded") return go(loop, "awaiting_confirmation", [], { silences: 0 });
-        return off(loop, [{ type: "notify", message: MESSAGES.kept_for_review }]);
+        return pause(loop, "kept_for_review");
 
       case "confirmation_resolving": // Confirm/Cancel clicked, or a spoken decline
         if (loop.state === "thinking") return ignore(loop); // a spoken decline already moved here
@@ -111,5 +136,37 @@
     }
   }
 
-  return { createVoiceLoop, reduce, MAX_CONSECUTIVE_SILENCES, MESSAGES };
+  // What the voice indicator shows. facts (all booleans, from the page):
+  //   speaking      a spoken reply is being prepared or played (Stop Speaking applies)
+  //   recording     a recording is open (or the microphone is opening)
+  //   transcribing  a recording is being transcribed
+  //   busy          a chat or confirmation request is in flight
+  //   error         an error message is showing
+  // While the hands-free loop runs, its state wins; otherwise (Review mode, or the loop is
+  // off) the page facts decide. Returns { state, label, canStopSpeaking }.
+  const VIEW_LABELS = {
+    idle: "",
+    listening: "Listening",
+    transcribing: "Transcribing",
+    thinking: "Thinking",
+    speaking: "Speaking",
+    awaiting_confirmation: "Waiting for confirmation",
+    paused: "Hands-free paused",
+    error: "Error",
+  };
+
+  function viewState(loop, facts = {}) {
+    let state;
+    if (facts.speaking) state = "speaking";
+    else if (ACTIVE.has(loop.state)) state = loop.state;
+    else if (facts.recording) state = "listening";
+    else if (facts.transcribing) state = "transcribing";
+    else if (facts.busy) state = "thinking";
+    else if (loop.notice) state = loop.notice.kind;
+    else if (facts.error) state = "error";
+    else state = "idle";
+    return { state, label: VIEW_LABELS[state], canStopSpeaking: Boolean(facts.speaking) };
+  }
+
+  return { createVoiceLoop, reduce, viewState, VIEW_LABELS, MAX_CONSECUTIVE_SILENCES, MESSAGES };
 });
