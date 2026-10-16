@@ -50,8 +50,10 @@ in `TODO.md`.
   "no speech", and pauses longer than `end_silence_ms` end a recording early.
 - The Hands-free loop pauses after two silences or any failure and needs a tap
   to continue; it does not listen by itself while a confirmation is pending.
-  Speech can be stopped with the Stop speaking button but not by voice, there is
-  no wake word, and U cannot be interrupted while it is generating a reply.
+  Speech can be stopped with the Stop speaking button or interrupted by tapping
+  the mic, but not by simply talking over it (there is no always-on listening
+  during playback), there is no wake word, and U cannot be interrupted while it
+  is generating a reply (the mic is disabled until the reply is ready).
 - Resuming listening without a tap relies on the browser keeping microphone
   permission for the page (verified in Chrome and Safari); a browser that asks
   again, or refuses without a fresh tap, stops the loop with "The microphone could

@@ -39,15 +39,27 @@
   const PAUSE_KINDS = { silence: "paused", kept_for_review: "paused" };
 
   function createVoiceLoop() {
-    return { state: "off", silences: 0, turn: 0, notice: null };
+    return { state: "off", silences: 0, turn: 0, notice: null, confirmationPending: false };
   }
 
+  // confirmationPending: an action is still waiting for Confirm/Cancel while the user records
+  // or is transcribed (a tap during, or after, the spoken confirmation prompt). It is kept
+  // only through listening/transcribing, so a silent recording returns to waiting instead
+  // of trying to listen again.
   const off = (loop, actions = [], notice = null) => ({
-    loop: { ...loop, state: "off", silences: 0, notice },
+    loop: { ...loop, state: "off", silences: 0, notice, confirmationPending: false },
     actions,
   });
   const go = (loop, state, actions = [], changes = {}) => ({
-    loop: { ...loop, ...changes, state, notice: null },
+    loop: {
+      ...loop,
+      ...changes,
+      state,
+      notice: null,
+      confirmationPending:
+        state === "awaiting_confirmation" ||
+        ((state === "listening" || state === "transcribing") && loop.confirmationPending),
+    },
     actions,
   });
   const ignore = (loop) => ({ loop, actions: [] });
@@ -63,7 +75,7 @@
   function reduce(loop, event) {
     const active = ACTIVE.has(loop.state);
     switch (event.type) {
-      case "start": // the user tapped the mic in Hands-free mode
+      case "start": // the user tapped the mic in Hands-free mode (also to barge in on a reply)
         return go(loop, "listening", [], { silences: 0 });
 
       case "disable": // Hands-free switched off (also clears any paused/error notice)
@@ -92,6 +104,8 @@
       case "recording_discarded": {
         if (loop.state !== "listening") return ignore(loop);
         if (event.reason !== "no_speech") return pause(loop, "recording_lost");
+        // Nothing said while an action waits for confirmation: keep waiting, don't listen again.
+        if (loop.confirmationPending) return go(loop, "awaiting_confirmation", [], { silences: 0 });
         const silences = loop.silences + 1;
         if (silences >= MAX_CONSECUTIVE_SILENCES) return pause(loop, "silence");
         return go(loop, "listening", [{ type: "start_listening" }], { silences });

@@ -335,6 +335,26 @@ when it keeps waiting. In Review mode it only stops the audio. This loop is the 
 continuous-conversation feature: there is no wake word, U cannot be interrupted
 while it is generating a reply, and replies are not streamed.
 
+**Interrupting a spoken reply (barge-in).** You do not have to wait for U to
+finish speaking. In Hands-free mode, while a reply is being spoken the mic button
+reads "Interrupt and talk": tap it (or focus it and press Space or Enter) and the
+audio stops at once and U records your next words, which then go through the
+normal end-of-speech, transcription, and chat steps. Exactly one recording starts
+and it is sent once; the interrupted audio never resumes or triggers another
+recording. If the microphone cannot start, U shows the error, pauses Hands-free,
+and does not retry. Interrupting a confirmation prompt never approves or cancels
+the action: a spoken "yes" is still ignored, "no" or "cancel" cancels as before,
+anything else is a new message (which cancels the waiting action, as typed
+messages do), and if you say nothing U simply goes back to waiting for Confirm or
+Cancel. In Review mode, pressing the mic while U speaks also stops the audio, but
+recording is manual as always (it lasts only while you hold) and nothing is sent
+automatically. Turning Hands-free off, starting a new conversation, or switching
+away while the interruption's recording starts cancels it without uploading.
+Keyboard shortcuts apply only to the focused mic and Stop speaking buttons, so
+typing in the message box (including spaces) never interrupts or records.
+While U is still generating a reply (Thinking) the mic is disabled: generation
+cannot be interrupted, so wait for the reply and interrupt it while it is spoken.
+
 The detector runs in the browser on the same microphone stream that is
 recorded. It compares loudness with the noise level measured at the start of
 each recording, so it is a simple energy check, not true speech recognition, and
