@@ -32,8 +32,8 @@ Run the automated tests with:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The browser's end-of-speech detector has its own tests, run with Node's built-in
-test runner (no packages to install):
+The browser's end-of-speech detector and Hands-free listening loop have their
+own tests, run with Node's built-in test runner (no packages to install):
 
 ```sh
 node --test tests/js/
@@ -299,9 +299,31 @@ sooner than `min_recording_ms` (600 ms) after it started, and the existing
 holding still works and is fully manual: hold past about 0.4 s and the recording
 stops only when you release. If no speech is heard within 6 seconds, the
 recording is discarded and nothing is uploaded. Review mode is unchanged: hold to
-talk, release to stop. This is end-of-speech detection for one recording at a
-time, not a continuous conversation: U does not start listening again on its
-own after it replies.
+talk, release to stop.
+
+**Hands-free listening loop.** After you tap the mic once in Hands-free mode, U
+keeps the conversation going: it stops recording when you pause, answers, speaks
+its reply, and then starts listening again by itself, so you can simply say the
+next thing. If spoken replies are unavailable, it starts listening again as soon
+as the reply is ready. It never starts listening on page load, when Hands-free is
+turned on, or while a reply is still being generated; only your first tap starts
+it. The loop stops, and the status line says so, when:
+- you turn Hands-free off, start a new conversation, switch to another tab or
+  window, or type and send a message yourself (an open recording is dropped
+  without uploading);
+- it hears nothing twice in a row ("Didn't hear anything. Hands-free paused.");
+- the microphone cannot start, a recording cannot be transcribed, U cannot
+  answer, or the reply cannot be spoken.
+It never retries by itself after a failure; tap the mic to continue.
+
+While an action waits for confirmation, the loop does not listen on its own:
+press Confirm or Cancel, or tap the mic and say "no" (a spoken "yes" still never
+approves anything). Once the confirmation is resolved and U has finished
+replying, listening resumes. If a transcript arrives while U is still busy with
+another request, it is never sent behind your back or lost: it is left in the
+message box for you to send, and the loop stops. This loop is the only
+continuous-conversation feature: there is no wake word, U cannot be interrupted
+while it is generating a reply, and replies are not streamed.
 
 The detector runs in the browser on the same microphone stream that is
 recorded. It compares loudness with the noise level measured at the start of
