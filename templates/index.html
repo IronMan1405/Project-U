@@ -30,7 +30,7 @@
       </div>
       <a class="wordmark" href="/" aria-label="K.R.I.S. home">
         <span class="wordmark-name">K.R.I.S.</span>
-        <span class="wordmark-sub">Knowledge · Reasoning · Intelligent System</span>
+        <span class="wordmark-sub">Knowledgeable &amp; Reasonably Intelligent System</span>
       </a>
       <div class="topbar-side topbar-actions">
         <button class="new-chat" id="new-chat" type="button">
@@ -105,17 +105,41 @@
             </svg>
           <div class="core" id="core" data-state="idle" aria-hidden="true">
             <svg class="core-svg" viewBox="0 0 200 200" focusable="false">
+              <defs>
+                <!-- Glow: a soft bloom behind the lattice and a luminous centre (colours follow --core). -->
+                <radialGradient id="core-bloom-gradient">
+                  <stop offset="0" class="core-stop-bloom-0"></stop>
+                  <stop offset="0.4" class="core-stop-bloom-1"></stop>
+                  <stop offset="1" class="core-stop-bloom-2"></stop>
+                </radialGradient>
+                <radialGradient id="core-heart-gradient">
+                  <stop offset="0" class="core-stop-heart-0"></stop>
+                  <stop offset="0.55" class="core-stop-heart-1"></stop>
+                  <stop offset="1" class="core-stop-heart-2"></stop>
+                </radialGradient>
+                <filter id="core-line-glow" x="-30%" y="-30%" width="160%" height="160%">
+                  <feGaussianBlur stdDeviation="1.8" result="blur"></feGaussianBlur>
+                  <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+                </filter>
+                <filter id="core-heart-blur" x="-100%" y="-100%" width="300%" height="300%">
+                  <feGaussianBlur stdDeviation="5"></feGaussianBlur>
+                </filter>
+              </defs>
+              <circle class="core-bloom" cx="100" cy="100" r="64"></circle>
+              <circle class="core-disc" cx="100" cy="100" r="40"></circle>
+              <circle class="core-disc core-disc-inner" cx="100" cy="100" r="26"></circle>
               <circle class="core-halo" cx="100" cy="100" r="92"></circle>
               <g class="core-ring core-ring-outer">
                 <circle cx="100" cy="100" r="84" class="core-ticks"></circle>
               </g>
-              <g class="core-ring core-ring-arc">
+              <g class="core-ring core-ring-arc" filter="url(#core-line-glow)">
                 <path d="M100 26 A74 74 0 0 1 174 100" class="core-arc"></path>
                 <path d="M100 174 A74 74 0 0 1 26 100" class="core-arc"></path>
               </g>
               <circle class="core-wave" cx="100" cy="100" r="56"></circle>
               <circle class="core-wave core-wave-late" cx="100" cy="100" r="56"></circle>
-              <g class="core-ring core-lattice">
+              <g class="core-ring core-lattice" filter="url(#core-line-glow)">
+                <path class="core-spokes" d="M100 100L100 44M100 100L148.5 72M100 100L148.5 128M100 100L100 156M100 100L51.5 128M100 100L51.5 72"></path>
                 <polygon points="100,44 148.5,72 148.5,128 100,156 51.5,128 51.5,72" class="core-hex"></polygon>
                 <polygon points="100,58 136.4,121 63.6,121" class="core-tri"></polygon>
                 <polygon points="100,142 63.6,79 136.4,79" class="core-tri core-tri-alt"></polygon>
@@ -123,7 +147,8 @@
               <g class="core-ring core-inner">
                 <rect x="84" y="84" width="32" height="32" class="core-diamond" transform="rotate(45 100 100)"></rect>
               </g>
-              <circle class="core-heart" cx="100" cy="100" r="7"></circle>
+              <circle class="core-heart-halo" cx="100" cy="100" r="19"></circle>
+              <circle class="core-heart" cx="100" cy="100" r="11"></circle>
             </svg>
           </div>
           </div>

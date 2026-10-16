@@ -11,8 +11,10 @@
   --line-strong: #1f3852;
   --line-hover: #2d5476;
   --focus-line: #3a92b8;
-  --text-strong: #eef6fb;
-  --text: #cfdde7;
+  /* Primary and important text use the K.R.I.S. accent; only console output keeps pale text. */
+  --text-strong: var(--accent);
+  --text: var(--accent);
+  --console-text: #cfdde7;
   --text-dim: #9db2c2;
   --muted: #62798b;
   --faint: #3b5163;
@@ -1636,7 +1638,7 @@ button {
   height: 148px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: radial-gradient(circle, rgb(var(--core-rgb) / 13%) 0%, rgb(var(--core-rgb) / 3%) 48%, transparent 70%);
+  background: radial-gradient(circle, rgb(var(--core-rgb) / 18%) 0%, rgb(var(--core-rgb) / 5%) 45%, transparent 70%);
   transition: background 400ms ease;
 }
 
@@ -1645,7 +1647,7 @@ button {
   width: 100%;
   height: 100%;
   overflow: visible;
-  filter: drop-shadow(0 0 5px rgb(var(--core-rgb) / 30%));
+  filter: drop-shadow(0 0 6px rgb(var(--core-rgb) / 40%));
   transition: filter 400ms ease;
 }
 
@@ -1667,11 +1669,52 @@ button {
 .core-hex { stroke-width: 1; opacity: 0.55; }
 .core-tri { stroke-width: 0.9; opacity: 0.45; }
 .core-tri-alt { opacity: 0.3; }
-.core-diamond { stroke-width: 1.4; opacity: 0.9; }
+.core-diamond { stroke-width: 1.2; opacity: 0.6; }
 .core-wave { stroke-width: 1; opacity: 0; }
 
-.core-heart {
+/* Glow layers: a soft bloom and two faint discs behind the lattice, and a luminous centre
+   (white at its middle, fading to the state colour) inside a blurred halo. */
+.core-svg stop { stroke: none; }
+.core-stop-bloom-0 { stop-color: var(--core); stop-opacity: 0.32; }
+.core-stop-bloom-1 { stop-color: var(--core); stop-opacity: 0.12; }
+.core-stop-bloom-2 { stop-color: var(--core); stop-opacity: 0; }
+.core-stop-heart-0 { stop-color: #f4fdff; stop-opacity: 1; }
+.core-stop-heart-1 { stop-color: var(--core); stop-opacity: 1; }
+.core-stop-heart-2 { stop-color: var(--core); stop-opacity: 0.85; }
+
+.core-bloom {
+  fill: url(#core-bloom-gradient) !important;
+  stroke: none !important;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: core-bloom 4s ease-in-out infinite;
+}
+
+.core-disc {
   fill: var(--core) !important;
+  fill-opacity: 0.05;
+  stroke-width: 0.5;
+  stroke-opacity: 0.25;
+}
+
+.core-disc-inner {
+  fill-opacity: 0.08;
+}
+
+.core-spokes {
+  stroke-width: 0.7;
+  opacity: 0.4;
+}
+
+.core-heart-halo {
+  fill: var(--core) !important;
+  stroke: none !important;
+  opacity: 0.7;
+  filter: url(#core-heart-blur);
+}
+
+.core-heart {
+  fill: url(#core-heart-gradient) !important;
   stroke: none !important;
   transform-box: fill-box;
   transform-origin: center;
@@ -1951,6 +1994,11 @@ button {
 
 @keyframes core-spin {
   to { transform: rotate(360deg); }
+}
+
+@keyframes core-bloom {
+  0%, 100% { opacity: 0.8; transform: scale(0.97); }
+  50% { opacity: 1; transform: scale(1.03); }
 }
 
 @keyframes core-heartbeat {
@@ -2300,7 +2348,7 @@ button {
 
 /* The newest line is the one that matters. */
 .activity-line:last-child .activity-text {
-  color: var(--text);
+  color: var(--console-text);
 }
 
 .activity-line[data-kind="tool"] .activity-text { color: rgb(var(--accent-rgb) / 75%); }

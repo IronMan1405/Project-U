@@ -41,7 +41,7 @@ node --test tests/js/
 
 ## The command center
 
-The web UI is a K.R.I.S. (Knowledge, Reasoning & Intelligent System) command
+The web UI is a K.R.I.S. (Knowledgeable & Reasonably Intelligent System) command
 center. The K.R.I.S. wordmark is centred at the top, with the local model status
 on the left and New conversation on the right. Below it, on a desktop-width
 window, are three columns:
@@ -73,8 +73,9 @@ are standard tabs: click them, or use the arrow keys, Home and End.
 The visual layer is a restrained engineering HUD: hairline panel frames with
 corner brackets and small section identifiers (SYS·01 and so on), a thin frame
 around the whole window, technical uppercase labels, and a quiet colour scheme
-(ice blue for active elements, pale text for important values, blue-grey for
-secondary text, amber for attention and confirmations, red only for errors).
+(ice blue for primary text and active elements, blue-grey for secondary text,
+amber for attention and confirmations, red only for errors; only the console's
+output keeps pale text).
 The core sits inside a ring of tick marks and segmented arcs that follows its
 state. Under the core, LINK (model online or offline), MODE (Review or
 Hands-free) and LAST EVENT (time of the newest console line) are read-only
