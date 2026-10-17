@@ -2591,6 +2591,215 @@ button {
 }
 
 
+/* --- Google Workspace panes (Inbox / Calendar) ------------------------------------- */
+
+.google-state[data-tone="ok"] { color: var(--text-strong); }
+.google-state[data-tone="ok"] .unavailable-mark { border-color: var(--accent); background: var(--accent); }
+.google-state[data-tone="warning"] { color: var(--warning); }
+.google-state[data-tone="warning"] .unavailable-mark { border-color: var(--warning); }
+
+.google-unread {
+  margin: 0 0 var(--space-2);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.google-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.google-list:empty {
+  display: none;
+}
+
+.google-item {
+  min-width: 0;
+  padding: 6px 0;
+  border-bottom: 1px solid rgb(var(--accent-rgb) / 6%);
+  font-size: 11.5px;
+}
+
+.google-item-top {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.google-item-from,
+.google-item-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.google-item-from {
+  color: var(--text-dim);
+}
+
+.mail-item[data-unread="true"] .google-item-from {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.google-item-when {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mail-item .google-item-subject {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.event-item {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.event-item .google-item-subject {
+  color: var(--text);
+}
+
+.google-day {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.google-day:first-child {
+  margin-top: 0;
+}
+
+.google-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.google-actions .secondary-action {
+  min-height: 30px;
+}
+
+.google-item-action {
+  margin-top: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.google-item-action:hover {
+  color: var(--accent-hover);
+}
+
+.google-item-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Confirmation preview: the exact fields an approved action writes. With a preview the
+   panel stacks, so the full text gets the width and the buttons sit beneath it. */
+.chat-view .confirmation-panel:has(.confirmation-preview:not([hidden])) {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.chat-view .confirmation-panel:has(.confirmation-preview:not([hidden])) .confirmation-actions {
+  justify-content: flex-start;
+}
+
+.confirmation-preview {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px var(--space-3);
+  margin: var(--space-3) 0 0;
+  font-size: 12px;
+}
+
+.confirmation-preview[hidden] {
+  display: none;
+}
+
+.confirmation-preview dt {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.confirmation-preview dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.confirmation-preview-body {
+  max-height: 220px;
+  padding: var(--space-2);
+  overflow-y: auto;
+  border: 1px solid rgb(var(--warning-rgb) / 20%);
+  background: rgb(0 0 0 / 25%);
+  white-space: pre-wrap;
+}
+
+/* On desktop the box scrolls instead of pushing Alerts out of view. */
+@media (min-width: 821px) {
+  .panel-incoming {
+    max-height: 44vh;
+  }
+}
+
+/* OAuth result page (opened in its own tab by Google's redirect). */
+.oauth-result {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: var(--space-5);
+}
+
+.oauth-result-panel {
+  width: min(100%, 460px);
+}
+
+.oauth-result-message {
+  margin: 0 0 var(--space-3);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.oauth-result-error {
+  color: var(--warning);
+}
+
+.oauth-result-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: var(--space-3);
+  text-decoration: none;
+}
+
 /* --- Narrower screens ------------------------------------------------------------ */
 
 /* Laptop widths: the core and the system panel share the left column. */

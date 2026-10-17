@@ -128,8 +128,8 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Review the voice-indicator diff and commit
 - [x] Interrupt a spoken reply by tapping the mic (barge-in): one recording, one submission, confirmations stay pending, Review mode stays manual; Gemma generation still cannot be interrupted
 - [x] Barge-in `node:test` tests; live browser regression with real Gemma
-- [ ] Check barge-in in Chrome and Safari (tap, keyboard, confirmation prompt, Review mode)
-- [ ] Review the barge-in diff and commit
+- [x] Check barge-in in Chrome and Safari (tap, keyboard, confirmation prompt, Review mode)
+- [x] Review the barge-in diff and commit
 - [ ] Optional wake-word support (last; needs its own decision)
 
 ### 9. K.R.I.S. UI Refactor
@@ -143,10 +143,24 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 
 ### 10. System telemetry, Inbox and Calendar
 - [x] Real system telemetry: CPU, memory (used and pressure), GPU and thermal pressure from macOS without extra packages or admin rights; `GET /api/system/telemetry`; System panel polling while visible; `get_system_info` reports the same readings; tests
-- [ ] Check the readings against Activity Monitor and in Chrome and Safari
-- [ ] Review the telemetry diff and commit
-- [ ] Inbox integration (needs its own approval)
-- [ ] Calendar integration (needs its own approval)
+- [x] Check the readings against Activity Monitor and in Chrome and Safari
+- [x] Review the telemetry diff and commit
+- [x] Provider decision: the organisation's Google Workspace uses Google's Gmail and Calendar APIs directly (separate provider); a personal Apple Mail/Calendar provider can be added beside it later (none exists yet)
+
+### 11. Google Workspace (staged rollout)
+- [x] Stage 1 (read-only): opt-in `[google]` config, OAuth 2.0 with PKCE and loopback redirect, Keychain token storage, connect/disconnect, unread count and 10 newest headers (`gmail.metadata`), today plus seven days of primary-calendar events (`calendar.events.readonly`), safe error handling, mocked tests
+- [ ] Create the Internal Desktop OAuth client, connect a real Workspace account, and verify inbox, calendar, revoke and reconnect in Chrome and Safari
+- [ ] Review the Google Workspace diff and commit
+- [x] Stage 2: Gmail draft creation only (`gmail.compose`, consent version 2 forces reconnect): `create_gmail_draft` tool for new and reply drafts, always confirmed with the exact recipients, subject and body shown; Draft reply action in the Inbox tab; no send operation; tests
+- [ ] Verify drafts (new and reply) against a real Workspace account, including the reconnect prompt, in Chrome and Safari
+- [ ] Review the Gmail drafts diff and commit
+- [x] Stage 3: Gmail search and reading (`gmail.readonly`; `search_gmail`, `read_gmail_message`, no confirmation, untrusted content) and single-message organising (`gmail.modify`; mark read/unread, star/unstar, archive, Trash, add/remove existing user label), each always confirmed with the exact action and message; consent version 3 forces reconnect; no permanent delete or send; tests
+- [ ] Verify Stage 3 against a real Workspace account (search, read, thread, each action, reconnect), including whether `gmail.metadata` restricts `gmail.readonly` reads; drop `gmail.metadata` if it does
+- [ ] Review the Stage 3 diff and commit
+- [ ] Stage 4: send email (`gmail.send`), always confirmed (needs approval and re-consent)
+- [ ] Stage 5: create and edit events (`calendar.events`), always confirmed (needs approval and re-consent)
+- [ ] Optional: read-only model tools for calendar events (needs approval)
+- [ ] Optional: personal Apple Mail/Calendar provider (needs its own approval)
 
 ## Scope Rules
 - One feature at a time.

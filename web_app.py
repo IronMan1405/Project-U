@@ -12,7 +12,8 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 import system_telemetry
 import voice
-from config import load_settings, load_utility_settings, load_voice_settings
+from config import load_google_settings, load_settings, load_utility_settings, load_voice_settings
+from google_workspace import GoogleError, GoogleWorkspaceProvider
 from computer_utilities import UtilitySettings
 from voice import VoiceError, VoiceSettings, VoiceTimeout, VoiceUnavailable
 from documents import (
@@ -47,6 +48,7 @@ def create_app(
     utility_settings: UtilitySettings | None = None,
     voice_settings: VoiceSettings | None = None,
     telemetry: system_telemetry.TelemetryService | None = None,
+    google: GoogleWorkspaceProvider | None = None,
 ) -> Flask:
     app = Flask(__name__)
     conversations: dict[str, AssistantRuntime] = {}
@@ -70,6 +72,8 @@ def create_app(
         voice_settings = load_voice_settings()
     if telemetry is None:
         telemetry = system_telemetry.shared_service()
+    if google is None:
+        google = GoogleWorkspaceProvider(load_google_settings())
     # One transcription and one synthesis at a time keep local CPU/GPU use bounded.
     transcription_slot = threading.Semaphore(1)
     speech_slot = threading.Semaphore(1)
@@ -169,7 +173,8 @@ def create_app(
                 model,
                 database_path=app.config["DATABASE_PATH"],
                 tool_registry=ToolRegistry(
-                    app.config["DATABASE_PATH"], utilities=utility_settings, telemetry=telemetry
+                    app.config["DATABASE_PATH"], utilities=utility_settings, telemetry=telemetry,
+                    google=google,
                 ),
                 activity_callback=update_activity,
             )
@@ -258,6 +263,73 @@ def create_app(
         response = jsonify(telemetry.snapshot())
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    # --- Google Workspace (opt-in, read-only). Responses never contain tokens. -------------
+
+    def google_json(payload: dict, status: int = 200):
+        response = jsonify(payload)
+        response.status_code = status
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    def google_failure(error: GoogleError):
+        return google_json(
+            {"status": "error", "kind": error.kind, "message": error.message, "reconnect": error.reconnect},
+            409 if error.kind in ("not_configured", "not_connected", "not_granted", "revoked", "reconsent") else 502,
+        )
+
+    def google_redirect_uri() -> str:
+        # Google's loopback rules for desktop clients: always the 127.0.0.1 address.
+        port = request.host.rsplit(":", 1)[1] if ":" in request.host else "80"
+        return f"http://127.0.0.1:{port}/oauth/google/callback"
+
+    @app.get("/api/google/status")
+    def google_status():
+        return google_json(google.status())
+
+    @app.post("/api/google/connect")
+    def google_connect():
+        try:
+            return google_json({"authorization_url": google.begin_authorization(google_redirect_uri())})
+        except GoogleError as error:
+            return google_failure(error)
+
+    @app.get("/oauth/google/callback")
+    def google_callback():
+        try:
+            google.complete_authorization(
+                request.args.get("state"), request.args.get("code"), request.args.get("error")
+            )
+        except GoogleError as error:
+            response = Response(
+                render_template("google_callback.html", connected=False, message=error.message), status=400
+            )
+        else:
+            response = Response(render_template("google_callback.html", connected=True, message=None))
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"  # the URL carried a one-time code
+        return response
+
+    @app.post("/api/google/disconnect")
+    def google_disconnect():
+        try:
+            return google_json(google.disconnect())
+        except GoogleError as error:
+            return google_failure(error)
+
+    @app.get("/api/google/inbox")
+    def google_inbox():
+        try:
+            return google_json(google.inbox_summary())
+        except GoogleError as error:
+            return google_failure(error)
+
+    @app.get("/api/google/calendar")
+    def google_calendar():
+        try:
+            return google_json(google.upcoming_events())
+        except GoogleError as error:
+            return google_failure(error)
 
     @app.get("/api/voice/status")
     def voice_status():

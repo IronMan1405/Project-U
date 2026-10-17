@@ -44,6 +44,7 @@ const documentDetail = document.querySelector("#document-detail");
 const toolActivity = document.querySelector("#tool-activity");
 const confirmationPanel = document.querySelector("#confirmation-panel");
 const confirmationSummary = document.querySelector("#confirmation-summary");
+const confirmationPreview = document.querySelector("#confirmation-preview");
 const confirmActionButton = document.querySelector("#confirm-action");
 const cancelActionButton = document.querySelector("#cancel-action");
 const chatView = document.querySelector("#chat-view");
@@ -293,6 +294,261 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 refreshTelemetry();
+
+// --- Google Workspace Inbox / Calendar (opt-in, read-only) ---------------------------------
+// The server holds every token; this code only sees display values. Inbox refreshes every
+// minute and Calendar every five minutes, only while the page is visible and connected.
+const GOOGLE_INBOX_MS = 60000;
+const GOOGLE_CALENDAR_MS = 300000;
+const GOOGLE_CONNECT_WATCH_MS = 600000; // how long to watch for a consent finished in another tab
+const googlePanes = {
+  inbox: {
+    state: document.querySelector("#inbox-state"),
+    stateText: document.querySelector("#inbox-state-text"),
+    list: document.querySelector("#inbox-list"),
+    note: document.querySelector("#inbox-note"),
+    unread: document.querySelector("#inbox-unread"),
+    connect: document.querySelector("#inbox-connect"),
+    disconnect: document.querySelector("#inbox-disconnect"),
+    url: "/api/google/inbox",
+    every: GOOGLE_INBOX_MS,
+    capability: "inbox.read",
+  },
+  calendar: {
+    state: document.querySelector("#calendar-state"),
+    stateText: document.querySelector("#calendar-state-text"),
+    list: document.querySelector("#calendar-list"),
+    note: document.querySelector("#calendar-note"),
+    unread: null,
+    connect: document.querySelector("#calendar-connect"),
+    disconnect: document.querySelector("#calendar-disconnect"),
+    url: "/api/google/calendar",
+    every: GOOGLE_CALENDAR_MS,
+    capability: "calendar.read",
+  },
+};
+let googleStatus = null;
+let googleWatchUntil = 0;
+const googleTimers = { inbox: null, calendar: null, status: null };
+const googleInFlight = { inbox: false, calendar: false, status: false };
+
+async function googleRequest(url, options = {}) {
+  const response = await fetch(url, { cache: "no-store", ...options });
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  return { ok: response.ok, payload };
+}
+
+function setGoogleNote(pane, message) {
+  pane.note.textContent = message || "";
+  pane.note.hidden = !message;
+}
+
+function renderGoogleConnection(status) {
+  const view = window.GoogleView.connectionView(status);
+  for (const pane of Object.values(googlePanes)) {
+    pane.stateText.textContent = view.text;
+    pane.state.dataset.tone = view.tone;
+    pane.connect.hidden = !view.connect;
+    pane.disconnect.hidden = !view.disconnect;
+    if (!view.ready) {
+      pane.list.replaceChildren();
+      setGoogleNote(pane, "");
+      if (pane.unread) pane.unread.hidden = true;
+    }
+  }
+}
+
+function renderInbox(view) {
+  const pane = googlePanes.inbox;
+  if (view.error) {
+    pane.list.replaceChildren();
+    pane.unread.hidden = true;
+    setGoogleNote(pane, view.error.message);
+    return;
+  }
+  pane.unread.textContent = view.unreadText;
+  pane.unread.hidden = false;
+  pane.list.replaceChildren(...view.items.map((item) => {
+    const row = document.createElement("li");
+    row.className = "google-item mail-item";
+    if (item.unread) row.dataset.unread = "true";
+    const top = document.createElement("div");
+    top.className = "google-item-top";
+    const from = document.createElement("span");
+    from.className = "google-item-from";
+    from.textContent = item.from;
+    const when = document.createElement("span");
+    when.className = "google-item-when";
+    when.textContent = item.when;
+    top.append(from, when);
+    const subject = document.createElement("div");
+    subject.className = "google-item-subject";
+    subject.textContent = item.subject;
+    row.append(top, subject);
+    if (item.id && googleStatus?.capabilities?.["mail.draft"]) {
+      // Puts a request in the message box for the user to finish and send; nothing is drafted
+      // until K.R.I.S. shows the exact draft and the user presses Confirm.
+      const reply = document.createElement("button");
+      reply.type = "button";
+      reply.className = "google-item-action";
+      reply.textContent = "Draft reply";
+      reply.setAttribute("aria-label", `Draft a reply to ${item.from}: ${item.subject}`);
+      reply.addEventListener("click", () => {
+        input.value = `Draft a reply to the email from ${item.from} about "${item.subject}" ` +
+          `(reply_to_message_id ${item.id}). Say: `;
+        input.dispatchEvent(new Event("input"));
+        showChatView();
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      });
+      row.append(reply);
+    }
+    return row;
+  }));
+  setGoogleNote(pane, view.note);
+}
+
+function renderCalendar(view) {
+  const pane = googlePanes.calendar;
+  if (view.error) {
+    pane.list.replaceChildren();
+    setGoogleNote(pane, view.error.message);
+    return;
+  }
+  let lastDay = "";
+  const rows = [];
+  for (const item of view.items) {
+    if (item.day !== lastDay) {
+      lastDay = item.day;
+      const heading = document.createElement("li");
+      heading.className = "google-day";
+      heading.textContent = item.day;
+      rows.push(heading);
+    }
+    const row = document.createElement("li");
+    row.className = "google-item event-item";
+    const time = document.createElement("span");
+    time.className = "google-item-when";
+    time.textContent = item.time;
+    const title = document.createElement("span");
+    title.className = "google-item-subject";
+    title.textContent = item.title;
+    row.append(time, title);
+    rows.push(row);
+  }
+  pane.list.replaceChildren(...rows);
+  setGoogleNote(pane, view.note);
+}
+
+function scheduleGoogle(name, delay) {
+  window.clearTimeout(googleTimers[name]);
+  googleTimers[name] = null;
+  if (document.visibilityState !== "hidden" && delay) {
+    googleTimers[name] = window.setTimeout(
+      () => (name === "status" ? refreshGoogleStatus() : refreshGooglePane(name)), delay,
+    );
+  }
+}
+
+async function refreshGooglePane(name) {
+  const pane = googlePanes[name];
+  if (googleInFlight[name] || document.visibilityState === "hidden") return;
+  if (!googleStatus?.connected || !googleStatus.capabilities?.[pane.capability]) {
+    if (googleStatus?.connected) {
+      pane.list.replaceChildren();
+      setGoogleNote(pane, "Access was not granted. Reconnect to allow it.");
+    }
+    return;
+  }
+  googleInFlight[name] = true;
+  let needsStatus = false;
+  try {
+    const { payload } = await googleRequest(pane.url);
+    const view = name === "inbox" ? window.GoogleView.inboxView(payload) : window.GoogleView.calendarView(payload);
+    if (name === "inbox") renderInbox(view);
+    else renderCalendar(view);
+    needsStatus = Boolean(view.error?.reconnect);
+  } catch {
+    const view = { error: window.GoogleView.errorView(null) };
+    if (name === "inbox") renderInbox(view);
+    else renderCalendar(view);
+  } finally {
+    googleInFlight[name] = false;
+  }
+  if (needsStatus) refreshGoogleStatus(); // disconnected or revoked: show the real state
+  else scheduleGoogle(name, pane.every);
+}
+
+async function refreshGoogleStatus() {
+  if (googleInFlight.status || document.visibilityState === "hidden") return;
+  googleInFlight.status = true;
+  try {
+    const { ok, payload } = await googleRequest("/api/google/status");
+    googleStatus = ok ? payload : null;
+  } catch {
+    googleStatus = null;
+  } finally {
+    googleInFlight.status = false;
+  }
+  renderGoogleConnection(googleStatus);
+  if (googleStatus?.connected) {
+    googleWatchUntil = 0;
+    refreshGooglePane("inbox");
+    refreshGooglePane("calendar");
+  } else {
+    scheduleGoogle("inbox", 0);
+    scheduleGoogle("calendar", 0);
+  }
+  // While a consent page is open in another tab, check every few seconds for the result.
+  scheduleGoogle("status", Date.now() < googleWatchUntil ? 4000 : 0);
+}
+
+async function connectGoogle() {
+  try {
+    const { ok, payload } = await googleRequest("/api/google/connect", { method: "POST" });
+    if (!ok || !payload?.authorization_url?.startsWith("https://accounts.google.com/")) {
+      for (const pane of Object.values(googlePanes)) setGoogleNote(pane, window.GoogleView.errorView(payload).message);
+      return;
+    }
+    window.open(payload.authorization_url, "_blank", "noopener,noreferrer");
+    googleWatchUntil = Date.now() + GOOGLE_CONNECT_WATCH_MS;
+    scheduleGoogle("status", 4000);
+  } catch {
+    for (const pane of Object.values(googlePanes)) setGoogleNote(pane, window.GoogleView.errorView(null).message);
+  }
+}
+
+async function disconnectGoogle() {
+  if (!window.confirm("Disconnect Google Workspace? K.R.I.S. will revoke its access and remove the saved sign-in.")) return;
+  try {
+    const { ok, payload } = await googleRequest("/api/google/disconnect", { method: "POST" });
+    if (!ok) {
+      for (const pane of Object.values(googlePanes)) setGoogleNote(pane, window.GoogleView.errorView(payload).message);
+    }
+  } catch {
+    // The status refresh below shows the real state either way.
+  }
+  refreshGoogleStatus();
+}
+
+for (const pane of Object.values(googlePanes)) {
+  pane.connect.addEventListener("click", connectGoogle);
+  pane.disconnect.addEventListener("click", disconnectGoogle);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    for (const name of Object.keys(googleTimers)) scheduleGoogle(name, 0);
+  } else {
+    refreshGoogleStatus(); // also picks up a connection finished in another tab
+  }
+});
+refreshGoogleStatus();
 
 // The confirmation panel is shown and hidden from several places; keep the core and alerts in step.
 new MutationObserver(renderVoiceView).observe(confirmationPanel, { attributes: true, attributeFilter: ["hidden"] });
@@ -592,6 +848,17 @@ function toolLabel(toolName) {
     open_file: "Requesting file open",
     open_application: "Requesting app launch",
     document_context: "Using document context",
+    create_gmail_draft: "Creating Gmail draft",
+    search_gmail: "Searching Gmail",
+    read_gmail_message: "Reading email",
+    mark_email_read: "Marking email as read",
+    mark_email_unread: "Marking email as unread",
+    star_email: "Starring email",
+    unstar_email: "Removing email star",
+    archive_email: "Archiving email",
+    trash_email: "Moving email to Trash",
+    add_label: "Adding Gmail label",
+    remove_label: "Removing Gmail label",
   };
   return labels[toolName] || "Using an assistant tool";
 }
@@ -651,9 +918,45 @@ function renderToolActivities(activities) {
   toolActivity.hidden = false;
 }
 
+// Shows exactly what an approval does: every field of a Gmail draft, or the exact Gmail
+// action and the one message it applies to.
+function renderConfirmationPreview(preview) {
+  confirmationPreview.replaceChildren();
+  const kind = preview && preview.kind;
+  confirmationPreview.hidden = kind !== "gmail_draft" && kind !== "gmail_action";
+  if (confirmationPreview.hidden) return;
+  const rows = [];
+  if (kind === "gmail_draft") {
+    rows.push(
+      ["Type", preview.reply ? "Reply draft in the original thread (not sent)" : "New email draft (not sent)"],
+      ["To", (preview.to || []).join(", ")],
+    );
+    if (preview.cc && preview.cc.length) rows.push(["Cc", preview.cc.join(", ")]);
+    rows.push(["Subject", preview.subject || "(no subject)"], ["Body", preview.body || ""]);
+  } else {
+    rows.push(["Action", preview.describe || ""]);
+    if (preview.label) rows.push(["Label", preview.label]);
+    rows.push(
+      ["From", preview.from || ""],
+      ["Subject", preview.subject || "(no subject)"],
+      ["Date", preview.date || ""],
+      ["Message", `${preview.message_id || ""} (thread ${preview.thread_id || ""})`],
+    );
+  }
+  for (const [label, value] of rows) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const detail = document.createElement("dd");
+    detail.textContent = String(value);
+    if (label === "Body") detail.className = "confirmation-preview-body";
+    confirmationPreview.append(term, detail);
+  }
+}
+
 function showPendingConfirmation(pending) {
   pendingConfirmationId = pending.confirmation_id;
   confirmationSummary.textContent = `${pending.summary} ${pending.message}`;
+  renderConfirmationPreview(pending.preview);
   confirmationPanel.hidden = false;
   showChatView(); // the Confirm and Cancel buttons must be visible
   messagesElement.lastElementChild?.scrollIntoView({ block: "nearest" }); // the panel pushes messages down
@@ -1211,6 +1514,7 @@ async function resolvePendingAction(approved) {
     });
     const { outcome, speech } = acceptTurnResult(result);
     reportTurn(turn, outcome, speech);
+    if (approved && googleStatus?.connected) refreshGooglePane("inbox"); // show a Gmail change now
   } catch (error) {
     reportVoiceError(error.message || "The pending action could not be resolved.");
     dispatchLoop({ type: "turn_finished", turn, outcome: "error" });

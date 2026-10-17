@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>K.R.I.S. | Google Workspace</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="oauth-result">
+  <main class="panel oauth-result-panel" data-section="G-WS">
+    <h1 class="panel-title">Google Workspace</h1>
+    {% if connected %}
+    <p class="oauth-result-message">Connected. K.R.I.S. can now show your inbox headers and upcoming events.</p>
+    {% else %}
+    <p class="oauth-result-message oauth-result-error">{{ message }}</p>
+    {% endif %}
+    <p class="panel-empty">You can close this tab and return to K.R.I.S.</p>
+    <a class="secondary-action oauth-result-link" href="/">Return to K.R.I.S.</a>
+  </main>
+</body>
+</html>

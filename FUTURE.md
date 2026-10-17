@@ -69,8 +69,26 @@ in `TODO.md`.
   private interfaces. GPU utilization uses an undocumented `ioreg` field that a
   macOS update could remove (it then reads "Unavailable"). CPU reads "Measuring"
   for about two seconds after the server starts.
-- Inbox and Calendar are placeholders that say they are not connected; there is
-  no mail or calendar integration.
+- Google Workspace shows the unread count, the 10 newest inbox headers, and the
+  primary calendar for today plus seven days, and can create plain-text Gmail
+  drafts (no attachments, Bcc, display names or formatting; body up to 6,000
+  characters). The model can only reply to a message whose ID is in the user's
+  message (the Inbox tab's Draft reply action provides it) or one found with
+  `search_gmail`. Google's `gmail.compose` and `gmail.modify` scopes would also
+  allow sending; K.R.I.S. never calls a send endpoint, but the permissions
+  themselves are broader than what K.R.I.S. does.
+- Gmail reading returns at most about 4,500 characters of body text and the
+  latest six messages of a thread; attachments are named but never opened.
+  Search returns at most 10 matches. Mailbox actions apply to one message at a
+  time (not whole threads), labels must already exist, and permanent deletion is
+  not available. The model can still misread an email: everything it changes is
+  confirmed first, but its summaries are not checked.
+- Unverified: Google may let `gmail.metadata` restrict a sign-in that also has
+  `gmail.readonly`; if so, reading and searching fail with a clear message until
+  `gmail.metadata` is dropped from the requested scopes. One account
+  at a time; a sign-in started before a server restart must be started again.
+  Requires an Internal OAuth app in the organisation's Google Cloud, and a
+  Workspace admin may need to allow it. There is no Apple Mail/Calendar provider.
 - The Console only lists events seen by the open page; it is cleared on reload
   and runs no commands.
 - Only the web UI is named K.R.I.S.; the runtime's prompts and messages and the

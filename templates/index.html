@@ -11,6 +11,7 @@
   <script src="{{ url_for('static', filename='voice_activity.js') }}" defer></script>
   <script src="{{ url_for('static', filename='voice_loop.js') }}" defer></script>
   <script src="{{ url_for('static', filename='telemetry_view.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='google_view.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body>
@@ -74,13 +75,25 @@
             <button class="panel-tab" type="button" role="tab" id="tab-inbox" aria-controls="pane-inbox" aria-selected="true">Inbox</button>
             <button class="panel-tab" type="button" role="tab" id="tab-calendar" aria-controls="pane-calendar" aria-selected="false" tabindex="-1">Calendar</button>
           </div>
+          <!-- Google Workspace (opt-in, read-only): filled by static/app.js with textContent only. -->
           <div class="tab-pane" role="tabpanel" id="pane-inbox" aria-labelledby="tab-inbox">
-            <p class="unavailable"><span class="unavailable-mark" aria-hidden="true"></span>Inbox is not connected.</p>
-            <p class="panel-empty">K.R.I.S. has no email or message integration yet, so there is nothing to show here.</p>
+            <p class="unavailable google-state" id="inbox-state"><span class="unavailable-mark" aria-hidden="true"></span><span id="inbox-state-text">Checking Google Workspace…</span></p>
+            <p class="google-unread" id="inbox-unread" hidden></p>
+            <ul class="google-list mail-list" id="inbox-list" aria-label="Recent email"></ul>
+            <p class="panel-empty" id="inbox-note" hidden></p>
+            <div class="google-actions">
+              <button class="secondary-action google-connect" id="inbox-connect" type="button" hidden>Connect Google</button>
+              <button class="delete-action google-disconnect" id="inbox-disconnect" type="button" hidden>Disconnect</button>
+            </div>
           </div>
           <div class="tab-pane" role="tabpanel" id="pane-calendar" aria-labelledby="tab-calendar" hidden>
-            <p class="unavailable"><span class="unavailable-mark" aria-hidden="true"></span>Calendar is not connected.</p>
-            <p class="panel-empty">K.R.I.S. cannot read calendar events yet. Task due dates are in the Tasks view.</p>
+            <p class="unavailable google-state" id="calendar-state"><span class="unavailable-mark" aria-hidden="true"></span><span id="calendar-state-text">Checking Google Workspace…</span></p>
+            <ul class="google-list event-list" id="calendar-list" aria-label="Today and the next seven days"></ul>
+            <p class="panel-empty" id="calendar-note" hidden></p>
+            <div class="google-actions">
+              <button class="secondary-action google-connect" id="calendar-connect" type="button" hidden>Connect Google</button>
+              <button class="delete-action google-disconnect" id="calendar-disconnect" type="button" hidden>Disconnect</button>
+            </div>
           </div>
         </section>
 
@@ -177,6 +190,8 @@
               <div>
                 <span class="eyebrow">ACTION NEEDS APPROVAL</span>
                 <p id="confirmation-summary"></p>
+                <!-- Exactly what an approved action writes (e.g. a Gmail draft); textContent only. -->
+                <dl class="confirmation-preview" id="confirmation-preview" hidden></dl>
               </div>
               <div class="confirmation-actions">
                 <button class="primary-action" id="confirm-action" type="button">Confirm</button>

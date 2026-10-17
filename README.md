@@ -48,8 +48,8 @@ window, are three columns:
 - **Left:** three boxes. **System** is always shown: live CPU, memory, GPU and
   thermal readings (see "System telemetry" below), and beneath them a large live
   clock (HH:MM, ice blue) with the date. Below it, **Inbox / Calendar** switches between two tabs that
-  say plainly they are not connected: K.R.I.S. has no mail or calendar
-  integration yet. Below that, **Alerts** lists current problems (model
+  show the organisation's Google Workspace mail and calendar once connected
+  (see "Google Workspace" below), and say plainly when they are not. Below that, **Alerts** lists current problems (model
   unavailable, errors, an action waiting for approval, Hands-free paused) with a
   count beside its heading.
 - **Centre:** the K.R.I.S. energy core, the main visual element, with its status
@@ -154,6 +154,127 @@ A reading that cannot be taken shows "Unavailable" (hover for the reason); it is
 never shown as zero. On other platforms every reading is unavailable. The
 assistant's `get_system_info` tool reports the same four readings when you ask
 how busy the Mac is.
+
+## Google Workspace (Gmail and Calendar)
+
+K.R.I.S. can show the organisation's Google Workspace inbox and calendar in the
+Inbox / Calendar box: the unread count, the 10 newest email headers (sender,
+subject, time; never message bodies), and primary-calendar events for today and
+the next seven days. It talks to Google's Gmail and Calendar APIs directly, with
+no extra packages. This is a separate provider from any Apple Mail or Apple
+Calendar integration (there is none yet). It is off unless you set it up, and it
+is the only feature that contacts the internet, and then only Google.
+
+**What K.R.I.S. can do with it:** show the inbox and calendar (read-only), create
+**Gmail drafts** when you ask (stage 2), and **search, read and organise Gmail**
+(stage 3): answer questions about and summarise your email, mark messages read or
+unread, star or unstar them, archive them, move them to Trash, and add or remove
+your existing labels. It cannot send mail, permanently delete anything, create
+labels, or write to Calendar.
+
+### Reading and searching Gmail
+Ask in chat, for example "What did Ada say about the quarterly numbers?" or
+"Summarise my unread email from this week". K.R.I.S. searches with Gmail's own
+search (the same syntax as Gmail's search box, run on Google's servers), sees
+only the sender, recipients, subject, date and read/star state of at most 10
+matches, and then reads the one message or conversation it needs. Reading needs
+no confirmation, because it changes nothing (it does not even mark the email as
+read). Long messages and conversations are shortened (about 4,500 characters of
+text, the latest six messages of a thread); attachments are listed by name but
+not opened. Email text is treated as untrusted: instructions inside an email are
+never followed, and every change still needs your approval.
+
+### Organising Gmail
+K.R.I.S. can mark a message read or unread, star or unstar it, archive it,
+move it to **Trash** (reversible: restore it from Gmail's Trash within 30 days),
+or add or remove one of your existing labels. Each acts on **one message**, and
+each always asks first: the approval panel names the exact action and the exact
+message (sender, subject, date, message and thread ID). Nothing changes until you
+press **Confirm**; Cancel changes nothing. Permanent deletion is not available at
+all, and labels must already exist (system labels such as Spam cannot be added).
+
+### Gmail drafts
+Ask in chat, for example "Draft an email to grace@example.org about booking the
+lab on Thursday". To reply, choose **Draft reply** under an email in the Inbox
+tab: it puts a request (with that email's message ID) in the message box for you
+to finish and send. A reply draft is addressed to the original sender (or their
+Reply-To), uses "Re: <subject>", and joins the original Gmail thread.
+
+Before anything is written, K.R.I.S. shows the **exact** draft in the approval
+panel: new email or reply, every recipient (To and Cc), the subject, and the
+complete body. Nothing is created until you press **Confirm**; **Cancel**, or
+sending another message, discards it. Approval is never taken from the wording
+of your request ("I confirm" in a chat message does not count), and a spoken
+"yes" never approves. The draft then waits in Gmail's Drafts folder; K.R.I.S.
+never sends it. Recipients must be plain addresses (no display names), at most
+20 in all; the subject is one line; the body is plain text up to 6,000
+characters. Attachments, Bcc and formatting are not supported.
+
+### Setup (once, by someone with access to the organisation's Google Cloud)
+1. In a Google Cloud project owned by the organisation, enable the **Gmail API**
+   and the **Google Calendar API**.
+2. Configure the OAuth consent screen with user type **Internal** (Gmail scopes
+   are restricted; an Internal app avoids Google's external verification). A
+   Workspace admin may also need to allow the app under *Security → API controls*.
+3. Create an OAuth client of type **Desktop app** and download its JSON.
+4. Save it outside this repository, readable only by you:
+   ```sh
+   mkdir -p "$HOME/Library/Application Support/KRIS"
+   mv ~/Downloads/client_secret_*.json "$HOME/Library/Application Support/KRIS/google-oauth-client.json"
+   chmod 600 "$HOME/Library/Application Support/KRIS/google-oauth-client.json"
+   ```
+5. Add a `[google]` section to `config.ini` (see `config.ini.example`) and restart:
+   ```ini
+   [google]
+   client_secrets_file = ~/Library/Application Support/KRIS/google-oauth-client.json
+   workspace_domain = example.org
+   ```
+   `workspace_domain` is optional but recommended: K.R.I.S. refuses (and revokes)
+   any account outside that Workspace domain.
+6. Open K.R.I.S. at `http://127.0.0.1:5000`, choose **Connect Google** in the
+   Inbox or Calendar tab, and approve access in the tab Google opens. When the
+   page says "Connected", close it; K.R.I.S. picks up the connection itself.
+
+**Permissions requested** (nothing else):
+`openid` and `email` (which account is connected), `gmail.metadata` (labels and
+message headers, not bodies), `calendar.events.readonly` (events, read-only), and
+`gmail.compose` (create drafts), `gmail.readonly` (search and read full
+messages), and `gmail.modify` (read state, stars, archive, Trash, labels).
+`gmail.compose` and `gmail.modify` are Google's narrowest scopes for those jobs,
+but Google also lets both send mail; K.R.I.S. only calls Gmail's create-draft,
+modify and trash endpoints and has no send or permanent-delete operation
+anywhere.
+
+**Known risk, not yet verified with a real account:** Google has been reported to
+apply the stricter `gmail.metadata` rules to a sign-in that also has
+`gmail.readonly`, so reading or searching would fail with a message about
+Gmail's metadata-only permission. K.R.I.S. recognises that error and says so; the
+fix would be to stop requesting `gmail.metadata` (which `gmail.readonly` covers).
+
+**Reconnect after upgrading.** A connection made before the current permissions
+(stage 3) is treated as disconnected: the Inbox / Calendar box says "K.R.I.S. now
+needs permission to read and organise Gmail and create Gmail drafts. Reconnect
+Google to continue", and nothing reads or writes Gmail until you reconnect and
+approve. If you untick a permission on Google's consent page, the features that
+need it report that access was not granted and the rest keep working.
+
+**Tokens.** Sign-in uses OAuth 2.0 with PKCE and a loopback redirect to
+`http://127.0.0.1:<port>/oauth/google/callback`. Only the refresh token and the
+account's email address are kept, in your login **Keychain** (item "K.R.I.S.
+Google Workspace"); access tokens stay in memory. Tokens never appear in logs,
+API responses, or the browser, and email or event details are never logged.
+**Disconnect** revokes access at Google and deletes the Keychain item.
+
+**When something goes wrong** the box says what to do: not set up, not
+connected, access declined, an account outside the domain, the organisation's
+policy blocking the app, an API not enabled, access revoked or expired (connect
+again), Google rate limits, or no network. Inbox refreshes every minute and
+Calendar every five minutes while the page is visible.
+
+**Later stages** (each needs approval): sending mail and creating or editing
+events. Each adds a scope (`gmail.send` or `calendar.events`) and raises the
+consent version, so you will be asked to reconnect and approve it; and each will
+be a model tool that always asks for your confirmation before it runs.
 
 ## Tasks and notes
 

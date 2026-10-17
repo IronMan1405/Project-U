@@ -2,6 +2,7 @@ import configparser
 from pathlib import Path
 
 from computer_utilities import UtilitySettings, build_utility_settings
+from google_workspace import GoogleSettings, build_google_settings
 from voice import VoiceSettings, build_voice_settings
 
 
@@ -41,3 +42,11 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> VoiceSettings:
     if not parser.read(config_path) or not parser.has_section("voice"):
         return VoiceSettings()
     return build_voice_settings(dict(parser.items("voice")), Path(config_path).resolve().parent)
+
+
+def load_google_settings(config_path: Path = CONFIG_PATH) -> GoogleSettings:
+    """Read the opt-in [google] section; without it, Google Workspace is off."""
+    parser = configparser.ConfigParser(interpolation=None)
+    if not parser.read(config_path) or not parser.has_section("google"):
+        return GoogleSettings()
+    return build_google_settings(dict(parser.items("google")))

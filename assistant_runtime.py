@@ -399,6 +399,7 @@ class AssistantRuntime:
                         "tool": name,
                         "summary": prepared.summary,
                         "message": "This operation requires your explicit approval.",
+                        **({"preview": prepared.preview} if prepared.preview is not None else {}),
                     },
                 )
 
