@@ -63,14 +63,12 @@ class DraftTestCase(ProviderTestCase):
 
 
 class ScopeAndReconsentTests(DraftTestCase):
-    def test_gmail_compose_is_requested_and_no_send_scope(self):
+    def test_gmail_compose_is_requested_and_no_full_mailbox_scope(self):
         scopes = google_workspace.requested_scopes()
         self.assertIn("https://www.googleapis.com/auth/gmail.compose", scopes)
         for scope in scopes:
-            for forbidden in ("gmail.send", "mail.google.com"):
-                self.assertNotIn(forbidden, scope)
-            self.assertNotIn(scope, ("https://www.googleapis.com/auth/calendar.events",
-                                     "https://www.googleapis.com/auth/calendar"))
+            self.assertNotIn("mail.google.com", scope)  # full, permanent-delete access: never requested
+            self.assertNotEqual(scope, "https://www.googleapis.com/auth/calendar")
         self.assertNotIn("mail.draft", google_workspace.FUTURE_CAPABILITIES)
         url = self.provider().begin_authorization("http://127.0.0.1:5000/oauth/google/callback")
         params = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
@@ -270,26 +268,25 @@ class DraftCreationTests(DraftTestCase):
 
 
 class NoSendingTests(DraftTestCase):
-    def test_there_is_no_send_or_mailbox_modification_anywhere(self):
-        source = inspect.getsource(google_workspace)
-        for endpoint in ("/send", "messages/send", "drafts/send", "/modify", "/trash", "batchModify", "/events?"):
-            self.assertNotIn(f'"{endpoint}', source)
+    def test_creating_a_draft_never_sends_it(self):
+        # Stage 4 added sending, but only through separate always-confirmed tools.
         provider = self.connected()
-        for name in ("send_email", "send_draft", "modify_message", "archive", "mark_read", "delete_message", "create_event"):
-            self.assertFalse(hasattr(provider, name), name)
+        draft = provider.prepare_draft("ada@example.org", None, "Hi", "Body")
+        provider.create_draft(draft)
+        self.assertEqual([r["url"] for r in self.google.requests if "/send" in r["url"]], [])
+        self.assertEqual(len(self.posted_drafts()), 1)
         for operation in ("send_email", "send_draft", "archive"):
             with self.assertRaises(GoogleError) as raised:
                 provider.perform(operation)
             self.assertEqual(raised.exception.kind, "not_supported")
 
-    def test_the_only_drafting_tool_drafts_and_nothing_sends(self):
+    def test_the_drafting_tool_only_drafts(self):
         registry = ToolRegistry(google=self.connected())
         names = {definition["function"]["name"] for definition in registry.definitions()}
-        google_tools = {name for name in names if "gmail" in name or "email" in name or name.startswith("google")}
-        self.assertEqual(google_tools, {"create_gmail_draft", "search_gmail", "read_gmail_message",
-                                        *google_workspace.GMAIL_ACTIONS} - {"add_label", "remove_label"})
-        self.assertTrue({"add_label", "remove_label"} <= names)
-        self.assertFalse(any("send" in name for name in names))
+        self.assertIn("create_gmail_draft", names)
+        self.assertFalse(any(name.startswith("google") or "api" in name for name in names))
+        for name in names & set(google_workspace.SEND_TOOLS):
+            self.assertTrue(registry._definitions[name].always_confirm, name)
         description = registry._definitions["create_gmail_draft"].description
         self.assertIn("never sent", description)
         self.assertNotIn("create_gmail_draft", {d["function"]["name"] for d in ToolRegistry().definitions()})

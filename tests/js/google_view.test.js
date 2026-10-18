@@ -66,8 +66,8 @@ test("calendar events are grouped by day, with all-day events kept on their date
   assert.equal(view.items[1].time, "All day");
   assert.equal(view.items[2].title, "(No title)");
   assert.equal(view.items[2].time, "08:00");
-  assert.equal(calendarView({ status: "ok", events: [] }).note, "No events today or in the next seven days.");
-  assert.equal(calendarView({ status: "ok", events: [], truncated: true }).note, "Showing the first 50 events.");
+  assert.equal(calendarView({ status: "ok", events: [] }).note, "No events in the next two weeks.");
+  assert.equal(calendarView({ status: "ok", events: [], truncated: true }).note, "Showing the first 100 events.");
 });
 
 test("errors carry only the server's safe message and the reconnect hint", () => {
@@ -95,4 +95,11 @@ test("inbox items keep only valid Gmail message IDs for reply drafts", () => {
     messages: [{ id: "abc123", from: "A", subject: "S" }, { id: "../drafts", from: "B" }, { from: "C" }, { id: 42 }],
   });
   assert.deepEqual(view.items.map((item) => item.id), ["abc123", null, null, null]);
+});
+
+test("the calendar panel describes its own display range", () => {
+  assert.equal(calendarView({ status: "ok", events: [] }).note, "No events in the next two weeks.");
+  assert.equal(calendarView({ status: "ok", events: [] }, new Date(), 14).note, "No events in the next two weeks.");
+  assert.equal(calendarView({ status: "ok", events: [] }, new Date(), 30).note, "No events in the next month.");
+  assert.equal(calendarView({ status: "ok", events: [], truncated: true }, new Date(), 30).note, "Showing the first 100 events.");
 });

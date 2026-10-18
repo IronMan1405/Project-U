@@ -275,7 +275,8 @@ def create_app(
     def google_failure(error: GoogleError):
         return google_json(
             {"status": "error", "kind": error.kind, "message": error.message, "reconnect": error.reconnect},
-            409 if error.kind in ("not_configured", "not_connected", "not_granted", "revoked", "reconsent") else 502,
+            409 if error.kind in ("not_configured", "not_connected", "not_granted", "revoked", "reconsent")
+            else 400 if error.kind == "invalid" else 502,
         )
 
     def google_redirect_uri() -> str:
@@ -326,8 +327,14 @@ def create_app(
 
     @app.get("/api/google/calendar")
     def google_calendar():
+        # The Calendar panel's display range only (14 or 30 days); the assistant's Calendar
+        # tools search any dates.
+        days = request.args.get("days", "14")
+        if days not in ("14", "30"):
+            return google_json({"status": "error", "kind": "invalid", "message": "Choose 14 or 30 days.",
+                                "reconnect": False}, 400)
         try:
-            return google_json(google.upcoming_events())
+            return google_json(google.upcoming_events(int(days)))
         except GoogleError as error:
             return google_failure(error)
 

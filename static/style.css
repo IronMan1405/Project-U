@@ -2741,6 +2741,16 @@ button {
   display: none;
 }
 
+/* A long preview (an email body, a before/after event) scrolls inside the panel, so Confirm
+   and Cancel stay visible and the panel never spills over the console below. */
+.confirmation-preview:not([hidden]) {
+  max-height: 34vh;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
 .confirmation-preview dt {
   color: var(--muted);
   font-family: var(--font-mono);
@@ -2762,6 +2772,43 @@ button {
   border: 1px solid rgb(var(--warning-rgb) / 20%);
   background: rgb(0 0 0 / 25%);
   white-space: pre-wrap;
+}
+
+.calendar-range {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.calendar-range[hidden] {
+  display: none;
+}
+
+.calendar-range .google-item-action {
+  margin-top: 0;
+}
+
+.confirmation-preview-heading {
+  grid-column: 1 / -1;
+  margin-top: var(--space-2);
+  color: var(--warning);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.confirmation-preview-heading:first-child {
+  margin-top: 0;
+}
+
+.confirmation-preview-note {
+  grid-column: 1 / -1;
+  margin: var(--space-2) 0 0;
+  color: var(--warning);
+  font-size: 11.5px;
 }
 
 /* On desktop the box scrolls instead of pushing Alerts out of view. */

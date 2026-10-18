@@ -220,7 +220,7 @@ class ReadingTests(Stage3TestCase):
                 call()
             self.assertEqual(raised.exception.kind, "reconsent")
         self.assertFalse(stage_2.status()["connected"])
-        self.assertIn("read and organise Gmail", stage_2.status()["message"])
+        self.assertIn("Reconnect Google", stage_2.status()["message"])
 
     def test_read_tools_run_without_confirmation(self):
         registry = self.registry()
@@ -432,24 +432,27 @@ class ErrorAndSafetyTests(Stage3TestCase):
             no_modify.apply_action({"action": "archive_email", "message_id": "m1"})
         self.assertEqual(self.gmail.writes(), [])
 
-    def test_no_permanent_deletion_send_or_generic_gmail_operation_exists(self):
-        source = inspect.getsource(google_workspace)
-        for forbidden in ('"DELETE"', "batchDelete", "batchModify", "/send", "messages.delete", "/import", "/insert"):
-            self.assertNotIn(forbidden, source.replace("messages.delete / batchDelete", ""), forbidden)
+    def test_no_permanent_deletion_batch_or_generic_gmail_operation_exists(self):
+        source = inspect.getsource(google_workspace).replace("messages.delete / batchDelete", "")
+        for forbidden in ("batchDelete", "batchModify", "messages.delete", "/import", "/insert"):
+            self.assertNotIn(forbidden, source, forbidden)
+        # The only DELETE request is Calendar event cancellation (stage 4), never Gmail.
+        delete_lines = [line for line in source.splitlines() if '"DELETE"' in line]
+        self.assertTrue(delete_lines)
+        self.assertTrue(all("CALENDAR_API" in line for line in delete_lines), delete_lines)
         provider = self.connected()
         for name in ("delete_message", "delete", "send_email", "send_draft", "request", "call_api", "raw_request"):
             self.assertFalse(hasattr(provider, name), name)
         for operation in ("delete", "send_email", "batchDelete"):
             with self.assertRaises(GoogleError):
                 provider.perform(operation)
-        self.assertNotIn("https://www.googleapis.com/auth/gmail.send", google_workspace.requested_scopes())
         self.assertNotIn("https://mail.google.com/", google_workspace.requested_scopes())
         names = {d["function"]["name"] for d in self.registry().definitions()}
         gmail_tools = {n for n in names if "gmail" in n or "email" in n or n in ("add_label", "remove_label")}
         self.assertEqual(gmail_tools, {"create_gmail_draft", "search_gmail", "read_gmail_message",
-                                       *google_workspace.GMAIL_ACTIONS})
+                                       "list_gmail_drafts", *google_workspace.GMAIL_ACTIONS,
+                                       *google_workspace.SEND_TOOLS})
         self.assertFalse(any("delete" in n and ("gmail" in n or "email" in n) for n in names))
-        self.assertFalse(any("send" in n for n in names))
         for action in google_workspace.GMAIL_ACTIONS:
             self.assertIn(action, google_workspace.CONSEQUENTIAL_OPERATIONS)
 

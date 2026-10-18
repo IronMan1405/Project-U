@@ -322,13 +322,27 @@ const googlePanes = {
     unread: null,
     connect: document.querySelector("#calendar-connect"),
     disconnect: document.querySelector("#calendar-disconnect"),
-    url: "/api/google/calendar",
+    url: "/api/google/calendar?days=14",
     every: GOOGLE_CALENDAR_MS,
     capability: "calendar.read",
   },
 };
 let googleStatus = null;
 let googleWatchUntil = 0;
+// The Calendar panel shows the next 2 weeks, or the next month when expanded. This is a display
+// range only: the assistant's Calendar tools can search any past or future date.
+let calendarDays = 14;
+const calendarRange = document.querySelector("#calendar-range");
+const calendarRangeLabel = document.querySelector("#calendar-range-label");
+const calendarRangeToggle = document.querySelector("#calendar-range-toggle");
+calendarRangeToggle.addEventListener("click", () => {
+  calendarDays = calendarDays === 14 ? 30 : 14;
+  googlePanes.calendar.url = `/api/google/calendar?days=${calendarDays}`;
+  calendarRangeLabel.textContent = calendarDays === 14 ? "Next 2 weeks" : "Next month";
+  calendarRangeToggle.textContent = calendarDays === 14 ? "Show next month" : "Show next 2 weeks";
+  calendarRangeToggle.setAttribute("aria-pressed", String(calendarDays === 30));
+  refreshGooglePane("calendar");
+});
 const googleTimers = { inbox: null, calendar: null, status: null };
 const googleInFlight = { inbox: false, calendar: false, status: false };
 
@@ -356,6 +370,7 @@ function renderGoogleConnection(status) {
     pane.connect.hidden = !view.connect;
     pane.disconnect.hidden = !view.disconnect;
     if (!view.ready) {
+      if (pane === googlePanes.calendar) calendarRange.hidden = true;
       pane.list.replaceChildren();
       setGoogleNote(pane, "");
       if (pane.unread) pane.unread.hidden = true;
@@ -415,6 +430,7 @@ function renderInbox(view) {
 
 function renderCalendar(view) {
   const pane = googlePanes.calendar;
+  calendarRange.hidden = Boolean(view.error);
   if (view.error) {
     pane.list.replaceChildren();
     setGoogleNote(pane, view.error.message);
@@ -469,7 +485,9 @@ async function refreshGooglePane(name) {
   let needsStatus = false;
   try {
     const { payload } = await googleRequest(pane.url);
-    const view = name === "inbox" ? window.GoogleView.inboxView(payload) : window.GoogleView.calendarView(payload);
+    const view = name === "inbox"
+      ? window.GoogleView.inboxView(payload)
+      : window.GoogleView.calendarView(payload, new Date(), calendarDays);
     if (name === "inbox") renderInbox(view);
     else renderCalendar(view);
     needsStatus = Boolean(view.error?.reconnect);
@@ -857,6 +875,16 @@ function toolLabel(toolName) {
     unstar_email: "Removing email star",
     archive_email: "Archiving email",
     trash_email: "Moving email to Trash",
+    send_email: "Sending email",
+    reply_to_email: "Sending reply",
+    forward_email: "Forwarding email",
+    list_gmail_drafts: "Checking Gmail drafts",
+    send_gmail_draft: "Sending Gmail draft",
+    search_calendar_events: "Searching calendar",
+    read_calendar_event: "Reading calendar event",
+    create_calendar_event: "Creating calendar event",
+    update_calendar_event: "Changing calendar event",
+    delete_calendar_event: "Cancelling calendar event",
     add_label: "Adding Gmail label",
     remove_label: "Removing Gmail label",
   };
@@ -923,8 +951,12 @@ function renderToolActivities(activities) {
 function renderConfirmationPreview(preview) {
   confirmationPreview.replaceChildren();
   const kind = preview && preview.kind;
-  confirmationPreview.hidden = kind !== "gmail_draft" && kind !== "gmail_action";
+  confirmationPreview.hidden = !["gmail_draft", "gmail_action", "sections"].includes(kind);
   if (confirmationPreview.hidden) return;
+  if (kind === "sections") {
+    renderPreviewSections(preview);
+    return;
+  }
   const rows = [];
   if (kind === "gmail_draft") {
     rows.push(
@@ -950,6 +982,33 @@ function renderConfirmationPreview(preview) {
     detail.textContent = String(value);
     if (label === "Body") detail.className = "confirmation-preview-body";
     confirmationPreview.append(term, detail);
+  }
+}
+
+// Sends and Calendar changes: headed groups of exact label/value rows plus warnings, all
+// built by the server from the action it will run. Rendered with textContent only.
+function renderPreviewSections(preview) {
+  for (const section of preview.sections || []) {
+    if (section.heading) {
+      const heading = document.createElement("dt");
+      heading.className = "confirmation-preview-heading";
+      heading.textContent = section.heading;
+      confirmationPreview.append(heading);
+    }
+    for (const [label, value] of section.rows || []) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const detail = document.createElement("dd");
+      detail.textContent = String(value);
+      if (label === "Body" || label === "Description") detail.className = "confirmation-preview-body";
+      confirmationPreview.append(term, detail);
+    }
+  }
+  for (const note of preview.notes || []) {
+    const warning = document.createElement("dd");
+    warning.className = "confirmation-preview-note";
+    warning.textContent = note;
+    confirmationPreview.append(warning);
   }
 }
 
@@ -1514,7 +1573,10 @@ async function resolvePendingAction(approved) {
     });
     const { outcome, speech } = acceptTurnResult(result);
     reportTurn(turn, outcome, speech);
-    if (approved && googleStatus?.connected) refreshGooglePane("inbox"); // show a Gmail change now
+    if (approved && googleStatus?.connected) { // show a Gmail or Calendar change now
+      refreshGooglePane("inbox");
+      refreshGooglePane("calendar");
+    }
   } catch (error) {
     reportVoiceError(error.message || "The pending action could not be resolved.");
     dispatchLoop({ type: "turn_finished", turn, outcome: "error" });

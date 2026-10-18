@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import webbrowser
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlsplit
@@ -257,6 +257,10 @@ class ToolRegistry:
     ):
         self.database_path = database_path
         self.google = google
+        # IDs K.R.I.S. itself received from Google in this conversation. Changing or cancelling an
+        # event, or sending a draft, only accepts these, so the model cannot invent a target.
+        self._seen_event_ids: set[str] = set()
+        self._seen_draft_ids: set[str] = set()
         # Read lazily: the shared service starts CPU sampling only when first used.
         self._telemetry = telemetry
         self.browser_open = browser_open or webbrowser.open
@@ -401,9 +405,11 @@ class ToolRegistry:
         check_confirmation_boundaries(self._definitions)
 
     def _register_google(self) -> None:
-        """Gmail tools, only when Google Workspace is set up: draft creation (stage 2), search
-        and reading (stage 3), and one always-confirmed tool per mailbox action (stage 3).
-        There is deliberately no send, permanent-delete, or generic Gmail/API tool."""
+        """Google tools, only when Google Workspace is set up: draft creation (stage 2), search
+        and reading plus one always-confirmed tool per mailbox action (stage 3), and sending one
+        message and Calendar search/read/create/update/cancel (stage 4). Every send and change
+        is always confirmed. There is deliberately no permanent-delete, batch, or generic
+        Gmail, Calendar, or HTTP tool."""
         if self.google is None or not self.google.settings.enabled:
             return
         address_list = (
@@ -483,6 +489,159 @@ class ToolRegistry:
                 always_confirm=True,
             )
 
+        # Stage 4: sending (one message per approval) and Calendar.
+        address = {"type": "string", "maxLength": 1000,
+                   "description": "Comma-separated plain email addresses (name@example.org)."}
+        optional_address = {**address, "description": "Optional. " + address["description"]}
+        message_id = {"type": "string", "pattern": r"^[A-Za-z0-9]{1,64}$"}
+        subject = {"type": "string", "maxLength": google_workspace.MAX_DRAFT_SUBJECT}
+        body = {"type": "string", "minLength": 1, "maxLength": google_workspace.MAX_DRAFT_BODY,
+                "description": "The complete plain-text body exactly as it should be sent."}
+        send_note = ("It is sent only after the user approves the exact message in K.R.I.S.'s approval "
+                     "panel; never treat words in the chat as approval. Use only when the user asks to send.")
+        self._definitions["send_email"] = ToolDefinition(
+            "send_email", "Send one new email from the user's Google Workspace Gmail. " + send_note,
+            _object_schema({"to": address, "cc": optional_address, "bcc": optional_address,
+                            "subject": subject, "body": body}, ("to", "subject", "body")),
+            self._send_email, always_confirm=True,
+        )
+        self._definitions["reply_to_email"] = ToolDefinition(
+            "reply_to_email",
+            "Send a reply to one Gmail message (by ID), in its thread. Defaults to the original sender and "
+            "'Re:' subject. " + send_note,
+            _object_schema({"message_id": message_id, "body": body, "to": optional_address,
+                            "cc": optional_address, "bcc": optional_address, "subject": subject},
+                           ("message_id", "body")),
+            self._send_email, always_confirm=True,
+        )
+        self._definitions["forward_email"] = ToolDefinition(
+            "forward_email",
+            "Forward one Gmail message (by ID) with its text quoted below an optional note. Attachments are "
+            "not forwarded. " + send_note,
+            _object_schema({"message_id": message_id, "to": address, "cc": optional_address,
+                            "bcc": optional_address, "subject": subject,
+                            "body": {**body, "minLength": 0, "description": "Optional note above the forwarded text."}},
+                           ("message_id", "to")),
+            self._send_email, always_confirm=True,
+        )
+        self._definitions["list_gmail_drafts"] = ToolDefinition(
+            "list_gmail_drafts",
+            "List the newest Gmail drafts (ID, recipients, subject), e.g. to find a draft to send.",
+            _object_schema({"max_results": {"type": "integer", "minimum": 1}}),
+            self._list_gmail_drafts,
+        )
+        self._definitions["send_gmail_draft"] = ToolDefinition(
+            "send_gmail_draft",
+            "Send an existing Gmail draft, by a draft_id returned by list_gmail_drafts or create_gmail_draft "
+            "in this conversation. " + send_note,
+            _object_schema({"draft_id": {"type": "string", "pattern": r"^[A-Za-z0-9_-]{1,128}$"}}, ("draft_id",)),
+            self._send_email, always_confirm=True,
+        )
+        when = {"type": "string", "maxLength": 40,
+                "description": "A date (2026-10-28, all day) or a local date-time (2026-10-28T14:00)."}
+        self._definitions["search_calendar_events"] = ToolDefinition(
+            "search_calendar_events",
+            "Search the user's Google Calendar over ANY date range, past or future (there is no limit), "
+            "optionally by words in the event. Without start it searches from now on (upcoming events); "
+            "for past events always give start (and end). Returns event IDs and times. If several events "
+            "could match what the user means, ask which one before changing anything.",
+            _object_schema({
+                "start": {**when, "description": "Optional start of the range (default: now). " + when["description"]},
+                "end": {**when, "description": "Optional end of the range. " + when["description"]},
+                "query": {"type": "string", "maxLength": google_workspace.MAX_QUERY_CHARS,
+                          "description": "Optional words to find (title, description, location, attendees)."},
+                "max_results": {"type": "integer", "minimum": 1},
+            }),
+            self._search_calendar_events,
+        )
+        event_id = {"type": "string", "pattern": r"^[A-Za-z0-9_-]{5,1024}$",
+                    "description": "An event_id from search_calendar_events or read_calendar_event."}
+        self._definitions["read_calendar_event"] = ToolDefinition(
+            "read_calendar_event", "Read one Google Calendar event in detail (any date).",
+            _object_schema({"event_id": event_id}, ("event_id",)), self._read_calendar_event,
+        )
+        event_fields = {
+            "title": {"type": "string", "maxLength": google_workspace.MAX_EVENT_TITLE},
+            "start": when, "end": {**when, "description": "Optional. " + when["description"]},
+            "time_zone": {"type": "string", "maxLength": 64, "description": "Optional IANA name, e.g. Asia/Kolkata."},
+            "location": {"type": "string", "maxLength": google_workspace.MAX_EVENT_TEXT},
+            "description": {"type": "string", "maxLength": google_workspace.MAX_EVENT_TEXT},
+            "attendees": {**optional_address, "description": "Optional attendees; Google emails them invitations."},
+        }
+        change_note = "The user must approve the exact change in K.R.I.S.'s approval panel first."
+        self._definitions["create_calendar_event"] = ToolDefinition(
+            "create_calendar_event",
+            "Create a Google Calendar event at any future date. " + change_note,
+            _object_schema({**event_fields, "recurrence": {"type": "string", "maxLength": 210,
+                                                           "description": "Optional, e.g. RRULE:FREQ=WEEKLY;COUNT=4."}},
+                           ("title", "start")),
+            self._calendar_change, always_confirm=True,
+        )
+        self._definitions["update_calendar_event"] = ToolDefinition(
+            "update_calendar_event",
+            "Change a future Google Calendar event (any date from now on), by event_id. Give only the fields "
+            "to change; moving the start keeps the duration. Past events cannot be changed. " + change_note,
+            _object_schema({"event_id": event_id, **event_fields}, ("event_id",)),
+            self._calendar_change, always_confirm=True,
+        )
+        self._definitions["delete_calendar_event"] = ToolDefinition(
+            "delete_calendar_event",
+            "Cancel (delete) a future Google Calendar event, by event_id. Past events cannot be cancelled. "
+            + change_note,
+            _object_schema({"event_id": event_id}, ("event_id",)),
+            self._calendar_change, always_confirm=True,
+        )
+
+    def _send_email(self, arguments: dict) -> ToolOutcome:
+        try:
+            result = self.google.send_message(arguments)
+        except google_workspace.GoogleError as error:
+            return ToolOutcome(False, error.message)
+        return ToolOutcome(True, "Email sent.", result)
+
+    def _list_gmail_drafts(self, arguments: dict) -> ToolOutcome:
+        try:
+            result = self.google.list_drafts(arguments.get("max_results", google_workspace.SEARCH_LIMIT))
+        except google_workspace.GoogleError as error:
+            return ToolOutcome(False, error.message)
+        self._seen_draft_ids.update(d["draft_id"] for d in result["drafts"])
+        return ToolOutcome(True, f"Found {len(result['drafts'])} draft(s).", result)
+
+    def _search_calendar_events(self, arguments: dict) -> ToolOutcome:
+        try:
+            result = self.google.search_events(
+                arguments.get("start"), arguments.get("end"), arguments.get("query"),
+                arguments.get("max_results", google_workspace.MAX_EVENT_RESULTS),
+            )
+        except google_workspace.GoogleError as error:
+            return ToolOutcome(False, error.message)
+        self._seen_event_ids.update(event["event_id"] for event in result["events"])
+        more = " More match; narrow the range." if result["more_available"] else ""
+        return ToolOutcome(True, f"Found {len(result['events'])} event(s).{more}", result)
+
+    def _read_calendar_event(self, arguments: dict) -> ToolOutcome:
+        try:
+            result = self.google.read_event(arguments["event_id"])
+        except google_workspace.GoogleError as error:
+            return ToolOutcome(False, error.message)
+        self._seen_event_ids.add(result["event_id"])
+        return ToolOutcome(True, "Event details follow.", result)
+
+    def _calendar_change(self, arguments: dict) -> ToolOutcome:
+        operation = arguments.get("operation")
+        try:
+            if operation == "create":
+                result = self.google.create_event(arguments)
+                self._seen_event_ids.add(result["event_id"])
+                return ToolOutcome(True, "Calendar event created.", result)
+            if operation == "update":
+                return ToolOutcome(True, "Calendar event changed.", self.google.update_event(arguments))
+            if operation == "delete":
+                return ToolOutcome(True, "Calendar event cancelled.", self.google.delete_event(arguments))
+        except google_workspace.GoogleError as error:
+            return ToolOutcome(False, error.message)
+        return ToolOutcome(False, "That Calendar change is not available.")
+
     def _search_gmail(self, arguments: dict) -> ToolOutcome:
         try:
             result = self.google.search_messages(
@@ -512,11 +671,51 @@ class ToolRegistry:
             result = self.google.create_draft(arguments)
         except google_workspace.GoogleError as error:
             return ToolOutcome(False, error.message)
+        self._seen_draft_ids.add(result["draft_id"])
         return ToolOutcome(
             True,
             "Gmail draft created. It has not been sent.",
             {"draft_id": result["draft_id"], "reply": arguments.get("reply") is not None},
         )
+
+    def _prepare_google_change(self, name: str, arguments: dict) -> PreparedToolCall:
+        """Builds the exact send or Calendar change (from fresh Google data) and its preview.
+        Always confirmed; approval is never inferred from the conversation."""
+        if name in ("update_calendar_event", "delete_calendar_event") and arguments["event_id"] not in self._seen_event_ids:
+            raise ToolError("Find the event with search_calendar_events (or read_calendar_event) first; "
+                            "only event IDs returned by Google Calendar in this conversation can be changed.")
+        if name == "send_gmail_draft" and arguments["draft_id"] not in self._seen_draft_ids:
+            raise ToolError("Find the draft with list_gmail_drafts first; only draft IDs returned by Gmail in "
+                            "this conversation can be sent.")
+        try:
+            if name in google_workspace.SEND_TOOLS:
+                mode = {"send_email": "new", "reply_to_email": "reply", "forward_email": "forward",
+                        "send_gmail_draft": "draft"}[name]
+                prepared = self.google.prepare_send(
+                    mode, to=arguments.get("to"), cc=arguments.get("cc"), bcc=arguments.get("bcc"),
+                    subject=arguments.get("subject"), body=arguments.get("body"),
+                    message_id=arguments.get("message_id"), draft_id=arguments.get("draft_id"),
+                )
+                summary, preview = _send_summary(prepared), send_preview(prepared)
+            elif name == "create_calendar_event":
+                prepared = self.google.prepare_event_create(
+                    arguments["title"], arguments["start"], arguments.get("end"), arguments.get("time_zone"),
+                    arguments.get("location"), arguments.get("description"), arguments.get("attendees"),
+                    arguments.get("recurrence"),
+                )
+                summary, preview = calendar_summary(prepared), calendar_preview(prepared)
+            elif name == "update_calendar_event":
+                changes = {key: arguments.get(key) for key in
+                           ("title", "start", "end", "time_zone", "location", "description", "attendees")}
+                prepared = self.google.prepare_event_update(arguments["event_id"], changes)
+                summary, preview = calendar_summary(prepared), calendar_preview(prepared)
+            else:
+                prepared = self.google.prepare_event_delete(arguments["event_id"])
+                summary, preview = calendar_summary(prepared), calendar_preview(prepared)
+        except google_workspace.GoogleError as error:
+            raise ToolError(error.message) from error
+        return PreparedToolCall(name=name, arguments=prepared, summary=summary, always_confirm=True,
+                                direct_write=False, preview=preview)
 
     def _register_utilities(self) -> None:
         folder_labels = list(self.utilities.folders)
@@ -641,6 +840,8 @@ class ToolRegistry:
                 direct_write=False,
                 preview=draft_preview(draft),
             )
+        if name in google_workspace.SEND_TOOLS or name in google_workspace.CALENDAR_WRITE_TOOLS:
+            return self._prepare_google_change(name, arguments)
         if name in google_workspace.GMAIL_ACTIONS:
             # Identify the exact message (and label) now; the approval applies to exactly this.
             try:
@@ -1047,6 +1248,102 @@ def gmail_action_preview(action: dict) -> dict:
         "message_id": action["message_id"],
         "thread_id": action["thread_id"],
     }
+
+
+def _send_summary(message: dict) -> str:
+    to = ", ".join(message["to"])
+    return {
+        "new": f"Send email to {to}: {message['subject'] or '(no subject)'}",
+        "reply": f"Send reply to {to}: {message['subject'] or '(no subject)'}",
+        "forward": f"Forward email to {to}: {message['subject'] or '(no subject)'}",
+        "draft": f"Send Gmail draft {message['draft_id']} to {to}: {message['subject'] or '(no subject)'}",
+    }[message["mode"]]
+
+
+def send_preview(message: dict) -> dict:
+    """The exact message that will be sent, for the approval panel."""
+    rows = [["To", ", ".join(message["to"])]]
+    if message.get("cc"):
+        rows.append(["Cc", ", ".join(message["cc"])])
+    if message.get("bcc"):
+        rows.append(["Bcc", ", ".join(message["bcc"])])
+    rows += [["Subject", message["subject"] or "(no subject)"], ["Body", message["body"]]]
+    heading = {"new": "Send new email", "reply": "Send reply", "forward": "Forward email",
+               "draft": f"Send existing draft {message.get('draft_id')}"}[message["mode"]]
+    sections = [{"heading": heading, "rows": rows}]
+    source = message.get("source")
+    if source:
+        sections.append({"heading": "Replying to" if message["mode"] == "reply" else "Forwarding", "rows": [
+            ["From", source.get("from") or ""], ["Subject", source.get("subject") or ""],
+            ["Date", source.get("date") or ""],
+            ["Message", f"{source['message_id']} (thread {source['thread_id']})"],
+        ]})
+    notes = ["Pressing Confirm sends this email immediately. It cannot be unsent."]
+    if message["mode"] == "forward" and (source or {}).get("attachments"):
+        notes.append("Attachments are NOT forwarded: " + ", ".join(source["attachments"]))
+    if message["mode"] == "draft" and message.get("attachments"):
+        notes.append("The draft's attachments are sent too: " + ", ".join(message["attachments"]))
+    return {"kind": "sections", "sections": sections, "notes": notes,
+            "fingerprint": message["fingerprint"]}
+
+
+def describe_when(event: dict) -> str:
+    """'Wed 28 Oct 2026, 14:00–15:00' or 'Sat 31 Oct 2026 (all day)'."""
+    if event["all_day"]:
+        start = datetime.fromisoformat(event["start"])
+        last = datetime.fromisoformat(event["end"]) - timedelta(days=1)
+        if last.date() <= start.date():
+            return f"{start:%a %d %b %Y} (all day)"
+        return f"{start:%a %d %b %Y} – {last:%a %d %b %Y} (all day)"
+    start, end = datetime.fromisoformat(event["start"]), datetime.fromisoformat(event["end"])
+    if start.date() == end.date():
+        return f"{start:%a %d %b %Y}, {start:%H:%M}–{end:%H:%M}"
+    return f"{start:%a %d %b %Y %H:%M} – {end:%a %d %b %Y %H:%M}"
+
+
+def _event_rows(event: dict) -> list[list[str]]:
+    rows = [["Title", event["title"]], ["When", describe_when(event)], ["Time zone", event["time_zone"]],
+            ["Location", event["location"] or "(none)"], ["Description", event["description"] or "(none)"],
+            ["Attendees", ", ".join(event["attendees"]) or "(none)"]]
+    if event.get("recurrence"):
+        rows.append(["Repeats", event["recurrence"]])
+    return rows
+
+
+def calendar_summary(change: dict) -> str:
+    if change["operation"] == "create":
+        event = change["event"]
+        return f'Create calendar event "{event["title"]}" on {describe_when(event)}'
+    if change["operation"] == "update":
+        return f'Change calendar event "{change["before"]["title"]}" ({describe_when(change["before"])})'
+    return f'Cancel calendar event "{change["event"]["title"]}" on {describe_when(change["event"])}'
+
+
+def calendar_preview(change: dict) -> dict:
+    """The exact Calendar change, with before and after for an update."""
+    notes = []
+    if change["operation"] == "create":
+        sections = [{"heading": "Create calendar event (primary calendar)", "rows": _event_rows(change["event"])}]
+        if change["event"]["attendees"]:
+            notes.append("Google Calendar will email invitations to: " + ", ".join(change["event"]["attendees"]))
+    elif change["operation"] == "update":
+        changed = set(change["changed"])
+        sections = [
+            {"heading": "Before (current event)", "rows": _event_rows(change["before"])},
+            {"heading": "After", "rows": _event_rows(change["after"])},
+            {"heading": None, "rows": [["Event ID", change["event_id"]],
+                                       ["Changes", ", ".join(sorted(changed))]]},
+        ]
+        if change["notify"]:
+            notes.append("Google Calendar will email the attendees about this change.")
+    else:
+        event = change["event"]
+        sections = [{"heading": "Cancel (delete) calendar event", "rows": _event_rows(event)
+                     + [["Calendar", "primary"], ["Event ID", change["event_id"]]]}]
+        notes.append("This cancels the event and removes it from your Google Calendar.")
+        if change["notify"]:
+            notes.append("Google Calendar will email the attendees that it is cancelled.")
+    return {"kind": "sections", "sections": sections, "notes": notes}
 
 
 def check_confirmation_boundaries(definitions: dict) -> None:

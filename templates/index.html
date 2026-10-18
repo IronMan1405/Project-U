@@ -88,7 +88,11 @@
           </div>
           <div class="tab-pane" role="tabpanel" id="pane-calendar" aria-labelledby="tab-calendar" hidden>
             <p class="unavailable google-state" id="calendar-state"><span class="unavailable-mark" aria-hidden="true"></span><span id="calendar-state-text">Checking Google Workspace…</span></p>
-            <ul class="google-list event-list" id="calendar-list" aria-label="Today and the next seven days"></ul>
+            <div class="calendar-range" id="calendar-range" hidden>
+              <span class="hud-label" id="calendar-range-label">Next 2 weeks</span>
+              <button class="google-item-action" id="calendar-range-toggle" type="button" aria-pressed="false">Show next month</button>
+            </div>
+            <ul class="google-list event-list" id="calendar-list" aria-label="Upcoming events"></ul>
             <p class="panel-empty" id="calendar-note" hidden></p>
             <div class="google-actions">
               <button class="secondary-action google-connect" id="calendar-connect" type="button" hidden>Connect Google</button>

@@ -159,18 +159,66 @@ how busy the Mac is.
 
 K.R.I.S. can show the organisation's Google Workspace inbox and calendar in the
 Inbox / Calendar box: the unread count, the 10 newest email headers (sender,
-subject, time; never message bodies), and primary-calendar events for today and
-the next seven days. It talks to Google's Gmail and Calendar APIs directly, with
+subject, time; never message bodies), and primary-calendar events for the next
+two weeks (switch to the next month with **Show next month**). That window is only
+what the panel shows: the assistant can search and read your calendar for any
+past or future date. It talks to Google's Gmail and Calendar APIs directly, with
 no extra packages. This is a separate provider from any Apple Mail or Apple
 Calendar integration (there is none yet). It is off unless you set it up, and it
 is the only feature that contacts the internet, and then only Google.
 
-**What K.R.I.S. can do with it:** show the inbox and calendar (read-only), create
-**Gmail drafts** when you ask (stage 2), and **search, read and organise Gmail**
-(stage 3): answer questions about and summarise your email, mark messages read or
-unread, star or unstar them, archive them, move them to Trash, and add or remove
-your existing labels. It cannot send mail, permanently delete anything, create
-labels, or write to Calendar.
+**What K.R.I.S. can do with it:** show the inbox and calendar, create **Gmail
+drafts** (stage 2), **search, read and organise Gmail** (stage 3: answer questions
+about and summarise your email, mark messages read or unread, star or unstar
+them, archive them, move them to Trash, and add or remove your existing labels),
+and (stage 4) **send email** (a new message, a reply, a forward, or an existing
+draft) and **search, read, create, change and cancel Calendar events**. Every
+send and every change asks you first. It cannot permanently delete email, send in
+bulk, create labels, or change past events.
+
+### Sending email
+Ask in chat, for example "Email john@example.org that I'll be 10 minutes late",
+"Reply to Ada's email and say Thursday works", "Forward the maintenance email to
+Grace", or "Send my draft about the lab booking". K.R.I.S. prepares the message
+and shows the **exact** email in the approval panel: To, Cc, Bcc, subject and
+the complete body, and for a reply or forward the original message (sender,
+subject, date, message and thread). It is sent only when you press **Confirm**;
+saying "I confirm" or "just send it" in chat does not send anything, and Cancel
+sends nothing. Pressing Confirm sends at once and cannot be undone.
+
+What is sent is exactly what was shown: K.R.I.S. records a fingerprint of the
+previewed message and refuses to send if anything differs, and before sending a
+draft it re-reads the draft and stops if it was edited since. A reply goes to the
+original sender (or Reply-To) with "Re:" and stays in the thread. A forward
+quotes the original text under your note ("Fwd:"); attachments are **not**
+forwarded, and the panel says so. To send an existing draft, K.R.I.S. first
+lists your drafts and can only send one it found that way. Creating a draft never
+sends it. Recipients are plain addresses, at most 20 per email (To, Cc and Bcc
+together), and there is no bulk sending. A failed send is reported as not sent.
+
+### Calendar
+Ask about any date, for example "What meetings did I have last month?", "What
+do I have on March 15 next year?", or "When is my next meeting with John?".
+Reading and searching need no approval and are not limited to the panel's two
+weeks or month. K.R.I.S. can also **create** events at any future date, and
+**change** or **cancel** events from now on, however far ahead; past events can
+be read but not changed, and a whole recurring series cannot be changed (one
+occurrence can). Every change asks first, in the approval panel:
+- **Create** shows the title, date and times, time zone, location, description,
+  attendees and recurrence. If there are attendees, Google emails them
+  invitations, and the panel says so.
+- **Change** shows the event **Before** (as it is in Google Calendar right now)
+  and **After**, field by field. Moving the start keeps the length.
+- **Cancel** shows the event, its calendar and ID, and that it will be removed.
+
+To change or cancel an event, K.R.I.S. must first find it with a search (it can
+only act on event IDs Google returned in the same conversation); if several
+events could match, it should ask which one. The event is fetched fresh to build
+the approval panel and again just before the change, and if it changed in the
+meantime (or was deleted) nothing is overwritten: you are told, and asked again.
+Google Calendar also refuses the change if the event changed (K.R.I.S. sends the
+event's version tag). Times without a time zone use this Mac's time zone. Only
+the primary calendar is used.
 
 ### Reading and searching Gmail
 Ask in chat, for example "What did Ada say about the quarterly numbers?" or
@@ -237,25 +285,17 @@ characters. Attachments, Bcc and formatting are not supported.
 
 **Permissions requested** (nothing else):
 `openid` and `email` (which account is connected), `gmail.metadata` (labels and
-message headers, not bodies), `calendar.events.readonly` (events, read-only), and
-`gmail.compose` (create drafts), `gmail.readonly` (search and read full
-messages), and `gmail.modify` (read state, stars, archive, Trash, labels).
-`gmail.compose` and `gmail.modify` are Google's narrowest scopes for those jobs,
-but Google also lets both send mail; K.R.I.S. only calls Gmail's create-draft,
-modify and trash endpoints and has no send or permanent-delete operation
-anywhere.
-
-**Known risk, not yet verified with a real account:** Google has been reported to
-apply the stricter `gmail.metadata` rules to a sign-in that also has
-`gmail.readonly`, so reading or searching would fail with a message about
-Gmail's metadata-only permission. K.R.I.S. recognises that error and says so; the
-fix would be to stop requesting `gmail.metadata` (which `gmail.readonly` covers).
+message headers, not bodies), `gmail.compose` (create drafts), `gmail.readonly`
+(search and read full messages), `gmail.modify` (read state, stars, archive,
+Trash, labels), `gmail.send` (send one confirmed email at a time), and
+`calendar.events` (read, create, change and cancel events; it replaces the
+read-only Calendar scope used before stage 4). There is no permanent-delete,
+bulk, or general-purpose Gmail or Calendar operation anywhere.
 
 **Reconnect after upgrading.** A connection made before the current permissions
-(stage 3) is treated as disconnected: the Inbox / Calendar box says "K.R.I.S. now
-needs permission to read and organise Gmail and create Gmail drafts. Reconnect
-Google to continue", and nothing reads or writes Gmail until you reconnect and
-approve. If you untick a permission on Google's consent page, the features that
+(stage 4) is treated as disconnected: the Inbox / Calendar box says K.R.I.S.
+needs updated Google permissions and asks you to reconnect, and nothing reads or
+writes Gmail or Calendar until you reconnect and approve. If you untick a permission on Google's consent page, the features that
 need it report that access was not granted and the rest keep working.
 
 **Tokens.** Sign-in uses OAuth 2.0 with PKCE and a loopback redirect to
@@ -271,10 +311,9 @@ policy blocking the app, an API not enabled, access revoked or expired (connect
 again), Google rate limits, or no network. Inbox refreshes every minute and
 Calendar every five minutes while the page is visible.
 
-**Later stages** (each needs approval): sending mail and creating or editing
-events. Each adds a scope (`gmail.send` or `calendar.events`) and raises the
-consent version, so you will be asked to reconnect and approve it; and each will
-be a model tool that always asks for your confirmation before it runs.
+**Adding permissions later** works the same way: a new scope raises the consent
+version, so you are asked to reconnect and approve it, and every new action is a
+model tool that always asks for your confirmation before it runs.
 
 ## Tasks and notes
 

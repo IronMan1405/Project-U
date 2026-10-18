@@ -85,7 +85,15 @@ in `TODO.md`.
   confirmed first, but its summaries are not checked.
 - Unverified: Google may let `gmail.metadata` restrict a sign-in that also has
   `gmail.readonly`; if so, reading and searching fail with a clear message until
-  `gmail.metadata` is dropped from the requested scopes. One account
+  `gmail.metadata` is dropped from the requested scopes.
+- Sending: one email per approval, at most 20 recipients, plain-text bodies only;
+  forwards quote the text but do not attach the original's attachments; a draft
+  is sent as stored in Gmail (including any formatting or attachments it has).
+- Calendar: only the primary calendar; whole recurring series cannot be changed
+  or cancelled (single occurrences can); past events are read-only; times without
+  a zone use this Mac's time zone; search returns at most 25 events per request.
+  The model can still pick the wrong event if the user's request is vague: the
+  approval panel shows exactly which event will change. One account
   at a time; a sign-in started before a server restart must be started again.
   Requires an Internal OAuth app in the organisation's Google Cloud, and a
   Workspace admin may need to allow it. There is no Apple Mail/Calendar provider.

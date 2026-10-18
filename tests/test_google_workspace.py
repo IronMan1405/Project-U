@@ -39,11 +39,12 @@ READ_SCOPES = " ".join([
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     google_workspace.SCOPE_GMAIL_METADATA,
-    google_workspace.SCOPE_CALENDAR_EVENTS_READONLY,
+    google_workspace.SCOPE_CALENDAR_EVENTS,  # stage 4: covers Calendar reading as well as writing
 ])
 # Everything the current consent asks for (stage 1 reads plus stage 2 drafts).
 ALL_SCOPES = " ".join([READ_SCOPES, google_workspace.SCOPE_GMAIL_COMPOSE,
-                       google_workspace.SCOPE_GMAIL_READONLY, google_workspace.SCOPE_GMAIL_MODIFY])
+                       google_workspace.SCOPE_GMAIL_READONLY, google_workspace.SCOPE_GMAIL_MODIFY,
+                       google_workspace.SCOPE_GMAIL_SEND])
 
 
 def id_token(**overrides):
@@ -177,16 +178,16 @@ class SettingsAndScopeTests(ProviderTestCase):
             "openid",
             "email",
             "https://www.googleapis.com/auth/gmail.metadata",
-            "https://www.googleapis.com/auth/calendar.events.readonly",
+            "https://www.googleapis.com/auth/calendar.events",  # stage 4: read and write events
             "https://www.googleapis.com/auth/gmail.compose",  # stage 2: drafts
             "https://www.googleapis.com/auth/gmail.readonly",  # stage 3: read
             "https://www.googleapis.com/auth/gmail.modify",  # stage 3: organise
+            "https://www.googleapis.com/auth/gmail.send",  # stage 4: send
         ])
         for scope in requested_scopes():
-            for forbidden in ("gmail.send", "mail.google.com", "gmail.insert", "gmail.settings"):
+            for forbidden in ("mail.google.com", "gmail.insert", "gmail.settings", "calendar.events.readonly"):
                 self.assertNotIn(forbidden, scope)
-            self.assertNotEqual(scope, "https://www.googleapis.com/auth/calendar.events")
-            self.assertNotEqual(scope, "https://www.googleapis.com/auth/calendar")
+            self.assertNotEqual(scope, "https://www.googleapis.com/auth/calendar")  # whole calendars: not needed
         for capability in google_workspace.FUTURE_CAPABILITIES.values():
             self.assertTrue(capability.consequential)
             for scope in capability.scopes:
@@ -195,10 +196,13 @@ class SettingsAndScopeTests(ProviderTestCase):
     def test_capabilities_follow_the_granted_scopes(self):
         self.assertEqual(granted_capabilities(set(ALL_SCOPES.split())),
                          {"identity": True, "inbox.read": True, "calendar.read": True, "mail.draft": True,
-                          "mail.read": True, "mail.modify": True})
-        partial = granted_capabilities({"openid", "email", google_workspace.SCOPE_CALENDAR_EVENTS_READONLY})
+                          "mail.read": True, "mail.modify": True, "mail.send": True, "calendar.write": True})
+        partial = granted_capabilities({"openid", "email", google_workspace.SCOPE_CALENDAR_EVENTS})
         self.assertEqual(partial, {"identity": True, "inbox.read": False, "calendar.read": True, "mail.draft": False,
-                                   "mail.read": False, "mail.modify": False})
+                                   "mail.read": False, "mail.modify": False, "mail.send": False,
+                                   "calendar.write": True})
+        # A stage 1-3 grant of the read-only Calendar scope no longer counts.
+        self.assertFalse(granted_capabilities({google_workspace.SCOPE_CALENDAR_EVENTS_READONLY})["calendar.read"])
 
 
 class AuthorizationTests(ProviderTestCase):
@@ -296,7 +300,7 @@ class AuthorizationTests(ProviderTestCase):
 
     def test_partially_granted_consent_is_reported(self):
         provider = self.provider()
-        status = self.complete(provider, self.begin(provider), scope="openid email " + google_workspace.SCOPE_CALENDAR_EVENTS_READONLY)
+        status = self.complete(provider, self.begin(provider), scope="openid email " + google_workspace.SCOPE_CALENDAR_EVENTS)
         self.assertFalse(status["capabilities"]["inbox.read"])
         self.assertTrue(status["capabilities"]["calendar.read"])
         self.assertIn("Reconnect", status["message"])
@@ -407,7 +411,7 @@ class ReadTests(ProviderTestCase):
         self.assertEqual(raised.exception.kind, "not_granted")
         self.assertEqual(self.google.requests, [])
 
-    def test_calendar_covers_today_and_the_next_seven_days(self):
+    def test_calendar_panel_covers_today_and_the_next_two_weeks(self):
         now = datetime(2027, 3, 10, 15, 30, tzinfo=timezone(timedelta(hours=1)))
         self.token_endpoint()
         self.google.on("GET", f"{google_workspace.CALENDAR_API}/calendars/primary/events", {
@@ -423,7 +427,7 @@ class ReadTests(ProviderTestCase):
         result = self.connected(now=lambda: now).upcoming_events()
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.google.calls(google_workspace.CALENDAR_API)[0]["url"]).query)
         self.assertEqual(query["timeMin"], ["2027-03-10T00:00:00+01:00"])
-        self.assertEqual(query["timeMax"], ["2027-03-18T00:00:00+01:00"])
+        self.assertEqual(query["timeMax"], ["2027-03-24T00:00:00+01:00"])  # 14 days: the panel default
         self.assertEqual(query["singleEvents"], ["true"])
         self.assertEqual([event["title"] for event in result["events"]], ["Stand-up", "Offsite", "(No title)"])
         self.assertTrue(result["events"][1]["all_day"])
@@ -478,11 +482,14 @@ class DisconnectAndStorageTests(ProviderTestCase):
 class ConfirmationBoundaryTests(unittest.TestCase):
     def test_consequential_google_tools_must_require_confirmation(self):
         execute = Mock()
-        unconfirmed = {"google_send_email": ToolDefinition("google_send_email", "Send", {}, execute)}
+        unconfirmed = {"send_email": ToolDefinition("send_email", "Send", {}, execute)}
         with self.assertRaises(ValueError):
             check_confirmation_boundaries(unconfirmed)
-        confirmed = {"google_send_email": ToolDefinition("google_send_email", "Send", {}, execute, always_confirm=True)}
+        confirmed = {"send_email": ToolDefinition("send_email", "Send", {}, execute, always_confirm=True)}
         check_confirmation_boundaries(confirmed)
+        for name in ("create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_gmail_draft"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                check_confirmation_boundaries({name: ToolDefinition(name, "x", {}, execute)})
 
     def test_the_model_has_no_google_tools_in_the_read_only_milestone(self):
         names = {definition["function"]["name"] for definition in ToolRegistry().definitions()}

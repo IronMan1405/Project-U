@@ -89,7 +89,7 @@
     return new Date(event.start);
   }
 
-  function calendarView(result, now = new Date()) {
+  function calendarView(result, now = new Date(), days = 14) {
     if (!result || result.status !== "ok" || !Array.isArray(result.events)) return { error: errorView(result) };
     const items = [];
     for (const event of result.events) {
@@ -104,8 +104,9 @@
       }
       items.push({ day: dayLabel(start, now), time, title: text(event.title) || "(No title)" });
     }
-    let note = items.length ? "" : "No events today or in the next seven days.";
-    if (result.truncated) note = "Showing the first 50 events.";
+    const span = days === 30 ? "the next month" : "the next two weeks";
+    let note = items.length ? "" : `No events in ${span}.`;
+    if (result.truncated) note = "Showing the first 100 events.";
     return { items, note };
   }
 

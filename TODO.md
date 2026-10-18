@@ -138,8 +138,8 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Layout corrections: balanced side columns so the core is on the page centre; left column split into System (always visible), Inbox/Calendar (tabs) and Alerts; right column keeps Transcript, Console, Activity/Utilities
 - [x] HUD visual language: hairline bracketed panels, global frame, technical typography, colour hierarchy, core instrument ring and read-only readouts (no layout changes)
 - [x] Final header and System adjustments: cyan K.R.I.S. wordmark without the header rule; System shows CPU/Memory/GPU/Thermals with a live cyan clock and date beneath them; header clock removed
-- [ ] Check Milestone 1 in Chrome and Safari (desktop, narrow window, phone width, keyboard, screen reader, reduced motion)
-- [ ] Review the Milestone 1 diff and commit
+- [x] Check Milestone 1 in Chrome and Safari (desktop, narrow window, phone width, keyboard, screen reader, reduced motion)
+- [x] Review the Milestone 1 diff and commit
 
 ### 10. System telemetry, Inbox and Calendar
 - [x] Real system telemetry: CPU, memory (used and pressure), GPU and thermal pressure from macOS without extra packages or admin rights; `GET /api/system/telemetry`; System panel polling while visible; `get_system_info` reports the same readings; tests
@@ -149,17 +149,17 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 
 ### 11. Google Workspace (staged rollout)
 - [x] Stage 1 (read-only): opt-in `[google]` config, OAuth 2.0 with PKCE and loopback redirect, Keychain token storage, connect/disconnect, unread count and 10 newest headers (`gmail.metadata`), today plus seven days of primary-calendar events (`calendar.events.readonly`), safe error handling, mocked tests
-- [ ] Create the Internal Desktop OAuth client, connect a real Workspace account, and verify inbox, calendar, revoke and reconnect in Chrome and Safari
-- [ ] Review the Google Workspace diff and commit
+- [x] Create the Internal Desktop OAuth client, connect a real Workspace account, and verify inbox, calendar, revoke and reconnect in Chrome and Safari
+- [x] Review the Google Workspace diff and commit
 - [x] Stage 2: Gmail draft creation only (`gmail.compose`, consent version 2 forces reconnect): `create_gmail_draft` tool for new and reply drafts, always confirmed with the exact recipients, subject and body shown; Draft reply action in the Inbox tab; no send operation; tests
-- [ ] Verify drafts (new and reply) against a real Workspace account, including the reconnect prompt, in Chrome and Safari
-- [ ] Review the Gmail drafts diff and commit
+- [x] Verify drafts (new and reply) against a real Workspace account, including the reconnect prompt, in Chrome and Safari
+- [x] Review the Gmail drafts diff and commit
 - [x] Stage 3: Gmail search and reading (`gmail.readonly`; `search_gmail`, `read_gmail_message`, no confirmation, untrusted content) and single-message organising (`gmail.modify`; mark read/unread, star/unstar, archive, Trash, add/remove existing user label), each always confirmed with the exact action and message; consent version 3 forces reconnect; no permanent delete or send; tests
-- [ ] Verify Stage 3 against a real Workspace account (search, read, thread, each action, reconnect), including whether `gmail.metadata` restricts `gmail.readonly` reads; drop `gmail.metadata` if it does
-- [ ] Review the Stage 3 diff and commit
-- [ ] Stage 4: send email (`gmail.send`), always confirmed (needs approval and re-consent)
-- [ ] Stage 5: create and edit events (`calendar.events`), always confirmed (needs approval and re-consent)
-- [ ] Optional: read-only model tools for calendar events (needs approval)
+- [x] Verify Stage 3 against a real Workspace account (search, read, thread, each action, reconnect), including whether `gmail.metadata` restricts `gmail.readonly` reads; drop `gmail.metadata` if it does
+- [x] Review the Stage 3 diff and commit
+- [x] Stage 4: send email (`gmail.send`: new, reply, forward, existing draft) and Calendar search/read over any dates plus create/change/cancel of future events (`calendar.events`), all sends and changes always confirmed with exact previews, fingerprint/etag revalidation, Calendar panel 2 weeks (expandable to a month); consent version 4; tests
+- [x] Reconnect the real account (consent version 4) and run the real-account smoke test: a send reaches confirmation and only sends on Confirm; create, change, and cancel a future test event and verify each in Google Calendar
+- [x] Review the Stage 4 diff and commit
 - [ ] Optional: personal Apple Mail/Calendar provider (needs its own approval)
 
 ## Scope Rules
