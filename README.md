@@ -504,15 +504,26 @@ argument list, never a shell, and are macOS-only.
 
 Voice is optional and fully local: speech is transcribed by
 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and replies are spoken by
-macOS `say`. No audio or text leaves the machine. One-time setup (the only step
-that uses the network):
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), a natural-sounding
+local voice (macOS `say` is used if Kokoro is not installed). No audio or text
+leaves the machine. One-time setup (the only step that uses the network):
 
 ```sh
 brew install ffmpeg whisper.cpp
 mkdir -p data/models
 curl -fL --proto '=https' --tlsv1.2 -o data/models/ggml-base.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+# Natural voice (Kokoro): the Python package and two model files (about 350 MB).
+.venv/bin/pip install -r requirements.txt
+curl -fL --proto '=https' --tlsv1.2 -o data/models/kokoro-v1.0.onnx \
+  https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
+curl -fL --proto '=https' --tlsv1.2 -o data/models/voices-v1.0.bin \
+  https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
 ```
+
+The Kokoro files used here have these SHA-256 sums (`shasum -a 256 data/models/*`):
+`kokoro-v1.0.onnx` 7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5,
+`voices-v1.0.bin` bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d.
 
 Compare `shasum -a 256 data/models/ggml-base.en.bin` with the SHA-256 shown for
 the file on Hugging Face. `config.ini.example` already contains the `[voice]`
@@ -693,11 +704,35 @@ whisper.cpp then usually returns nothing, which is reported the same way. If you
 quiet speech is rejected, lower `SPEECH_LEVEL_DBFS` in `voice.py`; U logs each
 recording's measured level (numbers only) at INFO level to help with tuning.
 
-"Speak replies" (off by default) reads each final reply aloud with `say`, using
-`say_voice` if set (list voices with `say -v '?'`). When speech is on, the
-confirmation prompt and cancellation messages are spoken too. Long replies are
-spoken up to about 1,500 characters. Turning the toggle off, turning
-Hands-free off, recording, or starting a new conversation stops playback.
+"Speak replies" (off by default) reads each final reply aloud. When speech is
+on, the confirmation prompt and cancellation messages are spoken too. Turning
+the toggle off, turning Hands-free off, recording, or starting a new conversation
+stops playback.
+
+**The voice.** Replies are spoken by Kokoro-82M (voice `af_heart`, American
+English) running on the CPU. The model loads in the background when the server
+starts (about 2 seconds) and then uses about 550–750 MB of memory. A reply is
+spoken **sentence by sentence**: K.R.I.S. splits it at sentence ends (not after
+"Dr.", "a.m.", initials or decimal points, and long sentences at a comma or
+semicolon), synthesizes the first sentence, starts playing it, and synthesizes
+the next one while the current one plays, with a short pause between sentences.
+This is not streaming from the language model: the reply is complete before it
+is spoken. Measured on an M3, the first audio starts about 0.3–0.8 s after the
+reply arrives when the first sentence is short or has a comma to split at, and up
+to about 2 s for a long first sentence without one; each second of speech takes
+about 0.25 s to synthesize.
+Stop speaking, interrupting (tapping the mic), or a newer reply stops the audio
+at once and cancels the sentences not yet synthesized; a sentence already being
+synthesized (well under a second) finishes on the server and is discarded.
+Plain decimals are read as "3 point 5"; money, times and version numbers are left
+as written. Long replies are spoken up to about 4,000 characters.
+
+Set `kokoro_voice` in `[voice]` to change the voice (for example `af_bella`,
+`am_michael`, or British `bf_emma`; British voices use British pronunciation)
+and `kokoro_speed` (0.5–2.0, default 1.0). If the Kokoro package or model files
+are missing, or Kokoro fails, replies are spoken by macOS `say` instead (with
+`say_voice` if set; list voices with `say -v '?'`), and the server logs why
+(never the text). `tts_engine = say` always uses `say`.
 
 Recordings are limited to 3 MiB and WebM, Ogg, or MP4 audio; conversion,
 transcription, and speech each have a timeout, and one transcription runs at a

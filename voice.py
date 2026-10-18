@@ -1,5 +1,5 @@
-"""Local push-to-talk speech: whisper.cpp transcription and macOS `say` speech output,
-plus the local check behind the "Kris" wake word.
+"""Local speech: whisper.cpp transcription, spoken replies (Kokoro-82M, with macOS `say` as
+the fallback), and the local check behind the "Kris" wake word.
 
 Audio and text exist only inside a private temporary directory for the duration of one
 request and are never logged or stored. External programs run from configured absolute
@@ -21,7 +21,19 @@ from pathlib import Path
 SAY_COMMAND = Path("/usr/bin/say")
 MAX_AUDIO_BYTES = 3 * 1024 * 1024
 MAX_TRANSCRIPT_CHARS = 2_000
-MAX_SPEECH_CHARS = 1_500
+MAX_SPEECH_CHARS = 1_500  # one /api/voice/speak request (one segment, or a whole short text)
+# Spoken replies are split into sentence-sized segments (speech_segments) that the browser
+# synthesizes one after another while the previous one plays.
+MAX_SPOKEN_REPLY_CHARS = 4_000
+# Synthesis time grows with segment length, so a first sentence longer than this is split at
+# its first clause break (never mid-clause): the first audio then starts sooner.
+FIRST_SEGMENT_CHARS = 80
+MAX_SEGMENT_CHARS = 280
+MIN_SEGMENT_CHARS = 20  # shorter pieces ("Sure.") are joined to the next one
+DEFAULT_KOKORO_MODEL = "data/models/kokoro-v1.0.onnx"
+DEFAULT_KOKORO_VOICES = "data/models/voices-v1.0.bin"
+DEFAULT_KOKORO_VOICE = "af_heart"
+KOKORO_VOICE_NAME = re.compile(r"^[a-z]{2}_[a-z]{2,20}$")
 MAX_SPEECH_AUDIO_BYTES = 12 * 1024 * 1024
 CONVERT_TIMEOUT_SECONDS = 20
 TRANSCRIBE_TIMEOUT_SECONDS = 60
@@ -97,6 +109,11 @@ class VoiceSettings:
     # How long a conversation started by the wake word waits for you to speak (after the
     # acknowledgment, and after each reply) before returning to wake-word standby.
     wake_follow_up_seconds: int = DEFAULT_WAKE_FOLLOW_UP_SECONDS
+    # Kokoro-82M speech (both files present): the natural voice; `say` is the fallback.
+    kokoro_model: Path | None = None
+    kokoro_voices: Path | None = None
+    kokoro_voice: str = DEFAULT_KOKORO_VOICE
+    kokoro_speed: float = 1.0
 
     @property
     def stt_available(self) -> bool:
@@ -106,8 +123,16 @@ class VoiceSettings:
         )
 
     @property
+    def kokoro_configured(self) -> bool:
+        return self.kokoro_model is not None and self.kokoro_voices is not None
+
+    @property
     def tts_available(self) -> bool:
-        return self.speech_output and SAY_COMMAND.is_file()
+        return self.speech_output and (self.kokoro_configured or SAY_COMMAND.is_file())
+
+    @property
+    def tts_engine(self) -> str:
+        return "kokoro" if self.kokoro_configured else "say"
 
 
 def _executable(raw: str, name: str) -> Path | None:
@@ -161,6 +186,31 @@ def build_voice_settings(values: dict[str, str], base_directory: Path) -> VoiceS
     except ValueError:
         logger.warning("Voice: wake_follow_up_seconds must be a whole number; using the default.")
         wake_follow_up = DEFAULT_WAKE_FOLLOW_UP_SECONDS
+    kokoro_model = kokoro_voices = None
+    kokoro_voice = values.get("kokoro_voice", DEFAULT_KOKORO_VOICE).strip() or DEFAULT_KOKORO_VOICE
+    if not KOKORO_VOICE_NAME.fullmatch(kokoro_voice):
+        logger.warning("Voice: kokoro_voice is not a valid voice name; using %s.", DEFAULT_KOKORO_VOICE)
+        kokoro_voice = DEFAULT_KOKORO_VOICE
+    try:
+        kokoro_speed = min(max(float(values.get("kokoro_speed", "1.0")), 0.5), 2.0)
+    except ValueError:
+        logger.warning("Voice: kokoro_speed must be a number; using 1.0.")
+        kokoro_speed = 1.0
+    engine = values.get("tts_engine", "kokoro").strip().lower()
+    if engine not in {"kokoro", "say"}:
+        logger.warning("Voice: tts_engine must be kokoro or say; using kokoro.")
+        engine = "kokoro"
+    if engine == "kokoro" and speech_output:
+        found = []
+        for key, default in (("kokoro_model", DEFAULT_KOKORO_MODEL), ("kokoro_voices", DEFAULT_KOKORO_VOICES)):
+            candidate = Path(values.get(key, "").strip() or default).expanduser()
+            if not candidate.is_absolute():
+                candidate = base_directory / candidate
+            found.append(candidate.resolve() if candidate.is_file() else None)
+        if all(found):
+            kokoro_model, kokoro_voices = found
+        else:
+            logger.warning("Voice: the Kokoro model or voices file was not found; spoken replies use macOS say.")
     low, high = WAKE_FOLLOW_UP_SECONDS_RANGE
     wake_follow_up = min(max(wake_follow_up, low), high)
     if wake_follow_up >= max_seconds:
@@ -170,6 +220,7 @@ def build_voice_settings(values: dict[str, str], base_directory: Path) -> VoiceS
     return VoiceSettings(
         ffmpeg, whisper_cli, model, voice, language, max_seconds, speech_output,
         end_silence_ms, min_recording_ms, wake_follow_up,
+        kokoro_model, kokoro_voices, kokoro_voice, kokoro_speed,
     )
 
 
@@ -347,8 +398,117 @@ def detect_wake_word(settings: VoiceSettings, audio: bytes) -> bool:
     return is_wake_phrase(text)
 
 
+# --- Preparing text for speech -----------------------------------------------------------
+# Abbreviations whose full stop does not end a sentence (compared without the final ".").
+_ABBREVIATIONS = frozenset({
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "e.g", "i.e", "eg", "ie",
+    "a.m", "p.m", "no", "nos", "approx", "inc", "ltd", "co", "corp", "dept", "fig", "est", "min",
+    "max", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "u.s", "u.k", "e.u", "ph.d", "cf", "al",
+})
+_BEFORE_NUMBER = frozenset({
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "no", "nos", "fig",
+})
+_SENTENCE_END = re.compile(r"[.!?\u2026]+[\"'\u201d\u2019)\]]*(?=\s)")
+_URL = re.compile(r"\bhttps?://\S+", re.IGNORECASE)
+_DECIMAL = re.compile(r"(?<![\d.,$\u00a3\u20ac])(\d+)\.(\d+)(?![\d.]|\.\d)")
+_MARKUP = re.compile(r"[*_`#>|~]+")
+_LIST_MARKER = re.compile(r"^\s*(?:[-\u2022\u2013]\s+)")
+
+
+def speech_text(text: str) -> str:
+    """Normalize one line for speech without changing its meaning: drop leftover markup and
+    URLs, and read plain decimals as "3 point 5" (Kokoro otherwise pauses at the point).
+    Money ("$1,249.99"), times ("7:45") and versions ("1.2.3") are left alone."""
+    text = _URL.sub("a link", text)
+    text = _MARKUP.sub(" ", _LIST_MARKER.sub("", text))
+    text = _DECIMAL.sub(r"\1 point \2", text)
+    return " ".join(text.split())
+
+
+def _sentences(line: str) -> list[str]:
+    pieces, start = [], 0
+    for match in _SENTENCE_END.finditer(line):
+        punctuation = match.group(0)
+        token = line[: match.start() + 1].rsplit(None, 1)[-1].rstrip(".").lower()
+        following = line[match.end():].lstrip()[:1]
+        if following.islower():
+            continue  # "approx. five", "wait… then": the sentence goes on
+        if punctuation.startswith(".") and len(punctuation.rstrip("\"'\u201d\u2019)]")) == 1:
+            # "Dr. Patel", "7:45 a.m. Friday", initials ("J. Smith"): not a sentence end. A month
+            # or "No." only continues before a number ("Jan. 25", "No. 5"), else it ends one.
+            if token in _BEFORE_NUMBER:
+                if following.isdigit():
+                    continue
+            elif token in _ABBREVIATIONS or re.fullmatch(r"[a-z]", token):
+                continue
+        pieces.append(line[start:match.end()].strip())
+        start = match.end()
+    pieces.append(line[start:].strip())
+    return [piece for piece in pieces if piece]
+
+
+def _split_long(text: str, limit: int) -> list[str]:
+    """Split at the last clause break (;, :, —, ,) within the limit, else at a space."""
+    parts = []
+    while len(text) > limit:
+        window = text[: limit + 1]
+        cut = max(window.rfind(mark) for mark in ("; ", ": ", " \u2014 ", ", "))
+        if cut < limit * 0.4:
+            cut = window.rfind(" ")
+        if cut <= 0:
+            cut = limit
+        else:
+            cut += 1  # keep the punctuation with the first part
+        parts.append(text[:cut].strip())
+        text = text[cut:].strip()
+    if text:
+        parts.append(text)
+    return parts
+
+
+def speech_segments(text: str) -> tuple[list[str], bool]:
+    """Split a reply into sentence-sized segments for speech; returns (segments, truncated).
+
+    Splits only at sentence ends (not after abbreviations, initials or decimal points) and
+    line breaks; a sentence longer than MAX_SEGMENT_CHARS is split at a clause break. The
+    first segment is kept short so the first audio arrives sooner, and tiny pieces are joined
+    to the next one so the voice does not sound choppy."""
+    sentences = []
+    for line in (speech_text(raw) for raw in (text or "").splitlines()):
+        if not line:
+            continue
+        if not re.search(r"[.!?\u2026:;,][\"'\u201d\u2019)\]]*$", line):
+            line += "."  # a list item or heading still gets a pause after it
+        sentences.extend(_sentences(line))
+    pieces = [part for sentence in sentences for part in _split_long(sentence, MAX_SEGMENT_CHARS)]
+    merged: list[str] = []
+    for piece in pieces:
+        if merged and len(merged[-1]) < MIN_SEGMENT_CHARS and len(merged[-1]) + 1 + len(piece) <= MAX_SEGMENT_CHARS:
+            merged[-1] = f"{merged[-1]} {piece}"
+        else:
+            merged.append(piece)
+    if merged and len(merged[0]) > FIRST_SEGMENT_CHARS:
+        first = merged[0]
+        breaks = [first.find(mark, MIN_SEGMENT_CHARS) for mark in ("; ", ": ", " \u2014 ", ", ")]
+        cut = min((index for index in breaks if index != -1), default=-1)
+        if 0 < cut and len(first) - cut > MIN_SEGMENT_CHARS:
+            merged[:1] = [first[: cut + 1].strip(), first[cut + 1:].strip()]
+    segments, total, truncated = [], 0, False
+    for segment in merged:
+        if total + len(segment) > MAX_SPOKEN_REPLY_CHARS:
+            truncated = True
+            break
+        segments.append(segment)
+        total += len(segment) + 1
+    return segments, truncated
+
+
 def synthesize(settings: VoiceSettings, text: str) -> tuple[bytes, bool]:
-    """Speak text with macOS `say` into a WAV file; returns (audio, truncated)."""
+    """Speak one text (normally one segment) as WAV; returns (audio, truncated).
+
+    Uses Kokoro when it is configured and loads; if Kokoro fails, macOS `say` speaks instead
+    so a reply is never lost (the failure is logged without the text)."""
     if not settings.tts_available:
         raise VoiceUnavailable("Local speech output is not available.")
     spoken = " ".join((text or "").split())
@@ -357,13 +517,25 @@ def synthesize(settings: VoiceSettings, text: str) -> tuple[bytes, bool]:
     truncated = len(spoken) > MAX_SPEECH_CHARS
     if truncated:
         spoken = spoken[:MAX_SPEECH_CHARS].rsplit(" ", 1)[0]
+    if settings.kokoro_configured:
+        import kokoro_speech
+
+        engine = kokoro_speech.engine(
+            settings.kokoro_model, settings.kokoro_voices, settings.kokoro_voice, settings.kokoro_speed
+        )
+        try:
+            return engine.synthesize(speech_text(spoken)), truncated
+        except kokoro_speech.KokoroUnavailable as error:
+            if not SAY_COMMAND.is_file():
+                raise VoiceUnavailable(str(error)) from None
+            logger.warning("Kokoro speech failed (%s); using macOS say for this segment.", error)
 
     with tempfile.TemporaryDirectory(prefix="project-u-voice-") as directory:
         # Text goes through a file, so content such as "-v" is never parsed as an option.
         text_file = Path(directory) / "speech.txt"
         output = Path(directory) / "speech.wav"
         text_file.write_text(spoken, encoding="utf-8")
-        voice_arguments = ["-v", settings.say_voice] if settings.say_voice else []
+        voice_arguments = ["-v", settings.say_voice] if settings.say_voice else []  # say fallback
         _run(
             [
                 str(SAY_COMMAND), *voice_arguments, "-f", str(text_file),
@@ -376,3 +548,17 @@ def synthesize(settings: VoiceSettings, text: str) -> tuple[bytes, bool]:
     if audio[:4] != b"RIFF" or len(audio) > MAX_SPEECH_AUDIO_BYTES:
         raise VoiceError("Local speech output produced unusable audio.")
     return audio, truncated
+
+
+def preload_speech(settings: VoiceSettings) -> None:
+    """Load Kokoro in the background at server start, so the first reply is not a cold start."""
+    if not (settings.speech_output and settings.kokoro_configured):
+        return
+    import threading
+
+    import kokoro_speech
+
+    engine = kokoro_speech.engine(
+        settings.kokoro_model, settings.kokoro_voices, settings.kokoro_voice, settings.kokoro_speed
+    )
+    threading.Thread(target=engine.preload, name="kokoro-preload", daemon=True).start()

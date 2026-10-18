@@ -32,7 +32,18 @@ in `TODO.md`.
   room noise.
 - Safari may block autoplay of spoken replies; the page then reports that the
   spoken reply is unavailable.
-- Long replies are spoken only up to about 1,500 characters.
+- Long replies are spoken only up to about 4,000 characters.
+- Spoken replies start after the whole model reply is ready (the chat request is
+  not streamed); streaming the model's text into the sentence pipeline would cut
+  the wait further.
+- Kokoro: one voice per server (`kokoro_voice`); English only as configured;
+  pronunciation comes from espeak-ng, so unusual names and acronyms can be read
+  oddly; a sentence being synthesized when you stop finishes on the server (well
+  under a second) before it is discarded; a short first sentence followed by a
+  long one can leave a brief extra pause. The bundled espeak-ng and phonemizer
+  are GPL-3.0 (fine for personal use; matters if K.R.I.S. is ever distributed).
+- MLX Kokoro was evaluated and not used: its text front end needs spaCy, which
+  does not install on the project's Python 3.14 (nor 3.13 here).
 - The terminal client has no voice support.
 - The silence check uses a fixed threshold (`SPEECH_LEVEL_DBFS`, −57 dBFS for at
   least 0.12 s) chosen from one quiet room; a noisier room or a very quiet voice

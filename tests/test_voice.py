@@ -431,9 +431,11 @@ class VoiceApiTests(VoiceTestCase):
             on = self.client().get("/api/voice/status").get_json()
         timing = {"end_silence_ms": 1200, "min_recording_ms": 600, "no_speech_timeout_ms": 6000,
                   "wake_follow_up_ms": 8000, "wake_max_clip_ms": 2500}
-        self.assertEqual(on, {"speech_input": True, "speech_output": True, "max_seconds": 60, "wake_word": True, **timing})
+        self.assertEqual(on, {"speech_input": True, "speech_output": True, "max_seconds": 60, "wake_word": True,
+                              "speech_engine": "say", **timing})
         off = self.client(VoiceSettings()).get("/api/voice/status").get_json()
-        self.assertEqual(off, {"speech_input": False, "speech_output": False, "max_seconds": 60, "wake_word": False, **timing})
+        self.assertEqual(off, {"speech_input": False, "speech_output": False, "max_seconds": 60, "wake_word": False,
+                               "speech_engine": None, **timing})
         custom = VoiceSettings(self.ffmpeg, self.whisper, self.model, None, "en", 30, True, 2000, 900)
         self.assertEqual(
             {key: self.client(custom).get("/api/voice/status").get_json()[key]

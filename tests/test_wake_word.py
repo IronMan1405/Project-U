@@ -14,12 +14,13 @@ from unittest.mock import Mock, patch
 
 import config
 import voice
-from tests.test_voice import VoiceApiTests, VoiceTestCase, write_wav
+# Imported as a module, not by class name, so unittest does not discover VoiceApiTests twice.
+import tests.test_voice as voice_tests
 from voice import VoiceError, VoiceUnavailable
 
 
 def wav_bytes(directory, seconds=0.8):
-    return write_wav(Path(directory) / "clip.wav", [(seconds, -30, "tone")]).read_bytes()
+    return voice_tests.write_wav(Path(directory) / "clip.wav", [(seconds, -30, "tone")]).read_bytes()
 
 
 class WakePhraseTests(unittest.TestCase):
@@ -38,11 +39,11 @@ class WakePhraseTests(unittest.TestCase):
                 self.assertFalse(voice.is_wake_phrase(text))
 
 
-class WakeDetectionTests(VoiceTestCase):
+class WakeDetectionTests(voice_tests.VoiceTestCase):
     def fake_run(self, transcript):
         def run(arguments, **kwargs):
             if arguments[0] == str(self.ffmpeg):
-                write_wav(Path(arguments[-1]), [(0.8, -30, "tone")])
+                voice_tests.write_wav(Path(arguments[-1]), [(0.8, -30, "tone")])
             return Mock(returncode=0, stdout=transcript, stderr="")
         return run
 
@@ -86,8 +87,8 @@ class WakeDetectionTests(VoiceTestCase):
         self.assertEqual(short.wake_follow_up_seconds, 7)
 
 
-class WakeApiTests(VoiceTestCase):
-    client = VoiceApiTests.client
+class WakeApiTests(voice_tests.VoiceTestCase):
+    client = voice_tests.VoiceApiTests.client
 
     def wake(self, client, data, mime="audio/wav"):
         return client.post(

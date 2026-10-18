@@ -29,8 +29,13 @@ min_recording_ms = 600
 # Wake word: return to standby after this many seconds without speech (3-30, and
 # shorter than max_seconds).
 wake_follow_up_seconds = 8
-# Spoken replies use macOS `say`; leave say_voice empty for the system voice.
+# Spoken replies use Kokoro-82M when its files are in data/models/ (see README),
+# otherwise macOS `say`. tts_engine = say always uses say.
 speech_output = on
+tts_engine = kokoro
+kokoro_voice = af_heart
+kokoro_speed = 1.0
+# The voice `say` uses as the fallback; leave empty for the system voice.
 say_voice =
 
 # [google]

@@ -117,6 +117,7 @@ let replyRequest = 0;
 let voiceTurn = false;
 let sendingFromVoice = false;
 let replyFinish = null; // resolves the current speakReply() promise
+let replyAbort = null; // aborts the current spoken reply's requests
 const SPEAK_BUSY_RETRIES = 12; // up to about 3 s for the previous synthesis to finish
 const SPEAK_BUSY_RETRY_MS = 250;
 let voiceLoop = window.VoiceLoop.createVoiceLoop();
@@ -1393,6 +1394,8 @@ function handleTranscript(text, replyKind, handsFree) {
 
 function stopReplyAudio() {
   replyRequest += 1;
+  replyAbort?.abort(); // drops the plan or segment request in flight; queued segments are never asked for
+  replyAbort = null;
   if (replyAudio) {
     replyAudio.pause();
     URL.revokeObjectURL(replyAudio.src);
@@ -1404,52 +1407,82 @@ function stopReplyAudio() {
   renderVoiceView();
 }
 
-// Speaks text. The promise resolves true when playback ends, false if it fails, and null if
-// it is stopped or replaced first; only the newest request ever plays.
+// Speaks text sentence by sentence (this is not streaming from the model: the reply text is
+// complete first). /api/voice/plan splits it into segments; each segment is synthesized by
+// /api/voice/speak while the previous one plays, one request at a time, and they play in
+// order. The promise resolves true when the last segment ends, false if any step fails, and
+// null if it is stopped or replaced first; only the newest request ever plays. replyFinish
+// stays set for the whole reply, so Stop speaking, barge-in and wake-word standby treat it as
+// one continuous reply with no gaps between segments.
 function speakReply(text) {
   stopReplyAudio();
   const request = replyRequest;
+  const abort = new AbortController();
+  replyAbort = abort;
+  const current = () => request === replyRequest;
   const done = new Promise((resolve) => {
     replyFinish = resolve;
   });
   renderVoiceView();
   const settle = (result) => {
-    if (request !== replyRequest) return;
+    if (!current()) return;
     const finish = replyFinish;
     replyFinish = null;
     stopReplyAudio();
     finish?.(result);
   };
+  const post = (url, body) =>
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+  const failure = async (response) => {
+    const result = await response.json().catch(() => null);
+    return new Error(result?.error || "Local speech output failed.");
+  };
+  const synthesize = async (segment) => {
+    // The server synthesizes one segment at a time. A reply that follows a stopped or replaced
+    // one can get 429 while that segment finishes, so retry briefly while still current.
+    let response;
+    for (let attempt = 0; ; attempt += 1) {
+      response = await post("/api/voice/speak", { text: segment });
+      if (response.status !== 429 || attempt >= SPEAK_BUSY_RETRIES || !current()) break;
+      await new Promise((resolve) => window.setTimeout(resolve, SPEAK_BUSY_RETRY_MS));
+    }
+    if (!response.ok) throw await failure(response);
+    return response.blob();
+  };
+  const play = (audio) =>
+    new Promise((resolve, reject) => {
+      replyAudio = new Audio(URL.createObjectURL(audio));
+      replyAudio.addEventListener("ended", resolve, { once: true });
+      replyAudio.addEventListener("error", () => reject(new Error("The audio could not be played.")), { once: true });
+      replyAudio.play().catch(reject);
+    });
   (async () => {
     try {
-      // The server synthesizes one reply at a time. A reply that follows a stopped or
-      // replaced one within a second or two can get 429 while that synthesis finishes, so
-      // retry briefly, only while this is still the current request.
-      let response;
-      for (let attempt = 0; ; attempt += 1) {
-        response = await fetch("/api/voice/speak", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        });
-        if (response.status !== 429 || attempt >= SPEAK_BUSY_RETRIES || request !== replyRequest) break;
-        await new Promise((resolve) => window.setTimeout(resolve, SPEAK_BUSY_RETRY_MS));
+      const planned = await post("/api/voice/plan", { text });
+      if (!current()) return;
+      if (!planned.ok) throw await failure(planned);
+      const { segments, truncated } = await planned.json();
+      if (!current()) return;
+      if (truncated) setVoiceState("Speaking the beginning of a long reply.");
+      let next = synthesize(segments[0]);
+      for (let index = 0; index < segments.length; index += 1) {
+        const audio = await next;
+        if (!current()) return;
+        // Synthesize the following segment while this one plays.
+        next = index + 1 < segments.length ? synthesize(segments[index + 1]) : null;
+        next?.catch(() => {}); // a failure surfaces when it is awaited
+        if (replyAudio) URL.revokeObjectURL(replyAudio.src);
+        await play(audio);
+        if (!current()) return;
       }
-      if (request !== replyRequest) return; // stopped or replaced meanwhile (already resolved)
-      if (!response.ok) {
-        const result = await response.json().catch(() => null);
-        throw new Error(result?.error || "Local speech output failed.");
-      }
-      const audio = await response.blob();
-      if (request !== replyRequest) return;
-      replyAudio = new Audio(URL.createObjectURL(audio));
-      replyAudio.addEventListener("ended", () => settle(true), { once: true });
-      if (response.headers.get("X-Speech-Truncated") === "1") {
-        setVoiceState("Speaking the beginning of a long reply.");
-      }
-      await replyAudio.play();
+      settle(true);
     } catch (error) {
-      if (request === replyRequest) {
+      if (current()) {
         setVoiceState(`Spoken reply unavailable: ${error.message}`);
         settle(false);
       }

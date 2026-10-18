@@ -350,6 +350,7 @@ def create_app(
             wake_word=voice_settings.stt_available,
             wake_follow_up_ms=voice_settings.wake_follow_up_seconds * 1000,
             wake_max_clip_ms=int(voice.WAKE_MAX_CLIP_SECONDS * 1000),
+            speech_engine=voice_settings.tts_engine if voice_settings.tts_available else None,
         )
 
     @app.post("/api/voice/transcribe")
@@ -407,6 +408,21 @@ def create_app(
         finally:
             transcription_slot.release()
         return jsonify(wake=wake)
+
+    @app.post("/api/voice/plan")
+    def voice_plan():
+        # Splits a reply into sentence-sized segments; the page then requests each one from
+        # /api/voice/speak while the previous one plays. No audio is made here.
+        if not voice_settings.tts_available:
+            return jsonify(error="Local speech output is not available."), 503
+        data = request.get_json(silent=True)
+        text = data.get("text") if isinstance(data, dict) else None
+        if not isinstance(text, str) or not text.strip() or len(text) > 20000:
+            return jsonify(error="Send text of 1 to 20,000 characters to speak."), 400
+        segments, truncated = voice.speech_segments(text)
+        if not segments:
+            return jsonify(error="There is no text to speak."), 422
+        return jsonify(segments=segments, truncated=truncated)
 
     @app.post("/api/voice/speak")
     def voice_speak():
@@ -659,4 +675,6 @@ def _serialize_turn_result(result: TurnResult, document_selection=None) -> dict:
 
 
 if __name__ == "__main__":
+    # Load the speech model in the background now, so the first spoken reply is not a cold start.
+    voice.preload_speech(load_voice_settings())
     create_app().run(host="127.0.0.1", port=5000, threaded=True)

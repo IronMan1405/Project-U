@@ -191,6 +191,15 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
   - [x] Standby CPU and memory: Chrome's Task Manager for the K.R.I.S. tab and Activity Monitor for the Python server, idle in standby for 5 minutes and while talking nearby
 - [x] Review the wake-word diff and commit
 
+
+### 14. Natural voice (Kokoro)
+- [x] Audit the TTS path (`say`, whole-reply WAV, single Audio element) and measure it
+- [x] Evaluate Kokoro: reference PyTorch and MLX builds do not install on Python 3.14 (spaCy); kokoro-onnx does; measured fp32/int8/CoreML
+- [x] Kokoro-82M via kokoro-onnx (`kokoro_speech.py`), background preload, one reused espeak-ng backend, `say` fallback
+- [x] Sentence segmentation (`voice.speech_segments`, `/api/voice/plan`) and sentence-by-sentence playback with prefetch and cancellation (`speakReply`)
+- [x] Tests (fakes) and `VOICE_SMOKE` real-model intelligibility test; browser checks: order, Stop speaking, supersede, failure, barge-in, wake standby, approvals
+- [ ] Listen: naturalness, pauses, numbers/abbreviations/technical terms, voice choice (manual acceptance checklist)
+- [ ] Review the voice diff and commit
 ## Scope Rules
 - One feature at a time.
 - Keep the project local-first.
