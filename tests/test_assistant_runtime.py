@@ -271,7 +271,7 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertEqual(
             result.response,
             f"Cancelled: Delete task {target['id']}. It was not run. "
-            "Actions that already completed in this request are listed in the activity above.",
+            "Completed in this request: Create task: New task.",
         )
         self.assertEqual(sorted(t["title"] for t in storage.list_tasks(self.database_path)), ["New task", "Old task"])
         self.assertEqual([a["status"] for a in result.activities], ["success", "cancelled"])
@@ -853,6 +853,7 @@ class AssistantRuntimeTests(unittest.TestCase):
         result = runtime.run_turn("Create a task named One-time task.")
 
         self.assertIn("Review the activity result before retrying", result.response)
+        self.assertIn("Completed in this request: Create task: One-time task.", result.response)
         self.assertEqual(len(storage.list_tasks(self.database_path)), 1)
 
 

@@ -89,6 +89,13 @@ in `TODO.md`.
 - Sending: one email per approval, at most 20 recipients, plain-text bodies only;
   forwards quote the text but do not attach the original's attachments; a draft
   is sent as stored in Gmail (including any formatting or attachments it has).
+- Google Keep integration is deferred (planned for v1.3, cancelled): Google's
+  Keep API is enterprise-oriented (an admin-approved OAuth client or domain-wide
+  delegation in a Workspace organisation), and Google refuses the `keep` scope
+  for a personal Gmail account with `Error 400: invalid_scope` before any
+  consent screen. Revisit only with a Workspace account and admin approval; no
+  browser-automation or unofficial workaround. Keep's API also has no update
+  (edit) operation and deletes permanently, which any future design must handle.
 - Calendar: only the primary calendar; whole recurring series cannot be changed
   or cancelled (single occurrences can); past events are read-only; times without
   a zone use this Mac's time zone; search returns at most 25 events per request.

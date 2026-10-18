@@ -45,13 +45,11 @@ The web UI is a K.R.I.S. (Knowledgeable & Reasonably Intelligent System) command
 center. The K.R.I.S. wordmark is centred at the top, with the local model status
 on the left and New conversation on the right. Below it, on a desktop-width
 window, are three columns:
-- **Left:** three boxes. **System** is always shown: live CPU, memory, GPU and
+- **Left:** two boxes. **System** is always shown: live CPU, memory, GPU and
   thermal readings (see "System telemetry" below), and beneath them a large live
   clock (HH:MM, ice blue) with the date. Below it, **Inbox / Calendar** switches between two tabs that
   show the organisation's Google Workspace mail and calendar once connected
-  (see "Google Workspace" below), and say plainly when they are not. Below that, **Alerts** lists current problems (model
-  unavailable, errors, an action waiting for approval, Hands-free paused) with a
-  count beside its heading.
+  (see "Google Workspace" below), and say plainly when they are not.
 - **Centre:** the K.R.I.S. energy core, the main visual element, with its status
   beneath it. Its look follows the real state of the page: Standing by,
   Listening, Transcribing, Thinking, Speaking, Waiting for confirmation (amber),
@@ -62,7 +60,8 @@ window, are three columns:
   the **Console** is a read-only, terminal-style log of what happened on this page
   (tool use, voice states, errors, model status); it runs no commands and is not
   saved. At the bottom, a switchable panel shows **Activity** (the tools used in the
-  latest request) and **Utilities**.
+  latest request) and **Alerts** (current problems: model unavailable, errors, an
+  action waiting for approval, Hands-free paused; the tab shows a count).
 
 The command bar along the bottom (message box, microphone, Stop speaking, and the
 Hands-free and Speak replies toggles) is always available. Sending a message, or a
@@ -175,6 +174,18 @@ and (stage 4) **send email** (a new message, a reply, a forward, or an existing
 draft) and **search, read, create, change and cancel Calendar events**. Every
 send and every change asks you first. It cannot permanently delete email, send in
 bulk, create labels, or change past events.
+
+### Workflows across tools
+K.R.I.S. can combine its tools in one request: "What do I have tomorrow?"
+(Calendar and Tasks), "Find the email about the meeting and tell me when it is"
+(Gmail and Calendar), or "Prepare my morning briefing" (Calendar, Tasks, email and
+notes; up to six tool uses per request). Follow-ups such as "open the second
+one", "move it to Friday" or "email him about the change" use what was found
+earlier in the conversation. Reading needs no approval; every send or change
+gets its **own** approval, one at a time, and declining one cancels the rest of
+that request. If a step fails, K.R.I.S. says exactly what succeeded, what failed
+and what was not attempted, and keeps the prepared content so you can retry.
+When "it" or "that" could mean more than one thing, it asks.
 
 ### Sending email
 Ask in chat, for example "Email john@example.org that I'll be 10 minutes late",
@@ -290,7 +301,10 @@ message headers, not bodies), `gmail.compose` (create drafts), `gmail.readonly`
 Trash, labels), `gmail.send` (send one confirmed email at a time), and
 `calendar.events` (read, create, change and cancel events; it replaces the
 read-only Calendar scope used before stage 4). There is no permanent-delete,
-bulk, or general-purpose Gmail or Calendar operation anywhere.
+bulk, or general-purpose Gmail or Calendar operation anywhere. Google Keep is
+not supported (deferred): Google's Keep API is meant for Google Workspace
+organisations, and a personal Google account cannot be granted its `keep`
+scope (Google answers `invalid_scope`).
 
 **Reconnect after upgrading.** A connection made before the current permissions
 (stage 4) is treated as disconnected: the Inbox / Calendar box says K.R.I.S.

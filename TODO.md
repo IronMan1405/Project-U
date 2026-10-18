@@ -162,6 +162,15 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Review the Stage 4 diff and commit
 - [ ] Optional: personal Apple Mail/Calendar provider (needs its own approval)
 
+### 12. v1.3 Personal productivity completion
+- [x] Google Keep — **deferred, not done**: Google refuses the `keep` scope for personal Gmail accounts (`invalid_scope`; the API is Workspace/admin-only). The Keep code, scope and tests were removed and Google consent is back to version 4 (Gmail + Calendar), so no reconnect is needed. See `FUTURE.md`.
+- [x] Cross-tool workflows: separate confirmations per action, exact partial results, context across turns, failure recovery rules; per-request tool limit raised to 6; when a request cannot end with a model reply (model failure, round limit, cancellation), the fixed reply lists exactly which changes completed and which failed; tests
+- [x] UI: Utilities tab removed; Alerts moved into its tab position (Activity | Alerts)
+- [x] Restart the real K.R.I.S. so it runs the rolled-back code, and confirm Gmail and Calendar show as connected without a reconnect (verified 2026-10-18: connected, 8 capabilities, no reconnect)
+- [x] Review the v1.3 diff and commit
+- [ ] v1.2 remaining: wake word (after v1.3)
+- [ ] v1.4: long-term memory (not started)
+
 ## Scope Rules
 - One feature at a time.
 - Keep the project local-first.

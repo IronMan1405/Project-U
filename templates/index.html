@@ -101,11 +101,6 @@
           </div>
         </section>
 
-        <section class="panel panel-alerts" data-section="ALR·03" aria-labelledby="alerts-heading">
-          <h2 class="panel-title" id="alerts-heading">Alerts <span class="tab-count" id="alerts-count"></span></h2>
-          <ul class="alert-list" id="alert-list"></ul>
-          <p class="panel-empty" id="alerts-empty">No alerts.</p>
-        </section>
       </aside>
 
       <!-- Centre: the K.R.I.S. core. Nothing else renders here, so navigation never replaces it. -->
@@ -299,18 +294,17 @@
         </section>
 
         <section class="panel tab-panel-group panel-lower" data-section="OPS·06" data-tabs>
-          <div class="panel-tabs" role="tablist" aria-label="Activity and utilities">
+          <div class="panel-tabs" role="tablist" aria-label="Activity and alerts">
             <button class="panel-tab" type="button" role="tab" id="tab-activity" aria-controls="pane-activity" aria-selected="true">Activity</button>
-            <button class="panel-tab" type="button" role="tab" id="tab-utilities" aria-controls="pane-utilities" aria-selected="false" tabindex="-1">Utilities</button>
+            <button class="panel-tab" type="button" role="tab" id="tab-alerts" aria-controls="pane-alerts" aria-selected="false" tabindex="-1">Alerts <span class="tab-count" id="alerts-count"></span></button>
           </div>
           <div class="tab-pane" role="tabpanel" id="pane-activity" aria-labelledby="tab-activity">
             <div class="tool-activity" id="tool-activity" role="status" aria-live="polite" hidden></div>
             <p class="panel-empty tool-activity-empty">No tool activity for the latest request.</p>
           </div>
-          <div class="tab-pane" role="tabpanel" id="pane-utilities" aria-labelledby="tab-utilities" hidden>
-            <p class="utility-hint">Use Chat, Tasks, Notes and Files above. In chat, K.R.I.S. can also search approved
-              folders, open files, apps and websites, and report system information, asking for your
-              confirmation where required.</p>
+          <div class="tab-pane" role="tabpanel" id="pane-alerts" aria-labelledby="tab-alerts" hidden>
+            <ul class="alert-list" id="alert-list"></ul>
+            <p class="panel-empty" id="alerts-empty">No alerts.</p>
           </div>
         </section>
       </section>
