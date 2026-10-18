@@ -52,8 +52,15 @@ in `TODO.md`.
   to continue; it does not listen by itself while a confirmation is pending.
   Speech can be stopped with the Stop speaking button or interrupted by tapping
   the mic, but not by simply talking over it (there is no always-on listening
-  during playback), there is no wake word, and U cannot be interrupted while it
-  is generating a reply (the mic is disabled until the reply is ready).
+  during playback), and U cannot be interrupted while it is generating a reply
+  (the mic is disabled until the reply is ready).
+- Wake word ("Kris"): "Chris" said alone also wakes it (the names sound the
+  same); the name must be said on its own with a pause; it runs only while the
+  page is visible and starts off on each page load; the energy gate is not speech
+  detection, so short non-name sounds in a noisy room cause extra local checks;
+  each check reloads the whisper model (a resident model or a dedicated keyword
+  model, e.g. a custom-trained one, could cut latency and false activations
+  later). Not yet verified with a real microphone across rooms and voices.
 - Resuming listening without a tap relies on the browser keeping microphone
   permission for the page (verified in Chrome and Safari); a browser that asks
   again, or refuses without a fresh tap, stops the loop with "The microphone could

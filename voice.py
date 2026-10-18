@@ -1,4 +1,5 @@
-"""Local push-to-talk speech: whisper.cpp transcription and macOS `say` speech output.
+"""Local push-to-talk speech: whisper.cpp transcription and macOS `say` speech output,
+plus the local check behind the "Kris" wake word.
 
 Audio and text exist only inside a private temporary directory for the duration of one
 request and are never logged or stored. External programs run from configured absolute
@@ -33,6 +34,17 @@ DEFAULT_MIN_RECORDING_MS = 600
 END_SILENCE_MS_RANGE = (500, 4000)
 MIN_RECORDING_MS_RANGE = (200, 3000)
 NO_SPEECH_TIMEOUT_MS = 6000
+# Wake word ("Kris", said like "Chris"). In standby the browser sends only short, isolated
+# sounds (at most WAKE_MAX_CLIP_SECONDS) as 16 kHz WAV; whisper.cpp transcribes the clip here
+# and only a clip that is just the name (optionally after "hey"/"okay") counts. The text is
+# never returned, logged, or kept. "Kris" and "Chris" sound the same, so whisper may write
+# either; similar words it writes differently ("crisis", "Christmas", "kiss") do not count.
+WAKE_MAX_CLIP_SECONDS = 2.5
+MAX_WAKE_AUDIO_BYTES = 128 * 1024  # 16 kHz 16-bit mono: about 4 s, so a 2.5 s clip fits
+WAKE_NAMES = frozenset({"kris", "chris", "cris", "kriss", "chriss", "krys"})
+_WAKE_LEADING = frozenset({"hey", "hi", "okay", "ok", "oh", "um", "uh", "yo"})
+DEFAULT_WAKE_FOLLOW_UP_SECONDS = 8
+WAKE_FOLLOW_UP_SECONDS_RANGE = (3, 30)
 # Loudness check on the converted 16 kHz mono WAV, before whisper.cpp runs (whisper
 # transcribes silence as "you"). A recording counts as speech only if at least
 # MIN_SPEECH_SECONDS of 30 ms windows reach SPEECH_LEVEL_DBFS. The threshold sits just
@@ -49,6 +61,8 @@ AUDIO_FORMATS = {
     "audio/webm": (".webm", "matroska", lambda data: data[:4] == b"\x1a\x45\xdf\xa3"),
     "audio/ogg": (".ogg", "ogg", lambda data: data[:4] == b"OggS"),
     "audio/mp4": (".m4a", "mov", lambda data: data[4:8] == b"ftyp"),
+    # Wake-word clips, encoded in the page from its standby buffer.
+    "audio/wav": (".wav", "wav", lambda data: data[:4] == b"RIFF" and data[8:12] == b"WAVE"),
 }
 _NON_SPEECH_MARKER = re.compile(r"\[[^\]]*\]")
 VOICE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ()._'-]{0,63}$")
@@ -80,6 +94,9 @@ class VoiceSettings:
     speech_output: bool = False
     end_silence_ms: int = DEFAULT_END_SILENCE_MS
     min_recording_ms: int = DEFAULT_MIN_RECORDING_MS
+    # How long a conversation started by the wake word waits for you to speak (after the
+    # acknowledgment, and after each reply) before returning to wake-word standby.
+    wake_follow_up_seconds: int = DEFAULT_WAKE_FOLLOW_UP_SECONDS
 
     @property
     def stt_available(self) -> bool:
@@ -139,9 +156,20 @@ def build_voice_settings(values: dict[str, str], base_directory: Path) -> VoiceS
     if min_recording_ms >= max_seconds * 1000:
         logger.warning("Voice: min_recording_ms must be shorter than max_seconds; using the default.")
         min_recording_ms = min(DEFAULT_MIN_RECORDING_MS, max_seconds * 500)
+    try:
+        wake_follow_up = int(values.get("wake_follow_up_seconds", DEFAULT_WAKE_FOLLOW_UP_SECONDS))
+    except ValueError:
+        logger.warning("Voice: wake_follow_up_seconds must be a whole number; using the default.")
+        wake_follow_up = DEFAULT_WAKE_FOLLOW_UP_SECONDS
+    low, high = WAKE_FOLLOW_UP_SECONDS_RANGE
+    wake_follow_up = min(max(wake_follow_up, low), high)
+    if wake_follow_up >= max_seconds:
+        # The recording's hard limit would end it first and upload silence.
+        logger.warning("Voice: wake_follow_up_seconds must be shorter than max_seconds; shortening it.")
+        wake_follow_up = max(max_seconds - 1, 1)
     return VoiceSettings(
         ffmpeg, whisper_cli, model, voice, language, max_seconds, speech_output,
-        end_silence_ms, min_recording_ms,
+        end_silence_ms, min_recording_ms, wake_follow_up,
     )
 
 
@@ -219,7 +247,7 @@ def speech_level(wav_path: Path) -> tuple[float, float]:
     return loud_windows * size / rate, loudest_db
 
 
-def transcribe(settings: VoiceSettings, audio: bytes, mime_type: str) -> str:
+def transcribe(settings: VoiceSettings, audio: bytes, mime_type: str, max_seconds: float | None = None) -> str:
     """Convert one browser recording to 16 kHz mono WAV with FFmpeg and transcribe it."""
     if not settings.stt_available:
         raise VoiceUnavailable("Local speech recognition is not configured.")
@@ -238,7 +266,7 @@ def transcribe(settings: VoiceSettings, audio: bytes, mime_type: str) -> str:
         _run(
             [
                 str(settings.ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-f", demuxer, "-i", str(source), "-t", str(settings.max_seconds),
+                "-f", demuxer, "-i", str(source), "-t", str(max_seconds or settings.max_seconds),
                 "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y", str(speech),
             ],
             CONVERT_TIMEOUT_SECONDS,
@@ -294,6 +322,29 @@ def classify_reply(text: str) -> str | None:
         if candidate in _AFFIRM_PHRASES:
             return "affirm"
     return None
+
+
+def is_wake_phrase(text: str) -> bool:
+    """True only for a transcript that is just the name: "Kris", "Chris.", "Hey Kris!"."""
+    words = re.findall(r"[a-z]+", (text or "").casefold())
+    while words and words[0] in _WAKE_LEADING:
+        words = words[1:]
+    return len(words) == 1 and words[0] in WAKE_NAMES
+
+
+def detect_wake_word(settings: VoiceSettings, audio: bytes) -> bool:
+    """Transcribe one short standby clip locally and report only whether it was the name."""
+    if len(audio) > MAX_WAKE_AUDIO_BYTES:
+        raise VoiceError("The wake-word clip is too long.")
+    try:
+        text = transcribe(settings, audio, "audio/wav", max_seconds=WAKE_MAX_CLIP_SECONDS)
+    except VoiceUnavailable:
+        raise
+    except VoiceError as error:
+        if str(error) == NO_SPEECH_MESSAGE:
+            return False  # too quiet, or whisper heard nothing
+        raise
+    return is_wake_phrase(text)
 
 
 def synthesize(settings: VoiceSettings, text: str) -> tuple[bytes, bool]:

@@ -572,15 +572,15 @@ message box for you to send, and the loop stops.
 
 **Voice indicator and Stop speaking.** Whenever voice is available, a small
 indicator above the message box shows what U is doing: Listening, Transcribing,
-Thinking, Speaking, Waiting for confirmation, Hands-free paused, or Error (the
+Thinking, Speaking, Waiting for confirmation, Hands-free paused, Standby (wake
+word; see below), or Error (the
 status line next to the toggles still gives the details). Screen readers hear
 each change once. While U is speaking a reply, prompt, or error, a **Stop
 speaking** button appears (it works with the keyboard too). It stops the audio
 at once; in Hands-free mode U then starts listening for your next words, exactly
 as if the reply had finished, except while an action waits for confirmation,
-when it keeps waiting. In Review mode it only stops the audio. This loop is the only
-continuous-conversation feature: there is no wake word, U cannot be interrupted
-while it is generating a reply, and replies are not streamed.
+when it keeps waiting. In Review mode it only stops the audio. U cannot be interrupted while it is
+generating a reply, and replies are not streamed.
 
 **Interrupting a spoken reply (barge-in).** You do not have to wait for U to
 finish speaking. In Hands-free mode, while a reply is being spoken the mic button
@@ -601,6 +601,51 @@ Keyboard shortcuts apply only to the focused mic and Stop speaking buttons, so
 typing in the message box (including spaces) never interrupts or records.
 While U is still generating a reply (Thinking) the mic is disabled: generation
 cannot be interrupted, so wait for the reply and interrupt it while it is spoken.
+
+**Wake word ("Kris").** Switch on **Wake word** (next to Hands-free; it turns
+Hands-free on too) and say "Kris", like the name Chris, on its own. K.R.I.S.
+answers "Yes?" and listens for your request exactly as if you had tapped the
+mic; the conversation then continues hands-free (barge-in, Stop speaking and
+confirmations work as above). When you have not said anything for
+`wake_follow_up_seconds` (default 8, range 3–30, and shorter than `max_seconds`)
+after the acknowledgment or a reply, it goes back to standby. Saying "Hey Kris"
+or "Okay Kris" also works.
+
+How it is recognised: in standby the page watches the microphone level only. A
+short sound on its own (about 0.15–1.4 seconds, with a pause before and after)
+is sent as a clip to the local K.R.I.S. server, where the same local
+whisper.cpp model transcribes it; it wakes only if the clip is just the name.
+The server answers only yes or no: the clip and its text are discarded and never
+shown, stored or logged. Longer speech never leaves the page. Nothing is sent to
+any other service.
+
+The indicator shows **Standby · say "Kris"** with a hollow dot while it is
+monitoring, and Listening with a solid pulsing dot only when your words are
+actually being recorded. While standby is on, the macOS microphone indicator
+stays on. Standby pauses (and releases the microphone) whenever K.R.I.S. is
+recording, transcribing, speaking or in a conversation, so its own voice cannot
+wake it, and resumes afterwards.
+
+Limits, honestly:
+- "Kris" and "Chris" sound the same, so saying "Chris" on its own will also wake
+  it. Mentioning Chris in a sentence ("I called Chris yesterday") does not.
+- It can miss the name if you run it into other words ("Kris what's the time"):
+  say the name, pause briefly, then speak after "Yes?". Very quiet speech, or
+  speech in steady loud noise, can also be missed.
+- Other short words heard as the name can wake it occasionally; switch it off
+  when you do not want to be listened to.
+- It works only while the K.R.I.S. page is open and visible (an unfocused but
+  visible window is fine). A hidden or minimised window, another tab, or a locked
+  or sleeping Mac pauses it; it resumes when the page is visible again, if the
+  microphone is still available.
+- It starts switched off every time the page loads (browsers only allow audio
+  processing after a click); switch it on again after relaunching.
+- If microphone access is denied, the microphone disconnects, or local
+  recognition stops responding, Wake word switches itself off with an alert and
+  never turns itself back on; switch it on again to retry.
+- Each checked clip runs whisper.cpp once (about a quarter of a second on an
+  Apple Silicon Mac, with a brief memory peak while the model loads); the
+  standby level check itself is light.
 
 The detector runs in the browser on the same microphone stream that is
 recorded. It compares loudness with the noise level measured at the start of

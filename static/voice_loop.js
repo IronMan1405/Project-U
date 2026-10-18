@@ -11,7 +11,7 @@
 //   speaking               the reply is being spoken
 //   awaiting_confirmation  an action waits for Confirm/Cancel; no automatic listening
 //
-// The loop only ever starts from a user tap ("start"). It resumes listening only after a
+// The loop only ever starts from a user tap or a recognised wake word ("start"). It resumes listening only after a
 // completed reply (when its playback ends, when the user stops it with Stop Speaking, or at
 // once if nothing is spoken), and stops on any failure, on Hands-free being switched off, on
 // the page being hidden, or after repeated silence, so it can never retry by itself in a loop.
@@ -39,7 +39,10 @@
   const PAUSE_KINDS = { silence: "paused", kept_for_review: "paused" };
 
   function createVoiceLoop() {
-    return { state: "off", silences: 0, turn: 0, notice: null, confirmationPending: false };
+    return {
+      state: "off", silences: 0, turn: 0, notice: null, confirmationPending: false,
+      maxSilences: MAX_CONSECUTIVE_SILENCES,
+    };
   }
 
   // confirmationPending: an action is still waiting for Confirm/Cancel while the user records
@@ -75,8 +78,14 @@
   function reduce(loop, event) {
     const active = ACTIVE.has(loop.state);
     switch (event.type) {
-      case "start": // the user tapped the mic in Hands-free mode (also to barge in on a reply)
-        return go(loop, "listening", [], { silences: 0 });
+      case "start": {
+        // The user tapped the mic in Hands-free mode (also to barge in on a reply), or the wake
+        // word started a conversation; that one passes maxSilences: 1, so one silent listening
+        // window ends it and the page returns to wake-word standby.
+        const maxSilences = Number.isInteger(event.maxSilences) && event.maxSilences > 0
+          ? event.maxSilences : MAX_CONSECUTIVE_SILENCES;
+        return go(loop, "listening", [], { silences: 0, maxSilences });
+      }
 
       case "disable": // Hands-free switched off (also clears any paused/error notice)
       case "page_hidden":
@@ -107,7 +116,7 @@
         // Nothing said while an action waits for confirmation: keep waiting, don't listen again.
         if (loop.confirmationPending) return go(loop, "awaiting_confirmation", [], { silences: 0 });
         const silences = loop.silences + 1;
-        if (silences >= MAX_CONSECUTIVE_SILENCES) return pause(loop, "silence");
+        if (silences >= (loop.maxSilences || MAX_CONSECUTIVE_SILENCES)) return pause(loop, "silence");
         return go(loop, "listening", [{ type: "start_listening" }], { silences });
       }
 
@@ -156,6 +165,7 @@
   //   transcribing  a recording is being transcribed
   //   busy          a chat or confirmation request is in flight
   //   error         an error message is showing
+  //   standby       wake-word standby holds the microphone (level only; see static/wake_word.js)
   // While the hands-free loop runs, its state wins; otherwise (Review mode, or the loop is
   // off) the page facts decide. Returns { state, label, canStopSpeaking }.
   const VIEW_LABELS = {
@@ -165,6 +175,7 @@
     thinking: "Thinking",
     speaking: "Speaking",
     awaiting_confirmation: "Waiting for confirmation",
+    standby: "Standby · say “Kris”",
     paused: "Hands-free paused",
     error: "Error",
   };
@@ -176,6 +187,7 @@
     else if (facts.recording) state = "listening";
     else if (facts.transcribing) state = "transcribing";
     else if (facts.busy) state = "thinking";
+    else if (facts.standby) state = "standby";
     else if (loop.notice) state = loop.notice.kind;
     else if (facts.error) state = "error";
     else state = "idle";

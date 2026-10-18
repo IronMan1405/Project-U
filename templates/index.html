@@ -10,6 +10,7 @@
   <script src="{{ url_for('static', filename='vendor/purify.min.js') }}" defer></script>
   <script src="{{ url_for('static', filename='voice_activity.js') }}" defer></script>
   <script src="{{ url_for('static', filename='voice_loop.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='wake_word.js') }}" defer></script>
   <script src="{{ url_for('static', filename='telemetry_view.js') }}" defer></script>
   <script src="{{ url_for('static', filename='google_view.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
@@ -346,6 +347,10 @@
             <label class="speak-toggle" id="hands-free-label" hidden
               title="Send what you say automatically and speak the replies">
               <input type="checkbox" id="hands-free"> Hands-free
+            </label>
+            <label class="speak-toggle" id="wake-word-label" hidden
+              title="Listen locally for “Kris” while K.R.I.S. is open and visible; the macOS microphone indicator stays on">
+              <input type="checkbox" id="wake-word"> Wake word
             </label>
             <label class="speak-toggle" id="speak-toggle-label" hidden>
               <input type="checkbox" id="speak-replies"> Speak replies

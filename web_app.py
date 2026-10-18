@@ -347,6 +347,9 @@ def create_app(
             end_silence_ms=voice_settings.end_silence_ms,
             min_recording_ms=voice_settings.min_recording_ms,
             no_speech_timeout_ms=voice.NO_SPEECH_TIMEOUT_MS,
+            wake_word=voice_settings.stt_available,
+            wake_follow_up_ms=voice_settings.wake_follow_up_seconds * 1000,
+            wake_max_clip_ms=int(voice.WAKE_MAX_CLIP_SECONDS * 1000),
         )
 
     @app.post("/api/voice/transcribe")
@@ -377,6 +380,33 @@ def create_app(
         # reply_kind lets the page treat a bare "yes"/"no" specially while a confirmation is
         # pending; the server never approves or cancels anything based on it.
         return jsonify(text=text, reply_kind=voice.classify_reply(text))
+
+    @app.post("/api/voice/wake")
+    def voice_wake():
+        # Standby wake-word check: one short clip in, only {"wake": bool} out. The transcript
+        # stays inside voice.detect_wake_word and is never returned or logged.
+        if not voice_settings.stt_available:
+            return jsonify(error="Local speech recognition is not configured."), 503
+        recording = request.files.get("audio")
+        if recording is None:
+            return jsonify(error="Send the clip as the audio field."), 400
+        try:
+            audio = recording.stream.read(voice.MAX_WAKE_AUDIO_BYTES + 1)
+        except OSError:
+            return jsonify(error="The clip could not be read."), 400
+        finally:
+            recording.close()
+        if len(audio) > voice.MAX_WAKE_AUDIO_BYTES:
+            return jsonify(error="The wake-word clip is too long."), 413
+        if not transcription_slot.acquire(blocking=False):
+            return jsonify(wake=False, busy=True), 429
+        try:
+            wake = voice.detect_wake_word(voice_settings, audio)
+        except VoiceError as error:
+            return voice_error_response(error)
+        finally:
+            transcription_slot.release()
+        return jsonify(wake=wake)
 
     @app.post("/api/voice/speak")
     def voice_speak():

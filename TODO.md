@@ -130,7 +130,7 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Barge-in `node:test` tests; live browser regression with real Gemma
 - [x] Check barge-in in Chrome and Safari (tap, keyboard, confirmation prompt, Review mode)
 - [x] Review the barge-in diff and commit
-- [ ] Optional wake-word support (last; needs its own decision)
+- [x] Wake word "Kris" (v1.2, see section 13)
 
 ### 9. K.R.I.S. UI Refactor
 - [x] Milestone 1: command-center shell (energy core with state-driven looks, system status with honest hardware placeholder, alerts, activity log, utilities, persistent command bar, design tokens, responsive layout)
@@ -168,8 +168,28 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] UI: Utilities tab removed; Alerts moved into its tab position (Activity | Alerts)
 - [x] Restart the real K.R.I.S. so it runs the rolled-back code, and confirm Gmail and Calendar show as connected without a reconnect (verified 2026-10-18: connected, 8 capabilities, no reconnect)
 - [x] Review the v1.3 diff and commit
-- [ ] v1.2 remaining: wake word (after v1.3)
+- [x] v1.2 remaining: wake word (after v1.3) — implemented, see section 13
 - [ ] v1.4: long-term memory (not started)
+
+### 13. v1.2 Wake word ("Kris")
+- [x] Detector chosen: browser energy gate for short isolated sounds + local whisper.cpp name check (`/api/voice/wake`, answers only yes/no); no new dependencies
+- [x] `static/wake_word.js` state machine (off, starting, standby, checking, activating, active, paused, denied, error) and burst detector; `static/wake_capture.js` AudioWorklet
+- [x] Microphone handoff: standby releases its stream before the "Yes?" acknowledgment; the hands-free loop then opens its own (one consumer at a time); standby paused while recording, transcribing or speaking
+- [x] Configurable follow-up timeout (`wake_follow_up_seconds`), Standby indicator, Wake word toggle, alerts for denied/lost/failing
+- [x] Python and `node:test` tests; synthetic-audio end-to-end check in the browser (fake microphone fed by `say`)
+- [ ] Manual tests with a real microphone (none done yet):
+  - [x] Say "Kris" naturally 20 times at normal distance: count activations (target: at least 18)
+  - [x] Vary it: quieter, from across the room, faster, "Hey Kris", with a fan or music on: note misses
+  - [x] False activations: 10 minutes of ordinary talk or a podcast nearby, plus "Christmas", "crisis", "kiss", "Chris is here", and "Chris" alone (expected to wake: same sound)
+  - [x] Standby to conversation: "Kris", "Yes?", then a request is answered by voice
+  - [x] Three interactions in a row without touching anything
+  - [x] With speakers loud, ask for a reply that contains "Chris": it must not wake itself
+  - [x] Barge-in (tap during a reply) and Stop speaking inside a wake-word conversation
+  - [x] Switch Wake word off: the macOS microphone indicator goes off and "Kris" does nothing; switch it on again
+  - [x] Deny microphone access in Chrome site settings; unplug a USB/Bluetooth microphone during standby
+  - [x] Unfocused but visible window (should work); minimised/hidden window, another tab, relaunch (starts off), lock and sleep the Mac then wake it
+  - [x] Standby CPU and memory: Chrome's Task Manager for the K.R.I.S. tab and Activity Monitor for the Python server, idle in standby for 5 minutes and while talking nearby
+- [x] Review the wake-word diff and commit
 
 ## Scope Rules
 - One feature at a time.

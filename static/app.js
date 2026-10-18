@@ -11,6 +11,8 @@ const speakToggle = document.querySelector("#speak-replies");
 const speakToggleLabel = document.querySelector("#speak-toggle-label");
 const handsFreeToggle = document.querySelector("#hands-free");
 const handsFreeLabel = document.querySelector("#hands-free-label");
+const wakeToggle = document.querySelector("#wake-word");
+const wakeLabel = document.querySelector("#wake-word-label");
 const voiceBar = document.querySelector("#voice-bar");
 const voiceIndicator = document.querySelector("#voice-indicator");
 const voiceIndicatorLabel = document.querySelector("#voice-indicator-label");
@@ -118,6 +120,14 @@ let replyFinish = null; // resolves the current speakReply() promise
 const SPEAK_BUSY_RETRIES = 12; // up to about 3 s for the previous synthesis to finish
 const SPEAK_BUSY_RETRY_MS = 250;
 let voiceLoop = window.VoiceLoop.createVoiceLoop();
+// Wake word (static/wake_word.js decides; this carries out its actions). wakeConversation is
+// true while the hands-free conversation it started is running.
+let wake = window.WakeWord.createWakeState();
+let wakeConversation = false;
+let standby = null; // wake-word standby's { stream, track, source, node, onEnded }
+let standbySession = 0;
+let wakeWorkletReady = null;
+let wakeSyncing = false;
 
 // The hands-free loop (static/voice_loop.js) decides when to listen again; this reports
 // events to it and carries out its actions. Events from the wrong state are ignored there.
@@ -139,12 +149,14 @@ function dispatchLoop(event) {
 let renderedVoiceState = "idle";
 function renderVoiceView() {
   const voiceAvailable = !micButton.hidden || !speakToggleLabel.hidden;
+  syncWake();
   const view = window.VoiceLoop.viewState(voiceLoop, {
     speaking: replyFinish !== null,
     recording: recorder !== null || startPending,
     transcribing,
     busy: isSending || confirmationResolving,
     error: !errorMessage.hidden,
+    standby: window.WakeWord.capturing(wake),
   });
   const state = voiceAvailable ? view.state : "idle";
   if (state !== renderedVoiceState) {
@@ -160,7 +172,8 @@ function renderVoiceView() {
   updateMicLabel(!hideStop);
   voiceBar.classList.toggle("is-active", state !== "idle" || !hideStop);
   renderCore(view.state);
-  setTelemetry(coreMode, handsFreeToggle.checked ? "Hands-free" : "Review", handsFreeToggle.checked ? "active" : "");
+  const mode = window.WakeWord.enabled(wake) ? "Wake word" : handsFreeToggle.checked ? "Hands-free" : "Review";
+  setTelemetry(coreMode, mode, mode === "Review" ? "" : "active");
   renderAlerts();
 }
 
@@ -199,6 +212,7 @@ function renderAlerts() {
   if (assistantOnline === false) alerts.push(["danger", "Model", healthLabel.title || healthLabel.textContent]);
   if (!errorMessage.hidden && errorMessage.textContent) alerts.push(["danger", "Error", errorMessage.textContent]);
   if (!confirmationPanel.hidden) alerts.push(["warning", "Needs approval", confirmationSummary.textContent]);
+  if (wake.message && !window.WakeWord.enabled(wake)) alerts.push(["danger", "Wake word", wake.message]);
   if (voiceLoop.notice) alerts.push([voiceLoop.notice.kind === "error" ? "danger" : "warning", "Hands-free", voiceLoop.notice.message]);
   const key = JSON.stringify(alerts);
   if (key === renderedAlerts) return;
@@ -1073,6 +1087,7 @@ async function loadVoiceStatus() {
   micButton.hidden = !(voiceStatus.speech_input && canRecord);
   speakToggleLabel.hidden = !voiceStatus.speech_output;
   handsFreeLabel.hidden = micButton.hidden;
+  wakeLabel.hidden = micButton.hidden || !voiceStatus.wake_word;
   renderVoiceView();
 }
 
@@ -1172,7 +1187,8 @@ function startLevelMonitor(stream, session) {
   const detector = window.VoiceActivity.createEndOfSpeechDetector({
     endSilenceMs: voiceStatus.end_silence_ms,
     minRecordingMs: voiceStatus.min_recording_ms,
-    noSpeechTimeoutMs: voiceStatus.no_speech_timeout_ms,
+    // A conversation started by the wake word waits wake_follow_up_ms, then returns to standby.
+    noSpeechTimeoutMs: wakeConversation ? voiceStatus.wake_follow_up_ms : voiceStatus.no_speech_timeout_ms,
     maxMs: voiceStatus.max_seconds * 1000,
   });
   const samples = new Float32Array(analyser.fftSize);
@@ -1203,7 +1219,7 @@ async function startRecording(autoStop) {
   stopReplyAudio();
   const session = ++listeningSession;
   startPending = true;
-  renderVoiceView();
+  renderVoiceView(); // also releases wake-word standby's microphone before this one opens
   cancelPendingStart = false;
   autoStopRecording = autoStop;
   let stream;
@@ -1451,7 +1467,9 @@ function micPressStart() {
   pressStartedAt = performance.now();
   micHeld = true;
   if (handsFree) {
-    dispatchLoop({ type: "start" }); // only a user tap ever starts the hands-free loop
+    // Only a user tap (or the wake word) starts the hands-free loop; a tap during a wake-word
+    // conversation keeps its shorter silence limit.
+    dispatchLoop({ type: "start", ...(wakeConversation ? { maxSilences: 1 } : {}) });
     ensureAudioContext();
     // Holding the button means manual control: automatic stopping is switched off.
     holdTimer = window.setTimeout(() => {
@@ -1502,11 +1520,15 @@ micButton.addEventListener("keyup", (event) => {
   if (event.key === " " || event.key === "Enter") micPressEnd();
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "hidden") return;
+  if (document.visibilityState !== "hidden") {
+    renderVoiceView(); // wake-word standby resumes when the page is visible again
+    return;
+  }
   if (recorder || startPending) stopRecording("page_hidden");
   dispatchLoop({ type: "page_hidden" });
 });
 window.addEventListener("pagehide", () => {
+  closeStandby();
   if (recorder || startPending) stopRecording("page_hidden");
   dispatchLoop({ type: "page_hidden" });
   teardownRecording();
@@ -1542,6 +1564,9 @@ function updateMicLabel(speaking = false) {
 handsFreeToggle.addEventListener("change", () => {
   updateMicLabel();
   if (!handsFreeToggle.checked) {
+    // The wake word starts hands-free conversations, so it switches off with Hands-free.
+    wakeConversation = false;
+    dispatchWake({ type: "disable" });
     dispatchLoop({ type: "disable" });
     voiceTurn = false;
     stopReplyAudio();
@@ -1550,6 +1575,197 @@ handsFreeToggle.addEventListener("change", () => {
     handsFreeToggle.checked ? "Hands-free: tap the mic and speak; it stops when you pause and sends." : "",
   );
   renderVoiceView(); // display only: the core's MODE readout
+});
+
+// --- Wake word ("Kris") ---------------------------------------------------------------
+// Standby holds its own microphone stream only while static/wake_word.js allows it (page
+// visible, no recording, transcription, spoken reply or hands-free conversation). On the wake
+// word it releases that stream before the acknowledgment plays, and the existing hands-free
+// loop then opens the microphone as if the mic had been tapped, so there is only ever one
+// consumer and K.R.I.S.'s own speech is never heard by standby.
+const WAKE_ACK_TEXT = "Yes?";
+const WAKE_RING_SECONDS = 3;
+
+function wakeFacts() {
+  return {
+    visible: document.visibilityState !== "hidden",
+    recording: recorder !== null || startPending,
+    transcribing,
+    speaking: replyFinish !== null,
+    conversation: voiceLoop.state !== "off",
+  };
+}
+
+function dispatchWake(event) {
+  const result = window.WakeWord.reduce(wake, event);
+  wake = result.wake;
+  for (const action of result.actions) {
+    if (action.type === "open_capture") openStandby();
+    else if (action.type === "stop_capture") closeStandby();
+    else if (action.type === "check_clip") checkWakeClip(action.clip);
+    else if (action.type === "acknowledge") acknowledgeWake();
+    else if (action.type === "start_conversation") startWakeConversation();
+    else if (action.type === "notify") setVoiceState(action.message);
+  }
+  wakeToggle.checked = window.WakeWord.enabled(wake);
+  renderVoiceView();
+}
+
+// Moves standby in or out of the microphone as page facts change; called on every voice
+// render. Re-entrant calls (from the dispatches below) are skipped.
+function syncWake() {
+  if (wakeSyncing) return;
+  wakeSyncing = true;
+  try {
+    const facts = wakeFacts();
+    const allowed = window.WakeWord.standbyAllowed(facts);
+    if (wake.state === "active" && voiceLoop.state === "off" && !facts.recording && !facts.transcribing &&
+        !facts.speaking && !isSending) {
+      wakeConversation = false;
+      // The conversation ended (silence, an error, or typing took over): clear the
+      // "Hands-free paused" notice, since standby is what happens next.
+      const notice = voiceLoop.notice;
+      if (notice) dispatchLoop({ type: "disable" });
+      if (notice?.kind === "error") logActivity(notice.message, "danger");
+      dispatchWake({ type: "conversation_ended", allowed });
+      if (allowed) setVoiceState("Back to standby. Say “Kris” when you need me.");
+    } else if (window.WakeWord.capturing(wake) && !allowed) {
+      dispatchWake({ type: "suspend" });
+    } else if (wake.state === "paused" && allowed) {
+      dispatchWake({ type: "resume" });
+    }
+  } finally {
+    wakeSyncing = false;
+  }
+}
+
+async function openStandby() {
+  const session = ++standbySession;
+  if (!audioContext?.audioWorklet || typeof AudioWorkletNode === "undefined") {
+    dispatchWake({ type: "unsupported" });
+    return;
+  }
+  let stream;
+  try {
+    wakeWorkletReady ||= audioContext.audioWorklet.addModule("/static/wake_capture.js");
+    await wakeWorkletReady;
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (error) {
+    if (error?.name !== "NotAllowedError" && error?.name !== "SecurityError") wakeWorkletReady = null;
+    if (session === standbySession) {
+      dispatchWake({ type: "capture_failed", denied: error?.name === "NotAllowedError" || error?.name === "SecurityError" });
+    }
+    return;
+  }
+  if (session !== standbySession || wake.state !== "starting") {
+    stream.getTracks().forEach((track) => track.stop()); // switched off or suspended meanwhile
+    return;
+  }
+  let source;
+  let node;
+  try {
+    if (audioContext.state === "suspended") await audioContext.resume();
+    source = audioContext.createMediaStreamSource(stream);
+    node = new AudioWorkletNode(audioContext, "wake-capture");
+    source.connect(node);
+    node.connect(audioContext.destination); // the worklet outputs silence; this keeps it running
+  } catch {
+    stream.getTracks().forEach((track) => track.stop());
+    if (session === standbySession) dispatchWake({ type: "capture_failed", denied: false });
+    return;
+  }
+  const rate = audioContext.sampleRate;
+  const ring = window.WakeWord.createSampleRing(rate, WAKE_RING_SECONDS);
+  const detector = window.WakeWord.createBurstDetector();
+  const track = stream.getAudioTracks()[0] || null;
+  const onEnded = () => {
+    if (session === standbySession) dispatchWake({ type: "capture_lost" });
+  };
+  track?.addEventListener("ended", onEnded);
+  node.port.onmessage = (event) => {
+    if (session !== standbySession) return;
+    ring.push(event.data);
+    const burst = detector.update(window.VoiceActivity.rmsDb(event.data), (ring.written / rate) * 1000);
+    if (!burst || wake.state !== "standby") return;
+    const samples = ring.slice(Math.floor((burst.startMs / 1000) * rate), Math.ceil((burst.endMs / 1000) * rate));
+    const clip = window.WakeWord.encodeWav(window.WakeWord.downsample(samples, rate, 16000), Math.min(rate, 16000));
+    dispatchWake({ type: "burst", clip });
+  };
+  standby = { stream, track, source, node, onEnded };
+  dispatchWake({ type: "capture_started" });
+}
+
+function closeStandby() {
+  standbySession += 1;
+  if (!standby) return;
+  const { stream, track, source, node, onEnded } = standby;
+  standby = null;
+  track?.removeEventListener("ended", onEnded);
+  node.port.onmessage = null;
+  try {
+    source.disconnect();
+    node.disconnect();
+  } catch {
+    // already disconnected
+  }
+  stream.getTracks().forEach((item) => item.stop());
+}
+
+async function checkWakeClip(clip) {
+  let result;
+  try {
+    const formData = new FormData();
+    formData.append("audio", new Blob([clip], { type: "audio/wav" }), "wake.wav");
+    const response = await fetch("/api/voice/wake", { method: "POST", body: formData });
+    if (response.status === 429) {
+      result = { type: "check_result", wake: false }; // busy transcribing something else
+    } else if (!response.ok) {
+      result = { type: "check_failed" };
+    } else {
+      result = { type: "check_result", wake: Boolean((await response.json()).wake) };
+    }
+  } catch {
+    result = { type: "check_failed" };
+  }
+  dispatchWake(result);
+}
+
+async function acknowledgeWake() {
+  logActivity("Wake word heard");
+  setVoiceState(WAKE_ACK_TEXT);
+  if (voiceStatus.speech_output) await speakReply(WAKE_ACK_TEXT);
+  // A short pause so the end of the acknowledgment is not at the start of the recording.
+  await new Promise((resolve) => window.setTimeout(resolve, 150));
+  dispatchWake({ type: "acknowledged" });
+}
+
+function startWakeConversation() {
+  wakeConversation = true;
+  voiceTurn = true;
+  dispatchLoop({ type: "start", maxSilences: 1 });
+  startRecording(true).then((result) => {
+    if (result === "failed") dispatchLoop({ type: "listen_failed" });
+    else if (result === "cancelled") dispatchLoop({ type: "stopped_by_user" });
+  });
+}
+
+wakeToggle.addEventListener("change", () => {
+  if (!wakeToggle.checked) {
+    wakeConversation = false;
+    dispatchWake({ type: "disable" });
+    setVoiceState("Wake word off. The microphone is not monitored.");
+    return;
+  }
+  // The wake word starts hands-free conversations, so it needs Hands-free.
+  if (!handsFreeToggle.checked) {
+    handsFreeToggle.checked = true;
+    updateMicLabel();
+  }
+  ensureAudioContext(); // this click is the user gesture browsers require for audio processing
+  dispatchWake({ type: "enable", allowed: window.WakeWord.standbyAllowed(wakeFacts()) });
+  if (wake.state === "paused") setVoiceState("Wake word on; standby starts when K.R.I.S. is idle.");
 });
 
 async function resolvePendingAction(approved) {
