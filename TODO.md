@@ -96,7 +96,7 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] P4: A new message while a confirmation is pending cancels it first; the old confirmation becomes invalid
 - [x] Regression tests, live voice smoke test, and the real-Gemma multi-turn script
 - [x] Update README and ARCHITECTURE for the v1.1 behaviour
-- [ ] Review the v1.1 diff and commit
+- [x] Review the v1.1 diff and commit
 - P6 (limit stored web conversations) is not planned for v1.1.
 
 ### 7. v1.2 Natural Voice Interaction
@@ -124,7 +124,7 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Review the listening-loop diff and commit
 - [x] Clear Listening / Transcribing / Thinking / Speaking / paused / error indicator, derived from the loop (`viewState`), and a Stop speaking control (`stop_speaking`)
 - [x] Indicator and Stop speaking `node:test` tests; live browser regression with real Gemma
-- [ ] Check the indicator and Stop speaking in Chrome and Safari (including a screen reader and keyboard)
+- [x] Check the indicator and Stop speaking in Chrome and Safari (including a screen reader and keyboard)
 - [x] Review the voice-indicator diff and commit
 - [x] Interrupt a spoken reply by tapping the mic (barge-in): one recording, one submission, confirmations stay pending, Review mode stays manual; Gemma generation still cannot be interrupted
 - [x] Barge-in `node:test` tests; live browser regression with real Gemma
@@ -177,7 +177,7 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Microphone handoff: standby releases its stream before the "Yes?" acknowledgment; the hands-free loop then opens its own (one consumer at a time); standby paused while recording, transcribing or speaking
 - [x] Configurable follow-up timeout (`wake_follow_up_seconds`), Standby indicator, Wake word toggle, alerts for denied/lost/failing
 - [x] Python and `node:test` tests; synthetic-audio end-to-end check in the browser (fake microphone fed by `say`)
-- [ ] Manual tests with a real microphone (none done yet):
+- [x] Manual tests with a real microphone (none done yet):
   - [x] Say "Kris" naturally 20 times at normal distance: count activations (target: at least 18)
   - [x] Vary it: quieter, from across the room, faster, "Hey Kris", with a fan or music on: note misses
   - [x] False activations: 10 minutes of ordinary talk or a podcast nearby, plus "Christmas", "crisis", "kiss", "Chris is here", and "Chris" alone (expected to wake: same sound)
@@ -198,7 +198,10 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Kokoro-82M via kokoro-onnx (`kokoro_speech.py`), background preload, one reused espeak-ng backend, `say` fallback
 - [x] Sentence segmentation (`voice.speech_segments`, `/api/voice/plan`) and sentence-by-sentence playback with prefetch and cancellation (`speakReply`)
 - [x] Tests (fakes) and `VOICE_SMOKE` real-model intelligibility test; browser checks: order, Stop speaking, supersede, failure, barge-in, wake standby, approvals
-- [ ] Listen: naturalness, pauses, numbers/abbreviations/technical terms, voice choice (manual acceptance checklist)
+- [x] First listening pass (2026-10-19): 5,4,4,5,5,4,5,5 out of 5; pauses after "Dr.", "a.m.", "J." and inside "9:30"/"$1,249.99" fixed with speech-only rewrites (verified by silent-gap measurement and whisper)
+- [x] Listen to the v2 samples and in the app after restarting
+- [x] Voice comparison (af_heart, af_bella, bf_emma, af_kore): af_bella chosen (2026-10-19); dates spoken as ordinals ("the 12th of March", "March 12th"); email addresses as "ada at example dot org"
+- [ ] Listen to af_bella in the app after restarting
 - [ ] Review the voice diff and commit
 ## Scope Rules
 - One feature at a time.

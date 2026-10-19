@@ -37,8 +37,10 @@ in `TODO.md`.
   not streamed); streaming the model's text into the sentence pipeline would cut
   the wait further.
 - Kokoro: one voice per server (`kokoro_voice`); English only as configured;
-  pronunciation comes from espeak-ng, so unusual names and acronyms can be read
-  oddly; a sentence being synthesized when you stop finishes on the server (well
+  pronunciation comes from espeak-ng, so unusual names (for example "Siobhan")
+  and acronyms can be read oddly (a small pronunciation list could fix specific
+  words); "K.R.I.S." is spelled out; dates such as "12 March" are read as
+  written; a sentence being synthesized when you stop finishes on the server (well
   under a second) before it is discarded; a short first sentence followed by a
   long one can leave a brief extra pause. The bundled espeak-ng and phonemizer
   are GPL-3.0 (fine for personal use; matters if K.R.I.S. is ever distributed).

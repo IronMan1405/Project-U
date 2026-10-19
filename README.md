@@ -724,8 +724,16 @@ about 0.25 s to synthesize.
 Stop speaking, interrupting (tapping the mic), or a newer reply stops the audio
 at once and cancels the sentences not yet synthesized; a sentence already being
 synthesized (well under a second) finishes on the server and is discarded.
-Plain decimals are read as "3 point 5"; money, times and version numbers are left
-as written. Long replies are spoken up to about 4,000 characters.
+Kokoro pauses at every full stop, colon or comma inside a word, so the spoken
+text (never the text shown in the chat) is rewritten first: "Dr. Patel" becomes
+"Doctor Patel" (also Mr., Mrs., Ms., Prof.), "J. Smith" becomes "J Smith",
+"7:45 a.m." becomes "seven forty-five AM", "9:30" becomes "nine thirty",
+"$1,249.99" becomes "1249 dollars and 99 cents" (also pounds and euros),
+"1,200" becomes "1200", dates become "the 12th of March" (from "12 March") or
+"March 12th" (from "March 12"), "ada@example.org" becomes "ada at example dot
+org", and plain decimals become "3 point 5". Version numbers
+("1.2.3") and ratios ("3:2") are left as written. Long replies are spoken up to
+about 4,000 characters.
 
 Set `kokoro_voice` in `[voice]` to change the voice (for example `af_bella`,
 `am_michael`, or British `bf_emma`; British voices use British pronunciation)

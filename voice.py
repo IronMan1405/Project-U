@@ -416,12 +416,134 @@ _MARKUP = re.compile(r"[*_`#>|~]+")
 _LIST_MARKER = re.compile(r"^\s*(?:[-\u2022\u2013]\s+)")
 
 
+# Speech-only rewrites. Kokoro (through espeak-ng) pauses at every full stop, comma or colon
+# inside a token, so "Dr. Patel", "J. Smith", "7:45 a.m." and "$1,249.99" were spoken with
+# breaks ("dollar one, two hundred..."). These are rewritten for the voice only; the text
+# shown in the chat is unchanged. Measured with silent-gap checks on the synthesized audio.
+# "ada@example.org" paused inside the address; it is read as "ada at example dot org".
+_EMAIL = re.compile(r"(?<![\w.+-])([\w.+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)\b")
+_EMAIL_SYMBOLS = {".": " dot ", "_": " underscore ", "-": " dash ", "+": " plus "}
+
+
+def _email(match: re.Match) -> str:
+    spell = lambda part: "".join(_EMAIL_SYMBOLS.get(char, char) for char in part)
+    return f"{spell(match.group(1))} at {spell(match.group(2))}"
+
+
+_TITLES = {"dr": "Doctor", "mr": "Mister", "mrs": "Missus", "ms": "Miz", "prof": "Professor"}
+_TITLE = re.compile(r"\b(Dr|Mr|Mrs|Ms|Prof)\.(?=\s+[A-Z])")
+_INITIAL = re.compile(r"(?<![.\w])([A-Z])\.(?=\s+[A-Z][a-z])")
+_CLOCK = re.compile(
+    r"(?<![\d:.])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])"
+    r"(?:\s*(a\.m\.|p\.m\.|am\b|pm\b|AM\b|PM\b))?"
+)
+_MERIDIEM = re.compile(r"(?<![\w.])([aApP])\.[mM]\.(?=\s+[A-Z]|\s*$)|(?<![\w.])([aApP])\.[mM]\.")
+_MONEY = re.compile(
+    r"([$\u00a3\u20ac])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\d)"
+    r"(\s+(?:thousand|million|billion|trillion)\b)?"
+)
+_CURRENCIES = {"$": ("dollar", "dollars", "cent", "cents"), "\u00a3": ("pound", "pounds", "penny", "pence"),
+               "\u20ac": ("euro", "euros", "cent", "cents")}
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+# Dates: "12 March" is read "twelve March"; people say "the twelfth of March" (day first)
+# or "March twelfth" (month first). Abbreviated months are written out.
+_MONTHS = {
+    "jan": "January", "feb": "February", "mar": "March", "apr": "April", "may": "May", "jun": "June",
+    "jul": "July", "aug": "August", "sep": "September", "sept": "September", "oct": "October",
+    "nov": "November", "dec": "December",
+}
+_MONTH = (r"(January|February|March|April|May|June|July|August|September|October|November|December"
+          r"|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec)")
+_DAY = r"([1-9]|[12]\d|3[01])"
+# An abbreviation's full stop is dropped only when the sentence continues ("Jan. 25", "25 Jan. at").
+_ABBREVIATION_STOP = r"(\.(?=\s+[a-z\d]))?"
+_DAY_MONTH = re.compile(r"(?<![\d.,:/])(?<!\bthe )\b" + _DAY + r"\s+" + _MONTH + _ABBREVIATION_STOP + r"(?![A-Za-z])")
+_MONTH_DAY = re.compile(r"\b" + _MONTH + r"(\.)?\s+" + _DAY + r"(?!\d|[:.]\d|st|nd|rd|th)\b")
+_ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+         "sixteen seventeen eighteen nineteen").split()
+_TENS = {2: "twenty", 3: "thirty", 4: "forty", 5: "fifty"}
+
+
+def _small_number(value: int) -> str:
+    """0-59 in words ("forty-five")."""
+    if value < 20:
+        return _ONES[value]
+    tens, ones = divmod(value, 10)
+    return _TENS[tens] + (f"-{_ONES[ones]}" if ones else "")
+
+
+def _clock(match: re.Match) -> str:
+    """ "7:45 a.m." -> "seven forty-five AM", "9:30" -> "nine thirty", "9:05" -> "nine oh five",
+    "14:00" -> "fourteen hundred", "9:00 PM" -> "nine PM"."""
+    hour, minute = int(match.group(1)), int(match.group(2))
+    meridiem = match.group(3)
+    suffix = f" {meridiem.replace('.', '').upper()}" if meridiem else ""
+    if minute == 0:
+        spoken = f"{_small_number(hour)}{suffix}" if suffix or hour <= 12 else f"{_small_number(hour)} hundred"
+        return spoken if suffix or hour > 12 else f"{spoken} o'clock"
+    minutes = f"oh {_small_number(minute)}" if minute < 10 else _small_number(minute)
+    return f"{_small_number(hour)} {minutes}{suffix}"
+
+
+# A number right after another capitalized word belongs to it ("Terminal 2 March 12", "Gate 3
+# May"), except after a weekday or a sentence-opening preposition ("Friday 25 January").
+_DATE_LEAD_INS = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "mon", "tue", "tues",
+    "wed", "thu", "thur", "thurs", "fri", "sat", "sun", "on", "by", "from", "until", "till", "since",
+    "before", "after", "due", "until", "to", "and", "or", "between",
+})
+
+
+def _day_month(match: re.Match) -> str:
+    before = re.search(r"([A-Za-z]+) $", match.string[: match.start()])
+    if before and before.group(1)[0].isupper() and before.group(1).lower() not in _DATE_LEAD_INS:
+        return match.group(0)
+    return f"the {_ordinal(match.group(1))} of {_month(match.group(2))}"
+
+
+def _ordinal(day: str) -> str:
+    number = int(day)
+    suffix = "th" if 10 <= number % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
+def _month(name: str) -> str:
+    return _MONTHS.get(name.lower(), name)
+
+
+def _money(match: re.Match) -> str:
+    """ "$1,249.99" -> "1249 dollars and 99 cents", "$5 million" -> "5 million dollars"."""
+    one, many, cent, cents = _CURRENCIES[match.group(1)]
+    whole = match.group(2).replace(",", "")
+    fraction, scale = match.group(3), (match.group(4) or "").strip()
+    if scale or (fraction and len(fraction) != 2):  # "$2.5 billion", "$2.5": not cents
+        return f"{whole}{'.' + fraction if fraction else ''}{' ' + scale if scale else ''} {many}"
+    parts = []
+    if whole != "0" or not fraction or fraction == "00":
+        parts.append(f"{whole} {one if whole == '1' else many}")
+    if fraction and fraction != "00":
+        parts.append(f"{int(fraction)} {cent if fraction == '01' else cents}")
+    return " and ".join(parts)
+
+
 def speech_text(text: str) -> str:
-    """Normalize one line for speech without changing its meaning: drop leftover markup and
-    URLs, and read plain decimals as "3 point 5" (Kokoro otherwise pauses at the point).
-    Money ("$1,249.99"), times ("7:45") and versions ("1.2.3") are left alone."""
+    """Rewrite one line for the voice only: drop leftover markup and URLs; say titles, initials,
+    clock times, a.m./p.m., money and thousands without the internal full stops, colons and
+    commas that make Kokoro pause; say dates as "the 12th of March" / "March 12th"; read plain
+    decimals as "3 point 5". Version numbers ("1.2.3") are left as written."""
     text = _URL.sub("a link", text)
+    text = _EMAIL.sub(_email, text)  # before markup removal, which would drop "_"
     text = _MARKUP.sub(" ", _LIST_MARKER.sub("", text))
+    text = _TITLE.sub(lambda match: _TITLES[match.group(1).lower()], text)
+    text = _INITIAL.sub(r"\1", text)
+    text = _MONEY.sub(_money, text)
+    text = _DAY_MONTH.sub(_day_month, text)
+    text = _MONTH_DAY.sub(lambda match: f"{_month(match.group(1))} {_ordinal(match.group(3))}", text)
+    text = _CLOCK.sub(_clock, text)
+    # A bare "a.m." that ends a sentence keeps its full stop as the sentence end.
+    text = _MERIDIEM.sub(lambda match: f"{(match.group(1) or match.group(2)).upper()}M"
+                         + ("." if match.group(1) else ""), text)
+    text = _THOUSANDS.sub("", text)
     text = _DECIMAL.sub(r"\1 point \2", text)
     return " ".join(text.split())
 

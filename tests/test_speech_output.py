@@ -36,7 +36,7 @@ class SegmentationTests(unittest.TestCase):
     def test_splits_at_sentence_ends_only(self):
         self.assertEqual(
             self.segments("Your meeting with Dr. Patel is at 7:45 a.m. on Friday. Should I move it? Yes!"),
-            ["Your meeting with Dr. Patel is at 7:45 a.m. on Friday.", "Should I move it? Yes!"],
+            ["Your meeting with Doctor Patel is at seven forty-five AM on Friday.", "Should I move it? Yes!"],
         )
 
     def test_abbreviations_initials_and_numbers_are_not_sentence_ends(self):
@@ -54,14 +54,79 @@ class SegmentationTests(unittest.TestCase):
     def test_month_or_number_abbreviation_at_a_sentence_end_still_ends_it(self):
         self.assertEqual(
             self.segments("The review is on 25 Jan. It went well overall."),
-            ["The review is on 25 Jan.", "It went well overall."],
+            ["The review is on the 25th of January.", "It went well overall."],
         )
 
     def test_numbers_are_kept_readable(self):
-        text = " ".join(self.segments("It rose 3.5 percent to $1,249.99 in v1.2.3 at 7:45."))
+        text = " ".join(self.segments("It rose 3.5 percent in v1.2.3, a 3:2 ratio."))
         self.assertIn("3 point 5 percent", text)
-        for kept in ("$1,249.99", "v1.2.3", "7:45"):
+        for kept in ("v1.2.3", "3:2"):  # versions and ratios are left as written
             self.assertIn(kept, text)
+
+    def test_titles_initials_and_meridiems_lose_the_full_stops_that_cause_pauses(self):
+        cases = {
+            "Should I move the meeting with Dr. Patel to Friday?": "Should I move the meeting with Doctor Patel to Friday?",
+            "Mr. Smith, Ms. Lee, Prof. Ada and Mrs. Jones met.": "Mister Smith, Miz Lee, Professor Ada and Missus Jones met.",
+            "Call J. Smith about the invoice.": "Call J Smith about the invoice.",
+            "See you at 7 a.m. Then lunch at 1 p.m. with Ada.": "See you at 7 AM. Then lunch at 1 PM with Ada.",
+        }
+        for text, spoken in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(" ".join(self.segments(text)), spoken)
+
+    def test_clock_times_are_spoken_as_words(self):
+        cases = {
+            "7:45 a.m.": "seven forty-five AM", "9:30": "nine thirty", "2:30 PM": "two thirty PM",
+            "9:05 pm": "nine oh five PM", "9:00": "nine o'clock", "9:00 PM": "nine PM", "14:00": "fourteen hundred",
+            "23:59": "twenty-three fifty-nine", "12:10am": "twelve ten AM",
+        }
+        for time, spoken in cases.items():
+            with self.subTest(time=time):
+                self.assertEqual(voice.speech_text(f"It is at {time} today"), f"It is at {spoken} today")
+        for kept in ("3:2", "24:00", "1:5", "10:30:15"):
+            with self.subTest(kept=kept):
+                self.assertIn(kept, voice.speech_text(f"The value is {kept} now"))
+
+    def test_email_addresses_are_spoken_without_inner_full_stops(self):
+        cases = {
+            "ada@example.org": "ada at example dot org",
+            "first.last_2@mail.example.co.uk": "first dot last underscore 2 at mail dot example dot co dot uk",
+            "a-b+tag@x-y.io": "a dash b plus tag at x dash y dot io",
+        }
+        for address, spoken in cases.items():
+            with self.subTest(address=address):
+                self.assertEqual(voice.speech_text(f"Send it to {address}."), f"Send it to {spoken}.")
+        self.assertEqual(self.segments("Mail ada@example.org now. Then wait."), ["Mail ada at example dot org now.", "Then wait."])
+
+    def test_dates_are_spoken_with_ordinals(self):
+        cases = {
+            "on 12 March": "on the 12th of March", "on Friday, 25 January": "on Friday, the 25th of January",
+            "on 1 May 2027": "on the 1st of May 2027", "on 22 Jul": "on the 22nd of July",
+            "from 11 Jan to 3 Feb": "from the 11th of January to the 3rd of February",
+            "on March 12": "on March 12th", "on Jan. 25 at noon": "on January 25th at noon",
+            "on March 12, 2027": "on March 12th, 2027", "by Dec 31": "by December 31st",
+        }
+        for text, spoken in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(voice.speech_text(f"It is {text} then"), f"It is {spoken} then")
+        for kept in ("March 2027", "the 12th of March", "March 12th", "12 Marathons", "may 5", "Gate 3 May"):
+            with self.subTest(kept=kept):
+                self.assertIn(kept, voice.speech_text(f"See {kept} now"))
+        self.assertEqual(voice.speech_text("Leave from Terminal 2 March 12."), "Leave from Terminal 2 March 12th.")
+        self.assertEqual(voice.speech_text("Friday 25 January and On 3 May"), "Friday the 25th of January and On the 3rd of May")
+        self.assertEqual(voice.speech_text("See May 5:30"), "See May five thirty")  # a time, not a date
+        # An abbreviated month that ends a sentence keeps the sentence end.
+        self.assertEqual(voice.speech_text("It was on 25 Jan. Then lunch."), "It was on the 25th of January. Then lunch.")
+
+    def test_money_and_thousands_are_spoken_without_inner_commas(self):
+        cases = {
+            "$1,249.99": "1249 dollars and 99 cents", "$1": "1 dollar", "$0.99": "99 cents", "$0.01": "1 cent",
+            "$20.00": "20 dollars", "$5 million": "5 million dollars", "$2.5 billion": "2 point 5 billion dollars", "$2.5": "2 point 5 dollars",
+            "\u00a33.50": "3 pounds and 50 pence", "\u20ac20": "20 euros", "1,200": "1200", "12,345,678": "12345678",
+        }
+        for amount, spoken in cases.items():
+            with self.subTest(amount=amount):
+                self.assertEqual(voice.speech_text(f"It is {amount} now"), f"It is {spoken} now")
 
     def test_markup_urls_and_list_items_are_spoken_cleanly(self):
         segments = self.segments("**Today**\n- Call `John`\n- See https://example.com/a?b=c\n# Done")
@@ -79,7 +144,7 @@ class SegmentationTests(unittest.TestCase):
     def test_a_long_first_sentence_splits_at_its_first_clause_break_only(self):
         self.assertEqual(
             self.segments("Your next meeting is the design review with John, at 2:30 PM on Friday, 25 January."),
-            ["Your next meeting is the design review with John,", "at 2:30 PM on Friday, 25 January."],
+            ["Your next meeting is the design review with John,", "at two thirty PM on Friday, the 25th of January."],
         )
         no_break = "Your next meeting is the design review with John at half past two on Friday afternoon."
         self.assertEqual(self.segments(no_break), [no_break])  # never cut mid-clause
@@ -96,7 +161,11 @@ class SegmentationTests(unittest.TestCase):
         )
         segments = self.segments(reply)
         self.assertGreater(len(segments), 2)
-        self.assertEqual(words(" ".join(segments)), words(reply))
+        spoken = " ".join(segments)
+        for rewritten, original in (("two thirty PM", "2:30 PM"), ("Doctor Patel", "Dr. Patel"), ("4 PM", "4 p.m.")):
+            self.assertIn(rewritten, spoken)
+            spoken = spoken.replace(rewritten, original)
+        self.assertEqual(words(spoken), words(reply))
 
     def test_very_long_replies_are_truncated_at_a_segment_boundary(self):
         segments, truncated = voice.speech_segments("This sentence is about twenty words long, give or take a few. " * 200)
@@ -336,7 +405,7 @@ class PlanApiTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {
-            "segments": ["Sure. Your meeting with Dr. Patel is at 3.", "Shall I move it?"], "truncated": False,
+            "segments": ["Sure. Your meeting with Doctor Patel is at 3.", "Shall I move it?"], "truncated": False,
         })
         synthesize.assert_not_called()
 
