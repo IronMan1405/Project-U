@@ -261,12 +261,31 @@
     return Boolean(facts.visible) && !facts.recording && !facts.transcribing && !facts.speaking && !facts.conversation;
   }
 
+  // What K.R.I.S. says when it hears its name: short (quick to synthesize and over before the
+  // microphone opens), composed, and varied so repeated use does not sound canned. None
+  // contains the name, and standby has already released the microphone while it plays, so an
+  // acknowledgement can never wake K.R.I.S. again. The catchphrase is never used here.
+  const ACKNOWLEDGEMENTS = Object.freeze([
+    "Yes?", "I'm listening.", "Go ahead.", "I'm here.", "What do you need?",
+    "Ready when you are.", "How can I help?", "Listening.",
+  ]);
+  const ACK_HISTORY = 3; // the last few are not repeated
+
+  // Pick an acknowledgement that is not among the recent ones. random() returns [0, 1).
+  // Returns { text, recent } with recent updated, for the next call.
+  function pickAcknowledgement(recent = [], random = Math.random) {
+    const fresh = ACKNOWLEDGEMENTS.filter((text) => !recent.includes(text));
+    const choices = fresh.length ? fresh : ACKNOWLEDGEMENTS;
+    const text = choices[Math.min(choices.length - 1, Math.floor(random() * choices.length))];
+    return { text, recent: [...recent, text].slice(-ACK_HISTORY) };
+  }
+
   const capturing = (wake) => CAPTURE_STATES.has(wake.state);
   const enabled = (wake) => ENABLED.has(wake.state);
 
   return {
     createBurstDetector, createSampleRing, downsample, encodeWav,
-    createWakeState, reduce, standbyAllowed, capturing, enabled,
-    BURST_TUNING, MESSAGES, MAX_CHECK_FAILURES,
+    createWakeState, reduce, standbyAllowed, capturing, enabled, pickAcknowledgement,
+    BURST_TUNING, MESSAGES, MAX_CHECK_FAILURES, ACKNOWLEDGEMENTS, ACK_HISTORY,
   };
 });

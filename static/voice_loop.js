@@ -11,6 +11,12 @@
 //   speaking               the reply is being spoken
 //   awaiting_confirmation  an action waits for Confirm/Cancel; no automatic listening
 //
+// Spoken confirmation: when a pending action's read-back has been spoken in a hands-free
+// exchange, the loop listens once for the answer (confirmationPending stays set through
+// speaking, listening and transcribing). Silence, or a second answer that is neither "confirm"
+// nor "cancel", returns to awaiting_confirmation: the action keeps waiting for the buttons.
+// confirmationDecision() below decides what a transcript does to the pending action.
+//
 // The loop only ever starts from a user tap or a recognised wake word ("start"). It resumes listening only after a
 // completed reply (when its playback ends, when the user stops it with Stop Speaking, or at
 // once if nothing is spoken), and stops on any failure, on Hands-free being switched off, on
@@ -24,6 +30,7 @@
   else root.VoiceLoop = api;
 })(typeof self !== "undefined" ? self : this, () => {
   const MAX_CONSECUTIVE_SILENCES = 2;
+  const MAX_CONFIRMATION_ANSWERS = 2; // spoken answers that were not confirm/cancel, then wait for the buttons
   const PAUSED = "Hands-free paused. Tap the mic to continue.";
   const MESSAGES = {
     silence: `Didn't hear anything. ${PAUSED}`,
@@ -41,7 +48,7 @@
   function createVoiceLoop() {
     return {
       state: "off", silences: 0, turn: 0, notice: null, confirmationPending: false,
-      maxSilences: MAX_CONSECUTIVE_SILENCES,
+      maxSilences: MAX_CONSECUTIVE_SILENCES, confirmationAnswers: 0,
     };
   }
 
@@ -61,7 +68,8 @@
       notice: null,
       confirmationPending:
         state === "awaiting_confirmation" ||
-        ((state === "listening" || state === "transcribing") && loop.confirmationPending),
+        (["listening", "transcribing", "speaking"].includes(state) &&
+          (changes.confirmationPending ?? loop.confirmationPending)),
     },
     actions,
   });
@@ -96,6 +104,11 @@
         // Always stop the audio. Only a hands-free reply being spoken moves on to listening,
         // exactly once: the playback promise that resolves afterwards finds the loop no
         // longer "speaking" and is ignored.
+        if (loop.state === "speaking" && loop.confirmationPending) {
+          // The read-back of a pending action was cut short: it was not heard in full, so do not
+          // listen for an approval; the action waits for the buttons (or a tap on the mic).
+          return go(loop, "awaiting_confirmation", [{ type: "stop_playback" }]);
+        }
         if (loop.state === "speaking") {
           return go(loop, "listening", [{ type: "stop_playback" }, { type: "start_listening" }]);
         }
@@ -126,17 +139,29 @@
       case "transcription_failed":
         return loop.state === "transcribing" ? pause(loop, "transcription_failed") : ignore(loop);
 
-      case "transcript_handled": // outcome: submitted | cancel_requested | guarded | kept_for_review
+      case "transcript_handled": // outcome: submitted | confirm_requested | cancel_requested | guarded | kept_for_review
         if (loop.state !== "transcribing") return ignore(loop);
-        if (event.outcome === "submitted" || event.outcome === "cancel_requested") {
+        if (["submitted", "confirm_requested", "cancel_requested"].includes(event.outcome)) {
           return go(loop, "thinking", [], { silences: 0, turn: loop.turn + 1 });
         }
-        if (event.outcome === "guarded") return go(loop, "awaiting_confirmation", [], { silences: 0 });
+        if (event.outcome === "guarded") {
+          // The action keeps waiting. A spoken clarification is followed by one more listening
+          // window, at most MAX_CONFIRMATION_ANSWERS times; then only the buttons (or a tap) remain.
+          const answers = (loop.confirmationAnswers || 0) + 1;
+          if (event.spoken && loop.confirmationPending && answers < MAX_CONFIRMATION_ANSWERS) {
+            return go(loop, "speaking", [], { silences: 0, confirmationAnswers: answers });
+          }
+          return go(loop, "awaiting_confirmation", [], { silences: 0, confirmationAnswers: answers });
+        }
         return pause(loop, "kept_for_review");
 
       case "confirmation_resolving": // Confirm/Cancel clicked, or a spoken decline
         if (loop.state === "thinking") return ignore(loop); // a spoken decline already moved here
         if (loop.state === "awaiting_confirmation") return go(loop, "thinking", [], { turn: loop.turn + 1 });
+        if (loop.state === "speaking" && loop.confirmationPending) {
+          // Clicked while the read-back is still playing: stop it; nothing listens for an answer.
+          return go(loop, "thinking", [{ type: "stop_playback" }], { turn: loop.turn + 1 });
+        }
         if (loop.state === "listening") {
           // Confirm/Cancel clicked while a hands-free recording was open: drop the recording.
           return go(loop, "thinking", [{ type: "stop_listening" }], { turn: loop.turn + 1 });
@@ -146,12 +171,18 @@
       case "turn_finished": // outcome: response | pending | error; spoken: is it being spoken
         if (loop.state !== "thinking" || event.turn !== loop.turn) return ignore(loop);
         if (event.outcome === "error") return pause(loop, "chat_failed");
-        if (event.outcome === "pending") return go(loop, "awaiting_confirmation");
+        if (event.outcome === "pending") {
+          // Listen for "confirm"/"cancel" only after the read-back has been spoken.
+          return event.spoken
+            ? go(loop, "speaking", [], { confirmationPending: true, confirmationAnswers: 0 })
+            : go(loop, "awaiting_confirmation", [], { confirmationAnswers: 0 });
+        }
         if (event.spoken) return go(loop, "speaking");
         return go(loop, "listening", [{ type: "start_listening" }]);
 
       case "playback_finished": // ok: playback ended normally (false: it failed)
         if (loop.state !== "speaking" || event.turn !== loop.turn) return ignore(loop);
+        if (!event.ok && loop.confirmationPending) return go(loop, "awaiting_confirmation"); // keep waiting
         return event.ok ? go(loop, "listening", [{ type: "start_listening" }]) : pause(loop, "playback_failed");
 
       default:
@@ -194,5 +225,31 @@
     return { state, label: VIEW_LABELS[state], canStopSpeaking: Boolean(facts.speaking) };
   }
 
-  return { createVoiceLoop, reduce, viewState, VIEW_LABELS, MAX_CONSECUTIVE_SILENCES, MESSAGES };
+  // What a transcript does to a pending confirmation. kind is the server's reply_kind
+  // (voice.classify_reply): "confirm" | "affirm" | "decline" | "unclear" | null.
+  //   pendingId      the confirmation waiting now (null: none)
+  //   idAtStart      the confirmation that was waiting, i.e. already read out or shown, when
+  //                  this recording started; approval must name the same one
+  //   resolving      a Confirm/Cancel request is already in flight
+  //   handsFree      the recording was hands-free (it would otherwise be sent automatically)
+  // Returns { action: "approve" | "cancel" | "guard" | "ordinary", reason }. Only an explicit
+  // "confirm" for the action read out before the recording began approves anything.
+  function confirmationDecision({ kind, pendingId, idAtStart, resolving, handsFree }) {
+    const reply = ["confirm", "affirm", "decline", "unclear"].includes(kind);
+    if (resolving && reply) return { action: "guard", reason: "resolving" };
+    if (!pendingId) return { action: "ordinary", reason: null };
+    if (kind === "confirm") {
+      return idAtStart === pendingId ? { action: "approve", reason: null } : { action: "guard", reason: "stale" };
+    }
+    if (kind === "decline") return { action: "cancel", reason: null };
+    if (kind === "affirm" || kind === "unclear") return { action: "guard", reason: "say_confirm" };
+    // Ordinary speech while an action waits: hands-free, it could be background audio, so it
+    // is not sent (sending would cancel the action); it stays in the message box instead.
+    return handsFree ? { action: "guard", reason: "still_waiting" } : { action: "ordinary", reason: null };
+  }
+
+  return {
+    createVoiceLoop, reduce, viewState, confirmationDecision, VIEW_LABELS, MAX_CONSECUTIVE_SILENCES,
+    MAX_CONFIRMATION_ANSWERS, MESSAGES,
+  };
 });

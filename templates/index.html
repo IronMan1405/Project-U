@@ -180,7 +180,11 @@
         <section class="panel panel-workspace" data-section="WRK·04" aria-label="Workspace">
           <nav class="workspace-tabs" aria-label="Workspace">
             <button class="workspace-tab active" type="button" data-view="chat" aria-pressed="true">Chat</button>
+            {# Tasks tab: hidden unless config.ini [ui] tasks_tab = on (Apple Reminders is the user-facing
+               workflow). The view below stays in the page, unreachable, so its script keeps working. #}
+            {% if show_tasks_tab %}
             <button class="workspace-tab" type="button" data-view="tasks" aria-pressed="false">Tasks</button>
+            {% endif %}
             <button class="workspace-tab" type="button" data-view="notes" aria-pressed="false">Notes</button>
             <button class="workspace-tab" type="button" data-view="files" aria-pressed="false">Files</button>
           </nav>

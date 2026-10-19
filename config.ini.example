@@ -3,7 +3,8 @@ endpoint = http://127.0.0.1:11434
 model = gemma4:e4b
 
 [utilities]
-# Comma-separated macOS applications U may open, always after your confirmation.
+# Comma-separated macOS applications K.R.I.S. may open. One you name ("open Notes") opens at once;
+# one K.R.I.S. picks by itself asks for your confirmation first.
 allowed_apps = Calendar, Notes
 
 [utility_folders]
@@ -11,6 +12,30 @@ allowed_apps = Calendar, Notes
 # (opening always asks first). Folders must be inside your home folder; ~/Library and
 # hidden folders are refused. Remove this section to disable file search and opening.
 Documents = ~/Documents
+
+[projects]
+# Label = folder of a local code project K.R.I.S. may inspect: read-only Git status, change
+# summaries (line counts, never file contents) and recent commits. Folders must be inside your
+# home folder. Remove this section to turn the developer tools off.
+# Project-U = ~/Project-U
+
+[project_tests]
+# Label = the command that runs that project's tests, one per line. Run from the project folder
+# without a shell (no pipes, &&, or variables); the program is a path inside the project or a
+# command on PATH. Nothing is ever installed. Asking "run the tests" runs exactly these.
+# Project-U = .venv/bin/python -m unittest discover -s tests
+#     node --test tests/js/
+
+[developer]
+# The application that "open <project> in my editor" uses.
+editor = Visual Studio Code
+# Each test command is stopped after this many seconds (10-1800).
+test_timeout_seconds = 300
+
+[ui]
+# The Tasks tab is hidden because Apple Reminders is the reminder workflow; tasks still work
+# through chat and in briefings. Set to on to show the tab again.
+tasks_tab = off
 
 [voice]
 # Local push-to-talk. Remove this section to turn voice off. Install with

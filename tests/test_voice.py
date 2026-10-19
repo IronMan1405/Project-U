@@ -130,7 +130,7 @@ class VoiceSettingsTests(VoiceTestCase):
 
 class ReplyKindTests(unittest.TestCase):
     def test_short_affirmations_and_declines_are_classified(self):
-        for text in ("Yes.", "yes", "YES!!!", "Yeah.", "Okay.", "OK", "Sure.", "Confirm.", "Go ahead.",
+        for text in ("Yes.", "yes", "YES!!!", "Yeah.", "Okay.", "OK", "Sure.", "Go ahead.",
                      "Do it.", "Yes, please.", "Um, yes please.", "Please do.", "Sounds good."):
             with self.subTest(text=text):
                 self.assertEqual(voice.classify_reply(text), "affirm")
@@ -138,6 +138,19 @@ class ReplyKindTests(unittest.TestCase):
                      "Don\u2019t do it.", "Stop.", "Never mind.", "Forget it.", "No, cancel it.", "Not now."):
             with self.subTest(text=text):
                 self.assertEqual(voice.classify_reply(text), "decline")
+
+    def test_only_explicit_approval_words_are_a_spoken_confirmation(self):
+        for text in ("Confirm.", "confirm", "Confirmed.", "Yes, confirm.", "Okay, confirm it.", "I confirm.",
+                     "Approve.", "Approve it, please.", "Kris, confirm.", "Um, confirm."):
+            with self.subTest(text=text):
+                self.assertEqual(voice.classify_reply(text), "confirm")
+        # Mentions approval but is not a clean "confirm": never approval, never a new message.
+        for text in ("Don't confirm.", "Confirm or cancel?", "Do not approve it.", "Confirm the other one",
+                     "No, don't approve that."):
+            with self.subTest(text=text):
+                self.assertEqual(voice.classify_reply(text), "unclear")
+        # Longer speech that happens to contain the word is an ordinary message.
+        self.assertIsNone(voice.classify_reply("Can you confirm what time the meeting is tomorrow?"))
 
     def test_anything_more_than_a_bare_reply_is_an_ordinary_message(self):
         for text in (
@@ -517,7 +530,8 @@ class VoiceApiTests(VoiceTestCase):
 
     def test_reply_kind_is_returned_with_the_transcript(self):
         client = self.client()
-        for text, kind in (("Yes.", "affirm"), ("No, thank you.", "decline"), ("Open my notes", None)):
+        for text, kind in (("Yes.", "affirm"), ("Confirm.", "confirm"), ("No, thank you.", "decline"),
+                           ("Open my notes", None)):
             with self.subTest(text=text), patch.object(voice, "transcribe", return_value=text):
                 self.assertEqual(self.upload(client).get_json(), {"text": text, "reply_kind": kind})
 

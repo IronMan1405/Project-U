@@ -93,6 +93,10 @@ let selectedDocument = null;
 let documentUploadPending = false;
 let selectedDocumentDetail = "";
 let pendingConfirmationId = null;
+let pendingConfirmationSummary = "";
+// The confirmation that was already waiting (read out or shown) when the current recording
+// started. A spoken "confirm" approves only that one (VoiceLoop.confirmationDecision).
+let recordingConfirmationId = null;
 let confirmationResolving = false;
 let activityPollTimer = null;
 const DEFAULT_VOICE_STATUS = {
@@ -121,6 +125,12 @@ let replyAbort = null; // aborts the current spoken reply's requests
 const SPEAK_BUSY_RETRIES = 12; // up to about 3 s for the previous synthesis to finish
 const SPEAK_BUSY_RETRY_MS = 250;
 let voiceLoop = window.VoiceLoop.createVoiceLoop();
+// Timers (see refreshTimers): declared here because renderAlerts runs during start-up.
+let activeTimers = [];
+const timerNotices = [];
+const announcedTimers = new Set();
+let timersLoaded = false;
+const TIMER_NOTICE_MS = 2 * 60 * 1000;
 // Wake word (static/wake_word.js decides; this carries out its actions). wakeConversation is
 // true while the hands-free conversation it started is running.
 let wake = window.WakeWord.createWakeState();
@@ -214,11 +224,19 @@ function renderAlerts() {
   if (!errorMessage.hidden && errorMessage.textContent) alerts.push(["danger", "Error", errorMessage.textContent]);
   if (!confirmationPanel.hidden) alerts.push(["warning", "Needs approval", confirmationSummary.textContent]);
   if (wake.message && !window.WakeWord.enabled(wake)) alerts.push(["danger", "Wake word", wake.message]);
+  for (const timer of activeTimers) {
+    const text = timer.status === "queued"
+      ? `${timer.name}: starts when timer ${timer.starts_after_timer_id} ends`
+      : `${timer.name}: ${formatRemaining(timer.remaining_seconds)} left (ends ${timer.ends_at_local.slice(0, 5)})`;
+    alerts.push(["info", `Timer ${timer.timer_id}`, text]);
+  }
+  for (const notice of timerNotices) alerts.push(["warning", "Timer", notice.text]);
   if (voiceLoop.notice) alerts.push([voiceLoop.notice.kind === "error" ? "danger" : "warning", "Hands-free", voiceLoop.notice.message]);
   const key = JSON.stringify(alerts);
   if (key === renderedAlerts) return;
   renderedAlerts = key;
-  alertsCount.textContent = alerts.length ? String(alerts.length) : ""; // count beside the Alerts heading
+  const problems = alerts.filter(([kind]) => kind !== "info").length; // running timers are not problems
+  alertsCount.textContent = problems ? String(problems) : ""; // count beside the Alerts heading
   alertList.replaceChildren(...alerts.map(([kind, title, text]) => {
     const item = document.createElement("li");
     item.className = "alert-item";
@@ -623,8 +641,8 @@ async function resumeListening() {
   await new Promise((resolve) => window.setTimeout(resolve, 0));
   const blocked =
     !handsFreeToggle.checked || document.visibilityState === "hidden" || recorder || startPending ||
-    transcribing || isSending || confirmationResolving || pendingConfirmationId !== null ||
-    documentUploadPending;
+    transcribing || isSending || confirmationResolving ||
+    (pendingConfirmationId !== null && !voiceLoop.confirmationPending) || documentUploadPending;
   const result = blocked ? "failed" : await startRecording(true);
   if (result === "failed") dispatchLoop({ type: "listen_failed" });
   else if (result === "cancelled") dispatchLoop({ type: "stopped_by_user" });
@@ -876,10 +894,10 @@ function toolLabel(toolName) {
     update_note: "Updating note",
     delete_note: "Deleting note",
     get_system_info: "Checking system information",
-    open_website: "Requesting browser launch",
+    open_website: "Opening website",
     find_files: "Searching approved folders",
     open_file: "Requesting file open",
-    open_application: "Requesting app launch",
+    open_application: "Opening app",
     document_context: "Using document context",
     create_gmail_draft: "Creating Gmail draft",
     search_gmail: "Searching Gmail",
@@ -902,6 +920,27 @@ function toolLabel(toolName) {
     delete_calendar_event: "Cancelling calendar event",
     add_label: "Adding Gmail label",
     remove_label: "Removing Gmail label",
+    get_briefing: "Preparing briefing",
+    start_timer: "Starting timer",
+    list_timers: "Checking timers",
+    cancel_timer: "Cancelling timer",
+    list_reminders: "Checking reminders",
+    create_reminder: "Adding reminder",
+    complete_reminder: "Completing reminder",
+    reschedule_reminder: "Moving reminder",
+    get_volume: "Checking volume",
+    set_volume: "Setting volume",
+    set_muted: "Changing mute",
+    media_control: "Controlling playback",
+    get_now_playing: "Checking what is playing",
+    get_app_status: "Checking app status",
+    list_projects: "Checking projects",
+    git_status: "Checking Git status",
+    git_diff_summary: "Summarizing changes",
+    git_recent_commits: "Reading recent commits",
+    run_project_tests: "Running tests",
+    get_test_results: "Checking test results",
+    open_project: "Opening project",
   };
   return labels[toolName] || "Using an assistant tool";
 }
@@ -1029,6 +1068,7 @@ function renderPreviewSections(preview) {
 
 function showPendingConfirmation(pending) {
   pendingConfirmationId = pending.confirmation_id;
+  pendingConfirmationSummary = pending.summary;
   confirmationSummary.textContent = `${pending.summary} ${pending.message}`;
   renderConfirmationPreview(pending.preview);
   confirmationPanel.hidden = false;
@@ -1049,11 +1089,12 @@ function acceptTurnResult(result) {
   }
   if (result.pending_confirmation) {
     showPendingConfirmation(result.pending_confirmation);
-    const voiceHint = voiceStatus.speech_input ? ", or say no to cancel" : "";
-    spoken.push(
-      `Waiting for your confirmation: ${result.pending_confirmation.summary}. ` +
-      `Press Confirm to approve it, or Cancel${voiceHint}.`,
-    );
+    // The read-back names the exact action; a spoken "confirm" approves only this one.
+    const answer = voiceStatus.speech_input
+      ? 'Say "confirm" to approve it, or "cancel".'
+      : "Press Confirm to approve it, or Cancel.";
+    const details = result.pending_confirmation.preview ? " The full details are on screen." : "";
+    spoken.push(`Waiting for your confirmation: ${result.pending_confirmation.summary}.${details} ${answer}`);
   } else {
     pendingConfirmationId = null;
     confirmationPanel.hidden = true;
@@ -1260,6 +1301,7 @@ async function startRecording(autoStop) {
   });
   recorder.addEventListener("stop", finishRecording, { once: true });
   recorder.start();
+  recordingConfirmationId = pendingConfirmationId;
   renderVoiceView();
   micButton.classList.add("recording");
   micButton.setAttribute("aria-pressed", "true");
@@ -1303,6 +1345,8 @@ async function finishRecording() {
   const type = recorder?.mimeType || recordingChunks[0]?.type || "";
   const recording = new Blob(recordingChunks, { type });
   const handsFree = handsFreeToggle.checked;
+  const confirmationAtStart = recordingConfirmationId;
+  recordingConfirmationId = null;
   teardownRecording();
   if (DISCARD_MESSAGES[reason]) {
     setBusy(isSending);
@@ -1345,26 +1389,44 @@ async function finishRecording() {
     setBusy(isSending);
     input.focus();
   }
-  if (transcript) handleTranscript(transcript.text, transcript.reply_kind, handsFree);
+  if (transcript) handleTranscript(transcript.text, transcript.reply_kind, handsFree, confirmationAtStart);
 }
 
-function handleTranscript(text, replyKind, handsFree) {
-  if ((pendingConfirmationId && replyKind === "affirm") || (confirmationResolving && replyKind === "decline")) {
-    // Voice never approves an action, and sending "yes" as a message would cancel it.
+const CONFIRMATION_GUARDS = {
+  resolving: () => "The confirmation is already being handled.",
+  stale: (summary) => `That was said before this action was read out, so nothing was approved. To approve "${summary}", say "confirm", or say "cancel".`,
+  say_confirm: (summary) => `To approve "${summary}", say "confirm". Say "cancel" to cancel it.`,
+  still_waiting: (summary) => `Still waiting on "${summary}". Say "confirm" or "cancel"; your words are in the message box.`,
+};
+
+function handleTranscript(text, replyKind, handsFree, confirmationAtStart = null) {
+  const decision = window.VoiceLoop.confirmationDecision({
+    kind: replyKind, pendingId: pendingConfirmationId, idAtStart: confirmationAtStart,
+    resolving: confirmationResolving, handsFree,
+  });
+  if (decision.action === "guard") {
+    // The pending action keeps waiting; nothing is sent (a new message would cancel it).
     voiceTurn = handsFree;
-    const message = confirmationResolving
-      ? "The confirmation is already being handled."
-      : "Voice can't approve actions. Press Confirm to approve it, or say no to cancel.";
-    dispatchLoop({ type: "transcript_handled", outcome: "guarded" });
+    if (decision.reason === "still_waiting") {
+      const existing = input.value.trim();
+      input.value = existing ? `${existing} ${text}` : text;
+      input.dispatchEvent(new Event("input"));
+    }
+    const message = CONFIRMATION_GUARDS[decision.reason](pendingConfirmationSummary);
     setVoiceState(message);
-    if (speechWanted()) speakReply(message);
+    const speech = speechWanted() ? speakReply(message) : null;
+    const turn = voiceLoop.turn;
+    dispatchLoop({ type: "transcript_handled", outcome: "guarded", spoken: Boolean(speech) });
+    speech?.then((ok) => dispatchLoop({ type: "playback_finished", turn, ok: ok !== false }));
     return;
   }
-  if (pendingConfirmationId && replyKind === "decline") {
+  if (decision.action === "approve" || decision.action === "cancel") {
+    // The same request as the Confirm and Cancel buttons, for exactly the action read out.
     voiceTurn = handsFree;
     setVoiceState("");
-    dispatchLoop({ type: "transcript_handled", outcome: "cancel_requested" });
-    resolvePendingAction(false);
+    const approved = decision.action === "approve";
+    dispatchLoop({ type: "transcript_handled", outcome: approved ? "confirm_requested" : "cancel_requested" });
+    resolvePendingAction(approved, "voice");
     return;
   }
   const existing = input.value.trim();
@@ -1616,7 +1678,7 @@ handsFreeToggle.addEventListener("change", () => {
 // word it releases that stream before the acknowledgment plays, and the existing hands-free
 // loop then opens the microphone as if the mic had been tapped, so there is only ever one
 // consumer and K.R.I.S.'s own speech is never heard by standby.
-const WAKE_ACK_TEXT = "Yes?";
+let recentWakeAcks = []; // see WakeWord.pickAcknowledgement
 const WAKE_RING_SECONDS = 3;
 
 function wakeFacts() {
@@ -1767,8 +1829,10 @@ async function checkWakeClip(clip) {
 
 async function acknowledgeWake() {
   logActivity("Wake word heard");
-  setVoiceState(WAKE_ACK_TEXT);
-  if (voiceStatus.speech_output) await speakReply(WAKE_ACK_TEXT);
+  const ack = window.WakeWord.pickAcknowledgement(recentWakeAcks);
+  recentWakeAcks = ack.recent;
+  setVoiceState(ack.text);
+  if (voiceStatus.speech_output) await speakReply(ack.text);
   // A short pause so the end of the acknowledgment is not at the start of the recording.
   await new Promise((resolve) => window.setTimeout(resolve, 150));
   dispatchWake({ type: "acknowledged" });
@@ -1801,8 +1865,11 @@ wakeToggle.addEventListener("change", () => {
   if (wake.state === "paused") setVoiceState("Wake word on; standby starts when K.R.I.S. is idle.");
 });
 
-async function resolvePendingAction(approved) {
+async function resolvePendingAction(approved, source = "button") {
   if (!conversationId || !pendingConfirmationId || confirmationResolving) return;
+  if (source === "voice") {
+    logActivity(`${approved ? "Approved" : "Cancelled"} by voice: ${pendingConfirmationSummary}`);
+  }
   confirmationResolving = true;
   confirmActionButton.disabled = true;
   cancelActionButton.disabled = true;
@@ -2302,7 +2369,79 @@ newChatButton.addEventListener("click", async () => {
   }
 });
 
+// --- Timers and focus sessions (timers.py) ---------------------------------------------
+// The server owns timers (they survive a page reload or restart); the page polls them, lists
+// running ones in Alerts, and announces each finished one once: Console line, Alerts notice,
+// a short chime, and a spoken line when speech is on and the microphone is not in use.
+
+function formatRemaining(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  const pad = (value) => String(value).padStart(2, "0");
+  return hours ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
+}
+
+function playChime() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  try {
+    const context = audioContext || new AudioContextClass();
+    if (context.state === "suspended") context.resume().catch(() => {});
+    [0, 0.28].forEach((offset) => {
+      const tone = context.createOscillator();
+      const gain = context.createGain();
+      tone.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, context.currentTime + offset);
+      gain.gain.exponentialRampToValueAtTime(0.2, context.currentTime + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + offset + 0.22);
+      tone.connect(gain).connect(context.destination);
+      tone.start(context.currentTime + offset);
+      tone.stop(context.currentTime + offset + 0.25);
+    });
+  } catch {
+    // no chime; the Console and Alerts still show it
+  }
+}
+
+function announceTimer(timer) {
+  const text = timer.status === "missed"
+    ? `Your ${timer.name} ended at ${timer.finished_at_local.slice(11, 16)} while K.R.I.S. was not running.`
+    : `Your ${timer.name} is done.`;
+  logActivity(text, "warning");
+  timerNotices.push({ text, until: Date.now() + TIMER_NOTICE_MS });
+  const micBusy = recorder !== null || startPending || transcribing;
+  if (!micBusy) playChime();
+  // Spoken only when speech is wanted and nothing else is talking or listening.
+  const speak = voiceStatus.speech_output && (speakToggle.checked || handsFreeToggle.checked);
+  if (speak && !micBusy && replyFinish === null && !isSending) speakReply(text);
+}
+
+async function refreshTimers() {
+  try {
+    const response = await fetch("/api/timers", { cache: "no-store" });
+    if (!response.ok) throw new Error("timers unavailable");
+    const data = await response.json();
+    activeTimers = data.active;
+    for (const timer of data.recently_finished) {
+      if (announcedTimers.has(timer.timer_id)) continue;
+      announcedTimers.add(timer.timer_id);
+      // Timers that ended before this page loaded are logged quietly, not chimed.
+      if (timersLoaded) announceTimer(timer);
+      else logActivity(`Earlier: ${timer.name} ${timer.status === "missed" ? "ended while K.R.I.S. was not running" : "finished"}.`);
+    }
+    timersLoaded = true;
+  } catch {
+    activeTimers = [];
+  }
+  const now = Date.now();
+  while (timerNotices.length && timerNotices[0].until < now) timerNotices.shift();
+  renderAlerts();
+  window.setTimeout(refreshTimers, activeTimers.length || timerNotices.length ? 1000 : 5000);
+}
+
 refreshHealth();
 loadVoiceStatus();
+refreshTimers();
 window.setInterval(refreshHealth, 10000);
 startConversation().catch((error) => showError(error.message));

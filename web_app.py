@@ -11,10 +11,22 @@ from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 import system_telemetry
+import notifications
 import voice
-from config import load_google_settings, load_settings, load_utility_settings, load_voice_settings
+from config import (
+    load_developer_settings,
+    load_google_settings,
+    load_settings,
+    load_ui_settings,
+    load_utility_settings,
+    load_voice_settings,
+)
+from developer import DeveloperCompanion
+from mac_control import MacControl
 from google_workspace import GoogleError, GoogleWorkspaceProvider
 from computer_utilities import UtilitySettings
+from reminders import AppleReminders
+from timers import TimerService
 from voice import VoiceError, VoiceSettings, VoiceTimeout, VoiceUnavailable
 from documents import (
     MAX_ACTIVE_DOCUMENTS,
@@ -49,6 +61,11 @@ def create_app(
     voice_settings: VoiceSettings | None = None,
     telemetry: system_telemetry.TelemetryService | None = None,
     google: GoogleWorkspaceProvider | None = None,
+    timers: TimerService | None = None,
+    reminders: AppleReminders | None = None,
+    mac: MacControl | None = None,
+    developer: DeveloperCompanion | None = None,
+    ui_settings: dict[str, bool] | None = None,
 ) -> Flask:
     app = Flask(__name__)
     conversations: dict[str, AssistantRuntime] = {}
@@ -74,6 +91,22 @@ def create_app(
         telemetry = system_telemetry.shared_service()
     if google is None:
         google = GoogleWorkspaceProvider(load_google_settings())
+    if reminders is None and AppleReminders.available():
+        reminders = AppleReminders()
+    if timers is None:
+        # One shared timer service; its background checker is started only by the server below.
+        # It also completes a finished timer's reminder once that reminder has alerted.
+        timers = TimerService(app.config["DATABASE_PATH"], notifier=notifications.notify,
+                              reminder_closer=reminders.complete if reminders is not None else None)
+    app.config["TIMERS"] = timers
+    if mac is None and MacControl.available():
+        mac = MacControl()
+    if developer is None:
+        # Shared, so "show me the latest test results" works across conversations.
+        developer = DeveloperCompanion(load_developer_settings())
+    # The Tasks tab is hidden unless [ui] tasks_tab = on: Apple Reminders is the user-facing
+    # reminder workflow. Tasks themselves (data, API, tools, briefing) are unchanged.
+    app.config["UI"] = ui_settings if ui_settings is not None else load_ui_settings()
     # One transcription and one synthesis at a time keep local CPU/GPU use bounded.
     transcription_slot = threading.Semaphore(1)
     speech_slot = threading.Semaphore(1)
@@ -123,7 +156,7 @@ def create_app(
 
     @app.get("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", show_tasks_tab=app.config["UI"].get("tasks_tab", False))
 
     @app.get("/api/health")
     def health():
@@ -174,7 +207,7 @@ def create_app(
                 database_path=app.config["DATABASE_PATH"],
                 tool_registry=ToolRegistry(
                     app.config["DATABASE_PATH"], utilities=utility_settings, telemetry=telemetry,
-                    google=google,
+                    google=google, reminders=reminders, timers=timers, mac=mac, developer=developer,
                 ),
                 activity_callback=update_activity,
             )
@@ -256,6 +289,14 @@ def create_app(
         if isinstance(error, VoiceTimeout):
             return jsonify(error=str(error)), 504
         return jsonify(error=str(error)), 422
+
+    @app.get("/api/timers")
+    def timers_status():
+        # Read-only: active timers and those that ended in the last few minutes, for the page's
+        # alerts (it announces each finished timer once). Labels are the user's own text.
+        response = jsonify(active=timers.active(), recently_finished=timers.recent())
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/system/telemetry")
     def system_telemetry_status():
@@ -677,4 +718,8 @@ def _serialize_turn_result(result: TurnResult, document_selection=None) -> dict:
 if __name__ == "__main__":
     # Load the speech model in the background now, so the first spoken reply is not a cold start.
     voice.preload_speech(load_voice_settings())
-    create_app().run(host="127.0.0.1", port=5000, threaded=True)
+    server = create_app()
+    # Recover timers that ended while K.R.I.S. was closed (reported as missed), then check
+    # every second so a timer alerts on time while the server runs.
+    server.config["TIMERS"].start_background()
+    server.run(host="127.0.0.1", port=5000, threaded=True)

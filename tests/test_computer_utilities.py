@@ -416,12 +416,15 @@ class SearchScopeTests(UtilityTestCase):
 
 
 class OpenApplicationTests(UtilityTestCase):
-    def test_only_approved_apps_open_after_confirmation(self):
+    def test_only_approved_apps_open_directly_when_named(self):
         runner = Mock(return_value=True)
         registry = ToolRegistry(self.database_path, utilities=self.settings(), open_runner=runner)
 
         prepared = registry.prepare("open_application", {"name": "Calendar"}, "Please open Calendar")
-        self.assertTrue(prepared.always_confirm)
+        self.assertFalse(prepared.always_confirm)
+        # An app the user did not name, or no request to open anything, asks first.
+        self.assertTrue(registry.prepare("open_application", {"name": "Notes"}, "Please open Calendar").always_confirm)
+        self.assertTrue(registry.prepare("open_application", {"name": "Calendar"}, "What's on my Calendar?").always_confirm)
         self.assertEqual(prepared.summary, "Open application: Calendar")
         with patch.object(computer_utilities, "open_supported", return_value=True):
             outcome = registry.execute(prepared)
@@ -461,7 +464,7 @@ class OpenApplicationTests(UtilityTestCase):
         ):
             self.assertFalse(computer_utilities.run_open(["-a", "Notes"]))
 
-    def test_web_open_application_waits_for_confirmation(self):
+    def test_web_open_application_waits_for_confirmation_unless_named(self):
         runner = Mock(return_value=True)
         model = Mock(
             side_effect=[
@@ -479,8 +482,8 @@ class OpenApplicationTests(UtilityTestCase):
         ):
             conversation_id = client.post("/api/conversations", json={}).get_json()["conversation_id"]
             for approved in (True, False):
-                chat = client.post(
-                    "/api/chat", json={"conversation_id": conversation_id, "message": "Open Calendar"}
+                chat = client.post(  # the model picked the app; the user did not name it
+                    "/api/chat", json={"conversation_id": conversation_id, "message": "Open my schedule app"}
                 )
                 pending = chat.get_json()["pending_confirmation"]
                 self.assertEqual(pending["summary"], "Open application: Calendar")

@@ -160,7 +160,7 @@ test("Review mode: interrupting or stopping audio never starts listening", () =>
   assert.deepEqual(actions.map((a) => a.type), ["stop_playback"]);
 });
 
-test("the pending-confirmation flag only lives through listening, transcribing, and waiting", () => {
+test("the pending-confirmation flag only lives through speaking, listening, transcribing, and waiting", () => {
   const events = [
     { type: "start" }, { type: "disable" }, { type: "page_hidden" }, { type: "typed_message" },
     { type: "stopped_by_user" }, { type: "listen_failed" }, { type: "recording_discarded", reason: "no_speech" },
@@ -179,7 +179,7 @@ test("the pending-confirmation flag only lives through listening, transcribing, 
       const event = { ...events[Math.floor(random() * events.length)], turn: loop.turn };
       loop = reduce(loop, event).loop;
       if (loop.confirmationPending) {
-        assert.ok(["listening", "transcribing", "awaiting_confirmation"].includes(loop.state), loop.state);
+        assert.ok(["speaking", "listening", "transcribing", "awaiting_confirmation"].includes(loop.state), loop.state);
       }
       if (loop.state === "awaiting_confirmation") assert.equal(loop.confirmationPending, true);
     }

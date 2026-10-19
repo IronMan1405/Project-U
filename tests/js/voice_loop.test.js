@@ -95,20 +95,76 @@ test("stale and duplicate callbacks are ignored", () => {
   assert.equal(starts, 1);
 });
 
-test("pending confirmations wait for Confirm/Cancel, then resume after the reply", () => {
+test("after a spoken read-back the loop listens once for the answer; a click still resolves it", () => {
   const { loop, actions } = play([
     { type: "start" },
     { type: "recording_uploaded" },
     { type: "transcript_handled", outcome: "submitted" },
     { type: "turn_finished", turn: 1, outcome: "pending", spoken: true },
-    { type: "playback_finished", turn: 1, ok: true }, // the spoken prompt ended: no listening
-    { type: "confirmation_resolving" },
+    { type: "playback_finished", turn: 1, ok: true }, // the read-back ended: listen for confirm/cancel
+    { type: "confirmation_resolving" }, // the user clicked instead: the open recording is dropped
     { type: "turn_finished", turn: 2, outcome: "response", spoken: true },
     { type: "playback_finished", turn: 2, ok: true },
   ]);
   assert.equal(loop.state, "listening");
-  assert.deepEqual(actions.map((a) => [a.type, a.after]), [["start_listening", "playback_finished"]]);
-  assert.equal(actions.length, 1);
+  assert.equal(loop.confirmationPending, false);
+  assert.deepEqual(actions.map((a) => [a.type, a.after]), [
+    ["start_listening", "playback_finished"], ["stop_listening", "confirmation_resolving"],
+    ["start_listening", "playback_finished"],
+  ]);
+});
+
+test("a pending action that was not read aloud is never listened for", () => {
+  const { loop, starts } = play([
+    { type: "start" }, { type: "recording_uploaded" }, { type: "transcript_handled", outcome: "submitted" },
+    { type: "turn_finished", turn: 1, outcome: "pending", spoken: false },
+  ]);
+  assert.equal(loop.state, "awaiting_confirmation");
+  assert.equal(starts, 0);
+});
+
+test("a spoken confirm or cancel resolves the action through the same request as the buttons", () => {
+  for (const outcome of ["confirm_requested", "cancel_requested"]) {
+    const { loop } = play([
+      { type: "start" }, { type: "recording_uploaded" }, { type: "transcript_handled", outcome: "submitted" },
+      { type: "turn_finished", turn: 1, outcome: "pending", spoken: true },
+      { type: "playback_finished", turn: 1, ok: true },
+      { type: "recording_uploaded" },
+      { type: "transcript_handled", outcome },
+      { type: "confirmation_resolving" }, // the page's resolve request; already thinking
+    ]);
+    assert.equal(loop.state, "thinking", outcome);
+    assert.equal(loop.turn, 2);
+    assert.equal(loop.confirmationPending, false);
+  }
+});
+
+test("unclear answers are asked about once more, then the action waits for the buttons", () => {
+  const { loop, starts } = play([
+    { type: "start" }, { type: "recording_uploaded" }, { type: "transcript_handled", outcome: "submitted" },
+    { type: "turn_finished", turn: 1, outcome: "pending", spoken: true },
+    { type: "playback_finished", turn: 1, ok: true }, // listen (1)
+    { type: "recording_uploaded" },
+    { type: "transcript_handled", outcome: "guarded", spoken: true }, // "yes" -> "say confirm"
+    { type: "playback_finished", turn: 1, ok: true }, // listen (2)
+    { type: "recording_uploaded" },
+    { type: "transcript_handled", outcome: "guarded", spoken: true }, // still not confirm/cancel
+    { type: "playback_finished", turn: 1, ok: true },
+  ]);
+  assert.equal(loop.state, "awaiting_confirmation");
+  assert.equal(loop.confirmationPending, true);
+  assert.equal(starts, 2);
+});
+
+test("silence after the read-back keeps the action waiting without listening again", () => {
+  const { loop, starts } = play([
+    { type: "start" }, { type: "recording_uploaded" }, { type: "transcript_handled", outcome: "submitted" },
+    { type: "turn_finished", turn: 1, outcome: "pending", spoken: true },
+    { type: "playback_finished", turn: 1, ok: true },
+    { type: "recording_discarded", reason: "no_speech" },
+  ]);
+  assert.equal(loop.state, "awaiting_confirmation");
+  assert.equal(starts, 1);
 });
 
 test("a spoken yes during a confirmation never resumes or approves anything", () => {

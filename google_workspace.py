@@ -140,7 +140,12 @@ GMAIL_ACTIONS = {
 # skip approval. Sending and Calendar writes do not exist; their names are reserved here.
 SEND_TOOLS = ("send_email", "reply_to_email", "forward_email", "send_gmail_draft")
 CALENDAR_WRITE_TOOLS = ("create_calendar_event", "update_calendar_event", "delete_calendar_event")
-CONSEQUENTIAL_OPERATIONS = frozenset({"create_gmail_draft", *GMAIL_ACTIONS, *SEND_TOOLS, *CALENDAR_WRITE_TOOLS})
+# Read/unread and star state only change how a message is shown to the user, and are undone by
+# the opposite action. These run without an approval when the user explicitly asks for them about
+# a message found in the same conversation (tool_registry decides); every other action is confirmed.
+LOW_IMPACT_GMAIL_ACTIONS = frozenset({"mark_email_read", "mark_email_unread", "star_email", "unstar_email"})
+CONSEQUENTIAL_OPERATIONS = frozenset({"create_gmail_draft", *(set(GMAIL_ACTIONS) - LOW_IMPACT_GMAIL_ACTIONS),
+                                      *SEND_TOOLS, *CALENDAR_WRITE_TOOLS})
 MAX_SEND_BODY = 60000  # a forward quotes the original; model-written text is still capped by the tool schema
 MAX_EVENT_TITLE = 300
 MAX_EVENT_TEXT = 4000

@@ -116,7 +116,13 @@ cp profile.example.json profile.json
 ```
 
 The supported fields are `response_style` and `explanation_detail` (short text
-values), plus `interests` (a list of short strings). If the file is missing,
+values), plus `interests` (a list of short strings). Two optional fields tell K.R.I.S.
+who you are: `name` (what it should call you) and `about` (up to eight short facts you
+choose to share, such as "Computer engineering student"). K.R.I.S. knows only what is
+written here and in the current conversation: asked who you are, it answers from the
+profile, says plainly when something is not there, and never invents details. It uses
+your name sparingly, not in every reply. K.R.I.S.'s own identity and personality are
+separate (`identity_prompt` in `assistant_runtime.py`). If the file is missing,
 malformed, unreadable, or contains invalid values, U logs a warning when
 applicable and uses generic defaults. The local `profile.json` is excluded from
 Git. Profile values are treated as preferences, not instructions or
@@ -281,8 +287,8 @@ Before anything is written, K.R.I.S. shows the **exact** draft in the approval
 panel: new email or reply, every recipient (To and Cc), the subject, and the
 complete body. Nothing is created until you press **Confirm**; **Cancel**, or
 sending another message, discards it. Approval is never taken from the wording
-of your request ("I confirm" in a chat message does not count), and a spoken
-"yes" never approves. The draft then waits in Gmail's Drafts folder; K.R.I.S.
+of your request ("I confirm" in a chat message does not count); a spoken
+"confirm" works like the button (see "Spoken confirmation"), a bare "yes" does not. The draft then waits in Gmail's Drafts folder; K.R.I.S.
 never sends it. Recipients must be plain addresses (no display names), at most
 20 in all; the subject is one line; the body is plain text up to 6,000
 characters. Attachments, Bcc and formatting are not supported.
@@ -349,8 +355,12 @@ model tool that always asks for your confirmation before it runs.
 
 ## Tasks and notes
 
-Use the Tasks and Notes tabs in the web interface's workspace panel to create, edit, complete,
-reopen, and delete records. Notes preserve their text and newlines. Records are
+Use the Notes tab in the web interface's workspace panel to create, edit and delete notes.
+The Tasks tab is hidden by default because Apple Reminders is the reminder workflow (see
+"Briefings, reminders and timers"); set `tasks_tab = on` under `[ui]` in `config.ini` to show
+it again. Tasks themselves are unchanged: "add ... to my tasks" in chat, the task tools, the
+`/api/tasks` endpoints and the briefing still use them, and no task data is moved or deleted.
+With the tab shown, it creates, edits, completes, reopens and deletes tasks. Notes preserve their text and newlines. Records are
 stored locally in `data/project_u.sqlite3`; the directory and schema are created
 automatically the first time U starts. Data persists across restarts and is
 excluded from Git. Removing the database file while U is stopped permanently
@@ -375,6 +385,161 @@ using this Mac's time-zone rules, including daylight saving; a local time that a
 daylight-saving change skips or repeats is rejected rather than guessed. The
 confirmation and tool result show the stored time converted back to local time,
 so what U reports is what was saved.
+
+## Briefings, reminders and timers
+
+**Briefing.** Ask "Kris, brief me", "What do I have today?", "What's coming up
+tomorrow?", "What's overdue?", "What did I leave unfinished today?" or "Help me
+plan the rest of my day". K.R.I.S. reads, for your local date and time zone:
+Google Calendar events (when connected), K.R.I.S. tasks (overdue, due that day,
+without a due date), Apple Reminders (overdue, due that day) and running timers.
+Each source is reported as available, not connected, or unavailable with the
+reason, so a missing source is never shown as an empty day. Nothing is invented,
+and because K.R.I.S. does not record when a task was completed, it never claims
+what you finished today. A task and a reminder with the same title due the same
+day are shown once.
+
+**Reminders live in Apple Reminders.** "Remind me to email the professor at 6
+PM" creates a reminder in your default Reminders list. Reminders alerts you at
+that time and syncs to your other devices, **whether or not K.R.I.S. is
+running**. You can also ask "What reminders do I have today?", "Mark the
+professor reminder as complete" and "Move that reminder to Friday". K.R.I.S.
+reads every change back from Reminders before reporting it, refuses to add an
+exact duplicate (same title, same day), only changes reminders it has found in
+the same conversation, asks which one when several could be meant, and never
+deletes reminders. If you give a time like "at 7" that could be AM or PM, it
+asks. "Add … to my tasks" still means a K.R.I.S. task (the Tasks tab); nothing
+is copied between the two.
+
+*One-time setup:* the first time K.R.I.S. uses Reminders, macOS asks whether
+the app that runs K.R.I.S. (for example Terminal) may control Reminders and
+access your reminders. Allow both. If you decline, K.R.I.S. says it is not
+allowed and points to System Settings > Privacy & Security (Automation >
+Reminders, and Reminders); nothing is bypassed.
+
+**Timers and focus sessions are K.R.I.S.'s own.** Apple's Clock app cannot be
+scripted, so K.R.I.S. never claims to set a Clock timer or alarm. Say "Set a
+25-minute timer", "Start a 50-minute focus session", "Give me a 10-minute break
+after that", "How much time is left?" or "Cancel the timer" (if several are
+running it asks which). Running timers appear in the Alerts tab with a
+countdown. When one ends, K.R.I.S. shows a macOS notification (allow
+notifications for the app that runs K.R.I.S. the first time), plays a short
+chime, notes it in the Console, and speaks it when speech is on and the
+microphone is not in use. Timers are saved, so they survive a restart, **but
+they only alert while K.R.I.S. is running**: a timer that ends while K.R.I.S. is
+closed is reported as *missed* (with its end time) the next time it starts,
+never as done.
+
+To be alerted even if K.R.I.S. is closed, ask for a reminder: "Set a 25-minute
+focus session and remind me when it's over". K.R.I.S. then also creates an Apple
+Reminder ("K.R.I.S. timer 3: 25-minute focus session ends") at the end time,
+rounded up to the next minute because Reminders has no seconds, and confirms it
+with Reminders before saying so. Reminders alerts on its own, and keeps the
+alert across a Mac restart. Cancelling the timer marks that reminder complete
+(it is never deleted); if Reminders refuses, K.R.I.S. says the reminder will
+still alert. After a timer with a reminder ends, K.R.I.S. marks the reminder
+complete a couple of minutes later, so finished timers do not pile up as
+overdue reminders. Without the request, no reminder is created.
+
+## Approvals, spoken confirmation and the Mac
+
+### Confirmation policy
+
+Small, readily undone actions run as soon as you ask for them; consequential ones wait for
+your approval. "Asked for" means your own message requests that kind of action (for
+example "remind me", "set a timer", "mark it as read", "open GitHub"); the model choosing
+an action by itself is never enough, so the same call then asks first. Arguments are always
+validated, targets must come from the current conversation (a reminder or email found
+earlier), and each result is read back before it is reported.
+
+| Runs directly when you ask | Always asks for approval |
+| --- | --- |
+| Start or cancel a K.R.I.S. timer or focus session | Sending, replying to or forwarding email; sending a draft |
+| Add, complete or move an Apple Reminder | Creating Gmail drafts |
+| Mark an email read or unread; star or unstar it | Archiving, trashing or labelling email |
+| Open an approved app you named, or a website you named | All Calendar changes |
+| Set or change the volume; mute or unmute | Deleting tasks or notes; opening a file |
+| Play, pause or skip in Music or Spotify | Opening an app or website the model chose itself |
+| Run a project's configured tests; open a project in the editor | Any tool named as a file change, install or Git change (none exist) |
+
+A timer with an end-of-timer reminder is direct only when you asked to be reminded. Tasks
+and notes keep their earlier rule (direct when your message asks for that exact write).
+Apple Clock alarms are not available (macOS has no reliable interface; see FUTURE.md).
+
+### Spoken confirmation
+
+When an action needs approval, K.R.I.S. shows it in the approval panel and, if speech is on,
+reads it out ("Waiting for your confirmation: Send email to ... Say "confirm" to approve it,
+or "cancel".") In a hands-free conversation it then listens once for the answer.
+
+- Only a short, explicit reply approves: "confirm", "confirmed", "yes, confirm", "approve".
+  A bare "yes", "okay" or "sure" is not approval (whisper and background audio produce those
+  easily); K.R.I.S. asks you to say "confirm". "Cancel", "no" or "never mind" cancel.
+- A spoken "confirm" approves only the action that was already read out (or shown) when the
+  recording started, through the same request as the Confirm button; the server accepts each
+  approval once, so stale or repeated approvals never run anything.
+- Anything else said while an action waits is not sent hands-free (sending a new message
+  would cancel the action); it goes to the message box and the action keeps waiting. After
+  two answers that are neither confirm nor cancel, or silence, the buttons remain.
+- Stopping the read-back with Stop speaking does not listen for an answer; tap the mic or use
+  the buttons. Typing "confirm" in chat is a message, never an approval.
+
+### Wake acknowledgement
+
+When K.R.I.S. hears its name it answers with one of a few short acknowledgements ("Yes?",
+"I'm listening.", "Go ahead.", ...), never one of the last three it used, and never with
+its name, so it cannot wake itself (standby has also released the microphone while it speaks).
+
+### Mac control and system status
+
+- Volume: "what's the volume?", "set the volume to 30", "a bit louder", "mute". Uses macOS
+  Standard Additions (no permission needed). Values are limited to 0-100 and read back.
+  Outputs whose volume is set on the device (some HDMI/digital outputs) are reported as such.
+- Playback: play, pause, toggle, next and previous in Music or Spotify, and "what's playing?",
+  only when that player is already running (it is never launched). The first use asks for
+  permission to control that player (System Settings > Privacy & Security > Automation).
+  Video or audio in a browser cannot be controlled.
+- Apps and websites: approved apps (`allowed_apps`) and validated http(s) URLs, as above;
+  "is Safari running?" checks an approved app without opening it.
+- System: `get_system_info` adds load averages (with the core count) and uptime to the
+  battery, memory, disk, CPU, GPU and thermal readings; anything unavailable is reported
+  as unavailable, never estimated. Nothing polls in the background for this.
+
+### Developer companion
+
+Configure projects in `config.ini` (see `config.ini.example`):
+
+```ini
+[projects]
+Project-U = ~/Project-U
+
+[project_tests]
+Project-U = .venv/bin/python -m unittest discover -s tests
+    node --test tests/js/
+
+[developer]
+editor = Visual Studio Code
+test_timeout_seconds = 300
+```
+
+Then ask "check the Git status of Project-U", "do I have uncommitted changes?", "summarize my
+changes", "show the recent commits", "run the tests for this project", "show me the latest
+test results" or "open this project in my editor". With one project configured, "this
+project" means it.
+
+- Git is read-only: status, branch and upstream, per-file line counts of staged and unstaged
+  changes (never file contents), recent commits, and remotes without embedded credentials.
+  `/usr/bin/git` runs with argument lists only for `status`, `diff`, `log`, `rev-parse` and
+  `remote -v`; optional locks, pagers, external diff and text conversion are off.
+- Tests run exactly the configured commands, without a shell, from the project folder, each
+  stopped after `test_timeout_seconds` (its whole process group). Results are passed, failed
+  (non-zero exit, whatever the output says), timed out or unavailable, with the runner's
+  summary line and a short, credential-masked output tail. Opt-in live-test switches
+  (`LIVE_*`, `*_SMOKE`) are removed from their environment. Nothing is installed. The latest
+  result per project is kept in memory until K.R.I.S. restarts.
+- Nothing stages, commits, resets, checks out, pushes, edits files or installs packages.
+  Those tools do not exist; `check_confirmation_boundaries` refuses to register any of them
+  without confirmation, and refuses a generic command runner outright.
 
 ## Selected documents
 
@@ -618,10 +783,10 @@ audio stops at once and U records your next words, which then go through the
 normal end-of-speech, transcription, and chat steps. Exactly one recording starts
 and it is sent once; the interrupted audio never resumes or triggers another
 recording. If the microphone cannot start, U shows the error, pauses Hands-free,
-and does not retry. Interrupting a confirmation prompt never approves or cancels
-the action: a spoken "yes" is still ignored, "no" or "cancel" cancels as before,
-anything else is a new message (which cancels the waiting action, as typed
-messages do), and if you say nothing U simply goes back to waiting for Confirm or
+and does not retry. Interrupting a confirmation prompt does not approve the action:
+answers follow "Spoken confirmation" above ("confirm" approves the action shown,
+"cancel" cancels, a bare "yes" is asked about, anything else stays in the message
+box hands-free), and if you say nothing U goes back to waiting for Confirm or
 Cancel. In Review mode, pressing the mic while U speaks also stops the audio, but
 recording is manual as always (it lasts only while you hold) and nothing is sent
 automatically. Turning Hands-free off, starting a new conversation, or switching
@@ -633,7 +798,7 @@ cannot be interrupted, so wait for the reply and interrupt it while it is spoken
 
 **Wake word ("Kris").** Switch on **Wake word** (next to Hands-free; it turns
 Hands-free on too) and say "Kris", like the name Chris, on its own. K.R.I.S.
-answers "Yes?" and listens for your request exactly as if you had tapped the
+answers with a short acknowledgement ("Yes?", "Go ahead.", ...) and listens for your request exactly as if you had tapped the
 mic; the conversation then continues hands-free (barge-in, Stop speaking and
 confirmations work as above). When you have not said anything for
 `wake_follow_up_seconds` (default 8, range 3–30, and shorter than `max_seconds`)
@@ -659,7 +824,7 @@ Limits, honestly:
 - "Kris" and "Chris" sound the same, so saying "Chris" on its own will also wake
   it. Mentioning Chris in a sentence ("I called Chris yesterday") does not.
 - It can miss the name if you run it into other words ("Kris what's the time"):
-  say the name, pause briefly, then speak after "Yes?". Very quiet speech, or
+  say the name, pause briefly, then speak after the acknowledgement. Very quiet speech, or
   speech in steady loud noise, can also be missed.
 - Other short words heard as the name can wake it occasionally; switch it off
   when you do not want to be listened to.

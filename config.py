@@ -2,6 +2,7 @@ import configparser
 from pathlib import Path
 
 from computer_utilities import UtilitySettings, build_utility_settings
+from developer import DeveloperSettings, build_developer_settings
 from google_workspace import GoogleSettings, build_google_settings
 from voice import VoiceSettings, build_voice_settings
 
@@ -34,6 +35,24 @@ def load_utility_settings(
     folders = dict(parser.items("utility_folders")) if parser.has_section("utility_folders") else {}
     apps = parser.get("utilities", "allowed_apps", fallback="").split(",")
     return build_utility_settings(folders, apps, home)
+
+
+def load_developer_settings(config_path: Path = CONFIG_PATH, home: Path | None = None) -> DeveloperSettings:
+    """Read [projects], [project_tests] and [developer]; without [projects], the developer tools are off."""
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str  # keep project labels as written
+    if not parser.read(config_path) or not parser.has_section("projects"):
+        return DeveloperSettings()
+    tests = dict(parser.items("project_tests")) if parser.has_section("project_tests") else {}
+    developer = dict(parser.items("developer")) if parser.has_section("developer") else {}
+    return build_developer_settings(dict(parser.items("projects")), tests, developer, home)
+
+
+def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, bool]:
+    """[ui] switches. tasks_tab: show the Tasks tab (hidden by default; Apple Reminders is primary)."""
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(config_path)
+    return {"tasks_tab": parser.getboolean("ui", "tasks_tab", fallback=False)}
 
 
 def load_voice_settings(config_path: Path = CONFIG_PATH) -> VoiceSettings:

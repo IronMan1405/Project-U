@@ -1041,6 +1041,20 @@ class RuntimeWebApiTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(response_holder[0].status_code, 200)
 
+    def test_web_open_website_named_by_the_user_opens_directly(self):
+        model = Mock(side_effect=[
+            assistant_tool_call("open_website", {"url": "https://github.com/"}),
+            {"role": "assistant", "content": "Opened GitHub."},
+        ])
+        browser = Mock(return_value=True)
+        with unittest.mock.patch.object(assistant_runtime, "ask_ollama", model), unittest.mock.patch(
+            "tool_registry.webbrowser.open", browser
+        ):
+            conversation_id = self.client.post("/api/conversations", json={}).get_json()["conversation_id"]
+            chat = self.client.post("/api/chat", json={"conversation_id": conversation_id, "message": "Kris, open GitHub"})
+        self.assertIsNone(chat.get_json()["pending_confirmation"])
+        browser.assert_called_once_with("https://github.com/", new=2, autoraise=True)
+
     def test_web_open_website_requires_confirmation_before_launch(self):
         model = Mock(
             side_effect=[
@@ -1054,7 +1068,7 @@ class RuntimeWebApiTests(unittest.TestCase):
         ):
             conversation_id = self.client.post("/api/conversations", json={}).get_json()["conversation_id"]
             chat = self.client.post(
-                "/api/chat", json={"conversation_id": conversation_id, "message": "Open https://example.com"}
+                "/api/chat", json={"conversation_id": conversation_id, "message": "Open the site from that email"}
             )
             pending = chat.get_json()["pending_confirmation"]
             self.assertEqual(chat.status_code, 200)

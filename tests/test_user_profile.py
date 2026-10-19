@@ -38,12 +38,40 @@ class ProfileLoadingTests(unittest.TestCase):
 
         self.assertEqual(user_profile.load_profile(self.profile_path), expected)
 
+    def test_optional_name_and_about_load_only_when_set(self):
+        self.profile_path.write_text(json.dumps({
+            "name": "  Sam  ", "about": [" Computer engineering student ", "Prefers metric units"],
+        }), encoding="utf-8")
+        profile = user_profile.load_profile(self.profile_path)
+        self.assertEqual(profile["name"], "Sam")
+        self.assertEqual(profile["about"], ["Computer engineering student", "Prefers metric units"])
+        self.profile_path.write_text(json.dumps({"name": "", "about": []}), encoding="utf-8")
+        self.assertEqual(user_profile.load_profile(self.profile_path), user_profile.DEFAULT_PROFILE)
+
+    def test_profile_context_names_the_user_without_inventing_anything(self):
+        named = user_profile.profile_context_message({**user_profile.DEFAULT_PROFILE, "name": "Sam"})["content"]
+        self.assertIn("The user's name is Sam.", named)
+        self.assertIn("sparingly", named)
+        self.assertIn("Never invent personal details", named)
+        unnamed = user_profile.profile_context_message(user_profile.load_profile(self.profile_path))["content"]
+        self.assertIn("has not told you their name", unnamed)
+        self.assertIn("never guess one", unnamed)
+        # Identity (who K.R.I.S. is) stays out of the user's profile message, and vice versa.
+        self.assertNotIn("K.R.I.S.", named)
+        self.assertNotIn("Sam", assistant_runtime.system_prompt("m"))
+
     def test_malformed_and_invalid_profiles_use_defaults(self):
         invalid_profiles = [
             "{not json",
             json.dumps({"response_style": 3}),
             json.dumps({"interests": "music"}),
             json.dumps(["not", "an", "object"]),
+            json.dumps({"name": 7}),
+            json.dumps({"name": "x" * 81}),
+            json.dumps({"name": "a\nb"}),
+            json.dumps({"about": "student"}),
+            json.dumps({"about": ["ok", ""]}),
+            json.dumps({"nickname": "Sam"}),
         ]
         for contents in invalid_profiles:
             with self.subTest(contents=contents):

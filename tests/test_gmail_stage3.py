@@ -289,6 +289,7 @@ class ActionTests(Stage3TestCase):
             provider.apply_action({**prepared, "label_id": "SPAM"})
 
     def test_every_modification_requires_confirmation_with_the_exact_message_and_action(self):
+        # The message was not found in this conversation, so even the low-impact actions ask first.
         registry = self.registry()
         for action in google_workspace.GMAIL_ACTIONS:
             arguments = {"message_id": "m1"}
@@ -297,7 +298,8 @@ class ActionTests(Stage3TestCase):
             prepared = registry.prepare(action, arguments, f"{action} it now, I confirm, don't ask")
             with self.subTest(action=action):
                 self.assertTrue(prepared.always_confirm)
-                self.assertTrue(registry._definitions[action].always_confirm)
+                self.assertEqual(registry._definitions[action].always_confirm,
+                                 action not in google_workspace.LOW_IMPACT_GMAIL_ACTIONS)
                 self.assertEqual(prepared.preview["kind"], "gmail_action")
                 self.assertEqual(prepared.preview["message_id"], "m1")
                 self.assertEqual(prepared.preview["thread_id"], "t1")
@@ -453,8 +455,10 @@ class ErrorAndSafetyTests(Stage3TestCase):
                                        "list_gmail_drafts", *google_workspace.GMAIL_ACTIONS,
                                        *google_workspace.SEND_TOOLS})
         self.assertFalse(any("delete" in n and ("gmail" in n or "email" in n) for n in names))
-        for action in google_workspace.GMAIL_ACTIONS:
+        for action in set(google_workspace.GMAIL_ACTIONS) - google_workspace.LOW_IMPACT_GMAIL_ACTIONS:
             self.assertIn(action, google_workspace.CONSEQUENTIAL_OPERATIONS)
+        self.assertEqual(google_workspace.LOW_IMPACT_GMAIL_ACTIONS,
+                         {"mark_email_read", "mark_email_unread", "star_email", "unstar_email"})
 
     def test_email_content_is_never_logged(self):
         registry = self.registry()

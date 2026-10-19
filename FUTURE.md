@@ -144,3 +144,26 @@ in `TODO.md`.
   same path checks as `open_file`, to reach files beyond the entry limit.
 - Sorting or filtering tasks by due date, and a "due today" state.
 - Math rendering for assistant replies, if it can be added without large assets.
+
+### Native alarms and timers through Shortcuts (evaluated 2026-10-19, not adopted)
+Tested on macOS 26.6.2 with three hand-built shortcuts (`KRIS Set Alarm`, `KRIS Find
+Alarms`, `KRIS Delete Alarms`) run through `/usr/bin/shortcuts run`:
+- Clock declares Add Alarm, Find Alarms, Delete Alarms, Toggle Alarm, Start Timer, Get
+  Current Timer and Cancel/Pause/Resume Timer, but the Shortcuts app offers only **Set
+  Timer** for timers, so a native timer can be started but never verified or cancelled
+  (and Cancel Timer has no target, so it could stop a timer the user set).
+- Add Alarm works: the alarm appears in Clock, rings (tested with Clock open), and the
+  shortcut returns the alarm's label, which can be checked. But one run hung past 25 s
+  although the alarm was created, so a timeout does not mean failure.
+- Find Alarms is not trustworthy: returning alarm objects hung; returning text, it
+  returned nothing while two alarms existed and stale results after deletions. Delete
+  Alarms deleted correctly, but its Find-based "remaining" count was wrong twice. Without
+  a reliable Find, K.R.I.S. cannot list, verify or precisely cancel alarms.
+- Clock alarms are time-of-day only (the next occurrence), not a specific date.
+Not tested: an alarm with the Clock app quit, and across a Mac restart.
+Decision: K.R.I.S.-managed timers stay; no Shortcuts integration. Alternatives considered:
+a Swift notification helper (needs a signed app bundle for notification permission; too
+heavy) and launchd agents (persistent files in ~/Library/LaunchAgents, one-shot jobs need
+cleanup; more intrusive than the problem warrants). For an alert that must fire while
+K.R.I.S. is closed, an Apple Reminder at the end time is the verified, cancellable native
+option (already supported by the reminder tools).

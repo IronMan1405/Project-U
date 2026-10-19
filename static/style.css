@@ -1508,6 +1508,16 @@ button {
   background: rgb(var(--danger-rgb) / 7%);
 }
 
+/* A running timer: information, not a problem. */
+.alert-item[data-kind="info"] {
+  border-left-color: var(--accent);
+  background: rgb(var(--accent-rgb) / 7%);
+}
+
+.alert-item[data-kind="info"] .alert-kind {
+  color: var(--accent);
+}
+
 .alert-kind {
   display: block;
   margin-bottom: 2px;
@@ -2309,6 +2319,10 @@ button {
 
 .alert-item[data-kind="danger"] {
   background: linear-gradient(90deg, rgb(var(--danger-rgb) / 8%), transparent);
+}
+
+.alert-item[data-kind="info"] {
+  background: linear-gradient(90deg, rgb(var(--accent-rgb) / 8%), transparent);
 }
 
 .alert-kind {

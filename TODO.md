@@ -201,8 +201,8 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] First listening pass (2026-10-19): 5,4,4,5,5,4,5,5 out of 5; pauses after "Dr.", "a.m.", "J." and inside "9:30"/"$1,249.99" fixed with speech-only rewrites (verified by silent-gap measurement and whisper)
 - [x] Listen to the v2 samples and in the app after restarting
 - [x] Voice comparison (af_heart, af_bella, bf_emma, af_kore): af_bella chosen (2026-10-19); dates spoken as ordinals ("the 12th of March", "March 12th"); email addresses as "ada at example dot org"
-- [ ] Listen to af_bella in the app after restarting
-- [ ] Review the voice diff and commit
+- [x] Listen to af_bella in the app after restarting
+- [x] Review the voice diff and commit
 
 ### 15. Personality and identity
 - [x] Audit: no identity in any prompt (the model introduced itself as "a large language model, trained by Google"); old name "U" in two model-visible strings
@@ -210,7 +210,31 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Catchphrase tuned on gemma4:e4b: first wording put it in 8 of 19 replies (including identity answers and a cancer question); final wording 0 of 19 there, 6 of 10 in banter about minor false claims
 - [x] Deterministic tests (`tests/test_identity.py`) and `LIVE_MODEL=1` checks against the real model
 - [ ] Use it for a few days; adjust if the catchphrase feels too frequent or too rare
-- [ ] Review the identity diff and commit
+- [x] Review the identity diff and commit
+
+### 16. Daily briefing, reminders, timers and focus sessions
+- [x] Audit: SQLite tasks, Google Calendar provider, explicit-intent write policy; no scheduler, reminders or notifications existed. Reminders is scriptable (AppleScript dictionary); Clock is not (no dictionary), so timers are K.R.I.S.-managed
+- [x] `get_briefing` (`briefing.py`): calendar, tasks, reminders, timers with per-source status and de-duplication
+- [x] Apple Reminders (`reminders.py`): list, create (no duplicates), complete, reschedule, all read back; no delete; seen-ID guard
+- [x] Timers and focus sessions (`timers.py`): persisted, queued "after that", cancel/ambiguity, restart recovery (missed), macOS notification, page alerts
+- [x] Intent rule accepts a leading "Kris," and plural "tasks"; tests (`tests/test_planning.py`, fakes); live model probe of 9 conversations
+- [x] Live tests from the terminal that runs K.R.I.S. (2026-10-19): `LIVE_NOTIFY=1` passed; `LIVE_REMINDERS=1` first failed (Reminders reports `allday due date` for timed reminders too, so read-back saw a date-only reminder), fixed, then passed
+- [x] Evaluate macOS Shortcuts as a native alarm/timer backend (2026-10-19): not reliable enough (see FUTURE.md); K.R.I.S.-managed timers stay
+- [x] Optional verified Apple Reminder at a timer's end ("remind me when it's over"), completed on cancel and after it alerts; tests
+- [ ] Run `LIVE_REMINDERS=1` again (now includes the timer reminder test)
+- [ ] Review the planning diff and commit
+### 17. Mac control, developer companion and interaction polish
+- [x] Voice confirmation: explicit "confirm"/"cancel" for the action read out, through `/api/confirm`
+- [x] Confirmation policy: low-impact actions direct when asked; consequential ones still confirmed
+- [x] Varied wake acknowledgements; profile `name` and `about`
+- [x] Volume, mute, Music/Spotify playback, app status, load average and uptime
+- [x] Projects: read-only Git, allowlisted test runs, open in editor
+- [x] Tasks tab hidden behind `[ui] tasks_tab`
+- [ ] Live checks: spoken confirm/cancel hands-free; wake acknowledgements; mute/unmute; Music
+      and Spotify playback (Automation permission); open a project in VS Code
+- [ ] Add your `name` to profile.json if you want K.R.I.S. to use it
+- [ ] Review the diff and commit
+
 ## Scope Rules
 - One feature at a time.
 - Keep the project local-first.

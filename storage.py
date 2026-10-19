@@ -162,6 +162,19 @@ def initialize_database(database_path: str | Path | None = None) -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            -- K.R.I.S.-managed timers and focus sessions (timers.py). Times are UTC ISO strings.
+            CREATE TABLE IF NOT EXISTS timers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL CHECK (kind IN ('timer', 'focus', 'break')),
+                label TEXT NOT NULL DEFAULT '',
+                duration_seconds INTEGER NOT NULL CHECK (duration_seconds > 0),
+                status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'cancelled', 'missed')),
+                created_at TEXT NOT NULL,
+                starts_at TEXT,
+                ends_at TEXT,
+                after_timer_id INTEGER REFERENCES timers(id),
+                finished_at TEXT
+            );
             """
         )
         task_columns = {
@@ -169,6 +182,12 @@ def initialize_database(database_path: str | Path | None = None) -> None:
         }
         if "due_at" not in task_columns:
             connection.execute("ALTER TABLE tasks ADD COLUMN due_at TEXT")
+        # A timer's optional Apple Reminder at its end time (timers.py): ID, due (UTC) and
+        # state (open, completed, or failed when Reminders refused to complete it).
+        timer_columns = {row["name"] for row in connection.execute("PRAGMA table_info(timers)").fetchall()}
+        for column in ("reminder_id", "reminder_due", "reminder_state"):
+            if column not in timer_columns:
+                connection.execute(f"ALTER TABLE timers ADD COLUMN {column} TEXT")
 
 
 def list_tasks(database_path: str | Path | None = None) -> list[dict]:

@@ -344,12 +344,22 @@ def transcribe(settings: VoiceSettings, audio: bytes, mime_type: str, max_second
 
 # Whole-utterance replies to a pending confirmation. Only a transcript that is *just*
 # one of these phrases is classified; anything longer (e.g. "no, open the March one") is
-# an ordinary message. "affirm" never approves anything: the page asks for the Confirm
-# button instead. "decline" acts like the Cancel button, which can never run an action.
+# an ordinary message. Only "confirm" approves, and only the action that was read out before
+# the recording started (static/voice_loop.js, confirmationDecision). "affirm" (a bare "yes",
+# which background audio and whisper produce easily) never approves anything: the page asks
+# for "confirm". "decline" acts like the Cancel button, which can never run an action.
+# "unclear" is a short reply that mentions approving but is not a clean "confirm" ("don't
+# confirm", "confirm or cancel"); the action keeps waiting and the page asks again.
+_CONFIRM_PHRASES = frozenset({
+    "confirm", "confirmed", "confirm it", "confirm that", "confirm this", "i confirm",
+    "approve", "approved", "approve it", "approve that", "approve this", "i approve",
+})
+_CONFIRM_LEAD = frozenset({"yes", "yeah", "yep", "ok", "okay", "kris", "chris"})
+_APPROVAL_WORDS = frozenset({"confirm", "confirmed", "confirming", "approve", "approved", "approving"})
 _AFFIRM_PHRASES = frozenset({
-    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm", "confirmed", "approve",
-    "approved", "do it", "go ahead", "go for it", "please do", "yes please", "yes do it",
-    "yes go ahead", "sounds good", "correct", "that's right", "thats right", "right",
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "do it", "go ahead", "go for it",
+    "please do", "yes please", "yes do it", "yes go ahead", "sounds good", "correct",
+    "that's right", "thats right", "right",
 })
 _DECLINE_PHRASES = frozenset({
     "no", "nope", "nah", "no thanks", "no thank you", "cancel", "cancel it", "cancel that",
@@ -361,17 +371,25 @@ _FILLER = frozenset({"please", "thanks", "thank", "you", "um", "uh", "oh", "well
 
 
 def classify_reply(text: str) -> str | None:
-    """Classify a transcript as 'affirm', 'decline', or None (an ordinary message)."""
+    """Classify a transcript as 'confirm', 'affirm', 'decline', 'unclear', or None (ordinary)."""
     words = re.findall(r"[a-z']+", (text or "").casefold().replace("\u2019", "'"))
     if not words or len(words) > 6:
         return None
     phrase = " ".join(words)
-    core = " ".join(word for word in words if word not in _FILLER) or phrase
+    core_words = [word for word in words if word not in _FILLER]
+    core = " ".join(core_words) or phrase
+    approval = core_words
+    while approval and approval[0] in _CONFIRM_LEAD:
+        approval = approval[1:]
+    if " ".join(approval) in _CONFIRM_PHRASES:
+        return "confirm"
     for candidate in (phrase, core):
         if candidate in _DECLINE_PHRASES:
             return "decline"
         if candidate in _AFFIRM_PHRASES:
             return "affirm"
+    if _APPROVAL_WORDS & set(words):
+        return "unclear"
     return None
 
 
