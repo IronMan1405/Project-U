@@ -203,6 +203,14 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Voice comparison (af_heart, af_bella, bf_emma, af_kore): af_bella chosen (2026-10-19); dates spoken as ordinals ("the 12th of March", "March 12th"); email addresses as "ada at example dot org"
 - [ ] Listen to af_bella in the app after restarting
 - [ ] Review the voice diff and commit
+
+### 15. Personality and identity
+- [x] Audit: no identity in any prompt (the model introduced itself as "a large language model, trained by Google"); old name "U" in two model-visible strings
+- [x] `identity_prompt` in the existing system message (typed and voice share it); "U" replaced by K.R.I.S. in model-visible text
+- [x] Catchphrase tuned on gemma4:e4b: first wording put it in 8 of 19 replies (including identity answers and a cancer question); final wording 0 of 19 there, 6 of 10 in banter about minor false claims
+- [x] Deterministic tests (`tests/test_identity.py`) and `LIVE_MODEL=1` checks against the real model
+- [ ] Use it for a few days; adjust if the catchphrase feels too frequent or too rare
+- [ ] Review the identity diff and commit
 ## Scope Rules
 - One feature at a time.
 - Keep the project local-first.

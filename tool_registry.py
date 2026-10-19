@@ -271,7 +271,7 @@ class ToolRegistry:
         due_at_description = (
             f"Machine-format due date, never natural language: {TOOL_DUE_AT_FORMAT_DESCRIPTION}. "
             "Specific times are supported: write the user's local date and time as they said it "
-            "(e.g. 'tomorrow at 5 AM' -> '<tomorrow> 05:00'); do not convert to UTC, U does that."
+            "(e.g. 'tomorrow at 5 AM' -> '<tomorrow> 05:00'); do not convert to UTC, K.R.I.S. does that."
         )
         self._definitions = {
             "create_task": ToolDefinition(

@@ -87,6 +87,24 @@ command bar pinned to the bottom. Animations stop when
 the system asks for reduced motion. The server, terminal client and model prompts
 still call the assistant "U"; only the web UI has been renamed so far.
 
+## Who K.R.I.S. is
+
+K.R.I.S. stands for **Knowledge & Reasonably Intelligent System**; its name is
+spoken "Kris", like "Chris". Ask "Who are you?" or "What does K.R.I.S. stand
+for?" and it answers as K.R.I.S. Ask what it really is and it says honestly that
+it is an assistant application running the local model set in `config.ini`
+(`gemma4:e4b` by default) through its tools, and that it is not conscious.
+
+Its manner is composed, practical and concise, with occasional dry humour. It
+corrects mistaken claims plainly, admits its own mistakes without fuss, and says
+when it does not know. Now and then, in light banter where you are confidently
+wrong about something minor, it may add its signature line, "Kindly Remember,
+I'm Smart." Nothing inserts that line automatically, and it is told never to use
+it after its own mistake, in serious topics, or in approvals and error messages.
+The same identity applies to typed and spoken conversations. It is defined in
+`identity_prompt` in `assistant_runtime.py` and never overrides the tool,
+approval and data rules.
+
 ## Profile and preferences
 
 U reads `profile.json` from the project directory before each model request, so

@@ -823,7 +823,7 @@ class AssistantRuntimeTests(unittest.TestCase):
         calls = [call.args[2] for call in model.call_args_list]
         # Every request starts with the same fixed prefix.
         for messages in calls:
-            self.assertEqual(messages[1], {"role": "system", "content": assistant_runtime.SYSTEM_RULES})
+            self.assertEqual(messages[1], {"role": "system", "content": assistant_runtime.system_prompt("test-model")})
             self.assertNotIn("Current local date", messages[1]["content"])
         # Each turn's request begins with the previous turn's full request prefix (minus
         # the per-request context), so the cached earlier turns are reused unchanged.
