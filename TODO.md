@@ -235,6 +235,16 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [ ] Add your `name` to profile.json if you want K.R.I.S. to use it
 - [ ] Review the diff and commit
 
+### 18. Folder search, opening anything, Apple Music library
+- [x] `find_folders` (word-start matching, exact first, ambiguity reported, symlink-safe, skips build folders)
+- [x] `open_file` with default or named app, folders included; `open_in_editor` replaces `open_project`
+- [x] Ambiguous matches are never opened or played without the user choosing
+- [x] Apple Music: library songs and playlists only (catalogue search has no native interface)
+- [x] Live: `LIVE_MUSIC=1` search and verified play of a library song (2026-10-20; fixed reserved AppleScript
+      variable names `st` and `kind` that stopped the play, playback-control and now-playing scripts compiling)
+- [ ] Live: open a file and a folder in VS Code; Spotify playback controls
+- [ ] Review the diff and commit
+
 ## Scope Rules
 - One feature at a time.
 - Keep the project local-first.

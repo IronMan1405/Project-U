@@ -17,7 +17,7 @@ import google_workspace
 import system_telemetry
 from computer_utilities import UtilityError, UtilitySettings
 from developer import MAX_COMMITS, DeveloperCompanion, DeveloperError
-from mac_control import MEDIA_ACTIONS, PLAYERS, MacControl, MacControlError
+from mac_control import MEDIA_ACTIONS, PLAYERS, MacControl, MacControlError, music_play, music_search
 from briefing import build_briefing
 from reminders import AppleReminders, Due, RemindersError
 from timers import TimerError, TimerService, timer_name
@@ -250,7 +250,7 @@ LOW_IMPACT_INTENT = {
     "set_volume": [r"\b(?:volume|louder|quieter|softer)\b", r"\bturn (?:it|the sound|that)? ?(?:up|down)\b"],
     "set_muted": [r"\b(?:mute|unmute|silence)\b", r"\bsound (?:on|off|back)\b"],
     "media_control": [r"\b(?:play|pause|resume|skip|next|previous|prev|go back|restart)\b"],
-    "open_project": [r"\b(?:open|launch|start|bring up|pull up)\b"],
+    "play_music": [r"\b(?:play|put on|listen to|start)\b"],
     "run_project_tests": [r"\b(?:run|rerun|re-run|execute|start|kick off)\b.{0,60}\b(?:tests?|test suite|specs?)\b",
                           r"\btest (?:it|this|the project|project)\b"],
 }
@@ -345,6 +345,12 @@ class ToolRegistry:
         self._seen_draft_ids: set[str] = set()
         # Gmail message IDs returned by search or read in this conversation (see LOW_IMPACT_INTENT).
         self._seen_message_ids: set[str] = set()
+        # Paths returned by file and folder searches in this conversation, and the matches the
+        # latest search returned for the current message (see _check_unambiguous).
+        self._seen_paths: set[str] = set()
+        self._candidates: dict[str, tuple[str, list[tuple[str, list[str]]]]] = {}
+        self._current_message = ""
+        self._seen_music: dict[str, dict] = {}  # Music items from find_music in this conversation
         # Read lazily: the shared service starts CPU sampling only when first used.
         self._telemetry = telemetry
         self.browser_open = browser_open or webbrowser.open
@@ -1033,14 +1039,35 @@ class ToolRegistry:
         return PreparedToolCall(name=name, arguments=prepared, summary=summary, always_confirm=True,
                                 direct_write=False, preview=preview)
 
+    def _search_roots(self) -> UtilitySettings:
+        """Approved folders plus configured projects (by label), for searching and opening."""
+        folders = dict(self.utilities.folders)
+        if self.developer is not None:
+            taken = {label.casefold() for label in folders}
+            for label, path in self.developer.settings.projects.items():
+                if label.casefold() not in taken:
+                    folders[label] = path
+        return UtilitySettings(folders, self.utilities.apps)
+
+    def _open_applications(self) -> list[str]:
+        """Applications open_file may name: the approved list plus the configured editor."""
+        names = list(self.utilities.apps)
+        editor = self.developer.settings.editor if self.developer is not None else None
+        if editor and editor.casefold() not in {name.casefold() for name in names}:
+            names.append(editor)
+        return names
+
     def _register_utilities(self) -> None:
-        folder_labels = list(self.utilities.folders)
+        roots = self._search_roots()
+        folder_labels = list(roots.folders)
         if folder_labels:
+            root_list = f"Approved roots: {', '.join(folder_labels)}."
             self._definitions["find_files"] = ToolDefinition(
                 "find_files",
                 "Search file names (not contents) in the user's approved root folders and "
-                f"their subfolders. Approved roots: {', '.join(folder_labels)}. Returns at most "
+                f"their subfolders. {root_list} Returns at most "
                 f"{computer_utilities.MAX_FILE_RESULTS} matches as 'Root/subfolder/file'. "
+                "For folders use find_folders instead. "
                 "Each call is one search: report exactly what it returned, and only say you "
                 "searched again after calling this tool again.",
                 _object_schema(
@@ -1069,24 +1096,50 @@ class ToolRegistry:
                 ),
                 self._find_files,
             )
+            self._definitions["find_folders"] = ToolDefinition(
+                "find_folders",
+                "Search folder names (not files) in the user's approved root folders, their subfolders and "
+                f"the configured projects. {root_list} Use it for 'find my X folder', 'where is the X folder', "
+                "'folders named X'. Exact name matches come first; each result has a path to open and its full "
+                "location. Read-only: nothing is opened. If ambiguous is true, list the matches with their "
+                "locations and ask which one the user means before opening anything.",
+                _object_schema(
+                    {
+                        "query": {"type": "string", "minLength": 1, "maxLength": computer_utilities.MAX_QUERY_CHARS,
+                                  "description": "Words from the folder name, e.g. 'robotics' or 'Project-U'."},
+                        "folder": {"type": "string", "description": "Optional approved root to limit the search to: "
+                                   f"one of {', '.join(folder_labels)} (e.g. Desktop for 'search my Desktop')."},
+                        "include_hidden": {"type": "boolean", "description": "Only when the user explicitly asks to "
+                                           "search hidden, dependency or build folders."},
+                    },
+                    ("query",),
+                ),
+                self._find_folders,
+            )
+            applications = self._open_applications()
             self._definitions["open_file"] = ToolDefinition(
                 "open_file",
-                "Ask to open a document from an approved folder in its default macOS app. "
-                "Requires user confirmation. Only use a path returned by find_files. "
-                f"Allowed types: {', '.join(sorted(computer_utilities.OPENABLE_EXTENSIONS))}.",
+                "Open a file or folder the user identified: a path returned by find_files or find_folders, a "
+                "configured project ('Project-U'), or a path inside one ('Project-U/config.ini'). Without "
+                "application it opens with the file's default macOS app (folders open in Finder; only these "
+                f"document types: {', '.join(sorted(computer_utilities.OPENABLE_EXTENSIONS))}). With application "
+                "it opens in exactly that app; use it whenever the user names an app. Never pick a path from "
+                "several search matches yourself; ask first.",
                 _object_schema(
                     {
                         "path": {
                             "type": "string",
-                            "minLength": 3,
+                            "minLength": 1,
                             "maxLength": computer_utilities.MAX_OPEN_PATH_CHARS,
-                            "description": "Exact 'Folder/relative/path' value from find_files.",
-                        }
+                            "description": "Exact 'Root/relative/path' (or 'Root') from find_files, find_folders or a project.",
+                        },
+                        **({"application": {"type": "string", "enum": applications,
+                                            "description": "The app the user named, if any."}} if applications else {}),
                     },
                     ("path",),
                 ),
                 self._open_file,
-                always_confirm=True,
+                direct_write=True,
             )
         if self.utilities.apps:
             self._definitions["open_application"] = ToolDefinition(
@@ -1124,20 +1177,27 @@ class ToolRegistry:
                 raise ToolError(str(error)) from error
         if name == "open_website":
             arguments = {"url": validate_http_url(arguments["url"])}
-        if name == "find_files" and arguments.get("folder") is not None:
+        self._current_message = user_message
+        if name in ("find_files", "find_folders") and arguments.get("folder") is not None:
             try:
-                root = computer_utilities.resolve_search_root(self.utilities, arguments["folder"])
+                root = computer_utilities.resolve_search_root(self._search_roots(), arguments["folder"])
             except UtilityError as error:
                 raise ToolError(str(error)) from error
             arguments = {**arguments, "folder": root}
-        if name == "open_file":
-            try:
-                display_path, _ = computer_utilities.resolve_approved_file(
-                    self.utilities, arguments["path"]
-                )
-            except UtilityError as error:
-                raise ToolError(str(error)) from error
-            arguments = {"path": display_path}
+        if name in ("open_file", "open_in_editor"):
+            return self._prepare_open(name, definition, arguments, user_message)
+        if name == "play_music":
+            if arguments["item_id"] not in self._seen_music:
+                raise ToolError("Find the song or playlist with find_music first; only its results can be played.")
+            self._check_unambiguous("music", arguments["item_id"], user_message)
+            item = self._seen_music[arguments["item_id"]]
+            by = f" by {item['artist']}" if item.get("artist") else ""
+            return PreparedToolCall(
+                name=name, arguments=arguments, direct_write=True,
+                summary=f"Play {'playlist ' if item['kind'] == 'playlist' else ''}\"{item['name']}\"{by} in Music",
+                always_confirm=not (_explicit_write_requested(name, user_message)
+                                    or self._asked_with_search("music", name)),
+            )
         if name == "create_gmail_draft":
             # Resolve everything the draft will contain now, so the confirmation shows exactly
             # what an approval writes. Approval is never inferred from the user's message.
@@ -1271,10 +1331,10 @@ class ToolRegistry:
             return f"{arguments['action'].capitalize()} playback" + (f" in {arguments['player']}" if arguments.get("player") else "")
         if name == "run_project_tests":
             return f"Run the tests for {arguments.get('project') or 'the project'}"
-        if name == "open_project":
-            return f"Open {arguments.get('project') or 'the project'} in the editor"
-        if name == "open_file":
-            return f"Open file: {arguments['path']}"
+
+        if name == "find_folders":
+            scope = arguments.get("folder") or "approved folders"
+            return f"Search {scope} for folders matching {arguments['query']!r}"
         if name == "find_files":
             scope = arguments.get("folder") or "approved folders"
             kind = f" {arguments['file_type'].lstrip('.')}" if arguments.get("file_type") else ""
@@ -1390,7 +1450,8 @@ class ToolRegistry:
             "media_control",
             f"Control playback in {' or '.join(players)} when the user asks: play, pause, toggle, next or previous. "
             "Works only when that player is already running; it is never launched. Other media (for example "
-            "a video in a browser) cannot be controlled. Omit player to use the one that is running.",
+            "a video in a browser) cannot be controlled. Omit player unless the user named one: K.R.I.S. uses the "
+            "player that is running, so do not ask which player.",
             _object_schema({"action": {"type": "string", "enum": list(MEDIA_ACTIONS)},
                             "player": {"type": "string", "enum": players}}, ("action",)),
             self._media_control, direct_write=True,
@@ -1398,6 +1459,22 @@ class ToolRegistry:
         self._definitions["get_now_playing"] = ToolDefinition(
             "get_now_playing", f"Say what {' or '.join(players)} is playing (only if it is running).",
             _object_schema({"player": {"type": "string", "enum": players}}), self._get_now_playing,
+        )
+        self._definitions["find_music"] = ToolDefinition(
+            "find_music",
+            "Search the user's Apple Music library (songs, and playlists by name) for a song, artist, album, "
+            "soundtrack or playlist, e.g. 'Cornfield Chase Hans Zimmer' or 'Interstellar'. Only items already "
+            "in the library can be found; the Apple Music catalogue cannot be searched. Opens Music if needed. "
+            "Read-only: nothing plays. If several results could be what the user meant, ask which one.",
+            _object_schema({"query": {"type": "string", "minLength": 1, "maxLength": 200}}, ("query",)),
+            self._find_music,
+        )
+        self._definitions["play_music"] = ToolDefinition(
+            "play_music",
+            "Play one song or playlist from find_music results in Apple Music, by its item_id. Never choose "
+            "between several matches yourself. For pause, next or previous use media_control.",
+            _object_schema({"item_id": {"type": "string", "pattern": r"^(?:track|playlist):[0-9A-F]{16}$"}}, ("item_id",)),
+            self._play_music, direct_write=True,
         )
         if self.utilities.apps:
             self._definitions["get_app_status"] = ToolDefinition(
@@ -1467,6 +1544,32 @@ class ToolRegistry:
         return ToolOutcome(True, f"{player} is {state['state']}: {state['track']}"
                            + (f" by {state['artist']}" if state["artist"] else "") + ".", state)
 
+    def _find_music(self, arguments: dict) -> ToolOutcome:
+        try:
+            items = music_search(self.mac, arguments["query"])
+        except MacControlError as error:
+            return self._mac_failure(error)
+        self._seen_music.update({item["item_id"]: item for item in items})
+        self._remember_candidates("music", [(item["item_id"], [item["name"], item["artist"] or "", item["album"] or ""])
+                                            for item in items])
+        message = f"Found {len(items)} item(s) in the Music library."
+        if not items:
+            message += " Only songs and playlists in the library can be played; the Apple Music catalogue cannot be searched."
+        elif len(items) > 1:
+            message += " If more than one could be what the user meant, ask which one before playing."
+        return ToolOutcome(True, message, {"results": items})
+
+    def _play_music(self, arguments: dict) -> ToolOutcome:
+        item = self._seen_music.get(arguments["item_id"])
+        try:
+            state = music_play(self.mac, arguments["item_id"])
+        except MacControlError as error:
+            return self._mac_failure(error)
+        what = f"\"{state['track']}\"" + (f" by {state['artist']}" if state["artist"] else "") if state["track"] else "it"
+        if state["kind"] == "playlist" and item:
+            what = f"the playlist \"{item['name']}\" (now: {what})"
+        return ToolOutcome(True, f"Music is playing {what}.", state)
+
     def _get_app_status(self, arguments: dict) -> ToolOutcome:
         try:
             name = computer_utilities.resolve_app_name(self.utilities, arguments["name"])
@@ -1515,9 +1618,14 @@ class ToolRegistry:
             _object_schema({"project": project}), self._get_test_results,
         )
         if self.developer.settings.editor:
-            self._definitions["open_project"] = ToolDefinition(
-                "open_project", f"Open an approved project folder in {self.developer.settings.editor} when the user "
-                "asks. " + scope, _object_schema({"project": project}), self._open_project, direct_write=True,
+            self._definitions["open_in_editor"] = ToolDefinition(
+                "open_in_editor", f"Open a file or folder in {self.developer.settings.editor} (the user's editor) when "
+                "the user asks: a configured project ('Project-U'), a path inside one ('Project-U/tests', "
+                "'Project-U/config.ini'), or a path returned by find_files or find_folders. " + scope,
+                _object_schema({"path": {"type": "string", "minLength": 1,
+                                         "maxLength": computer_utilities.MAX_OPEN_PATH_CHARS,
+                                         "description": "'Project' or 'Root/relative/path'."}}, ("path",)),
+                self._open_in_editor, direct_write=True,
             )
 
     @staticmethod
@@ -1580,18 +1688,6 @@ class ToolRegistry:
         if result is None:
             return ToolOutcome(True, "No test run has been recorded since K.R.I.S. started. Ask to run the tests.")
         return ToolOutcome(True, f"Latest run ({result['finished_at']}): {result['status']}.", result)
-
-    def _open_project(self, arguments: dict) -> ToolOutcome:
-        try:
-            name, path = self.developer.project(arguments.get("project"))
-        except DeveloperError as error:
-            return self._developer_failure(error)
-        editor = self.developer.settings.editor
-        if not computer_utilities.open_supported():
-            return ToolOutcome(False, "Opening projects is only supported on macOS.")
-        if not self.open_runner(["-a", editor, str(path)]):
-            return ToolOutcome(False, f"macOS could not open {name} in {editor}.")
-        return ToolOutcome(True, f"Requested macOS to open {name} in {editor}.", {"project": name, "editor": editor})
 
     def _get_system_info(self, arguments: dict) -> ToolOutcome:
         now = datetime.now().astimezone()
@@ -1739,7 +1835,7 @@ class ToolRegistry:
     def _find_files(self, arguments: dict) -> ToolOutcome:
         try:
             found = computer_utilities.find_files(
-                self.utilities,
+                self._search_roots(),
                 arguments["query"],
                 arguments.get("folder"),
                 arguments.get("file_type"),
@@ -1758,6 +1854,12 @@ class ToolRegistry:
                 f"file type: {', '.join(retry['query_terms'])} in {'/'.join(retry['file_types'])} files. "
             )
         message += f"Found {len(found['results'])} file(s)."
+        self._seen_paths.update(result["path"] for result in found["results"])
+        self._remember_candidates("paths", [(r["path"], r["path"].split("/")) for r in found["results"]])
+        if len(found["results"]) > 1:
+            message += " If the user wants to open one, ask which unless they already said."
+        if found.get("unavailable_folders"):
+            message += " Not searched: " + "; ".join(f"{u['folder']} ({u['reason']})" for u in found["unavailable_folders"]) + "."
         if found["incomplete_folders"]:
             message += (
                 f" The {computer_utilities.MAX_SCANNED_ENTRIES:,}-entry search limit was reached "
@@ -1779,19 +1881,126 @@ class ToolRegistry:
             return ToolOutcome(False, f"macOS could not open {name}.")
         return ToolOutcome(True, f"Requested macOS to open {name}.", {"name": name})
 
-    def _open_file(self, arguments: dict) -> ToolOutcome:
-        # Re-check at execution time: the file may have changed while awaiting confirmation.
+    def _remember_candidates(self, kind: str, items: list[tuple[str, list[str]]]) -> None:
+        """Matches a search returned for the current message. Opening or playing one of several
+        that the message cannot tell apart is refused (see _check_unambiguous)."""
+        self._candidates[kind] = (self._current_message, items)
+
+    def _asked_with_search(self, kind: str, tool: str) -> bool:
+        """The request that produced the current matches already asked for this action ("play X"
+        listed two versions; "the live one" then picks one), so the choice needs no approval."""
+        record = self._candidates.get(kind)
+        return bool(record) and _explicit_write_requested(tool, record[0])
+
+    def _check_unambiguous(self, kind: str, chosen: str, message: str) -> None:
+        record = self._candidates.get(kind)
+        if not record or record[0] != message:
+            return  # a later message (e.g. "the second one") chose between them
+        items = dict(record[1])
+        if chosen not in items or len(items) < 2:
+            return
+        named = [part for part in items[chosen] if part and _mentions(message, part)]
+        for other, parts in items.items():
+            folded = {part.casefold() for part in parts}
+            if other != chosen and all(part.casefold() in folded for part in named):
+                choices = "; ".join(items)
+                raise ToolError(f"Several matches fit this request ({choices}). Nothing was opened or played: "
+                                "list them for the user and ask which one they mean.")
+
+    def _find_folders(self, arguments: dict) -> ToolOutcome:
         try:
-            display_path, file_path = computer_utilities.resolve_approved_file(
-                self.utilities, arguments["path"]
-            )
+            found = computer_utilities.find_folders(self._search_roots(), arguments["query"], arguments.get("folder"),
+                                                    bool(arguments.get("include_hidden")))
+        except UtilityError as error:
+            return _utility_failure(error)
+        results = found["results"]
+        self._seen_paths.update(result["path"] for result in results)
+        exact = [result for result in results if result["exact"]] or results
+        self._remember_candidates("paths", [(r["path"], r["path"].split("/")) for r in exact])
+        message = (f"Searched {', '.join(found['folders_searched'])} for folder names containing all of: "
+                   f"{', '.join(found['query_terms'])}. Found {len(results)} folder(s).")
+        if found["ambiguous"]:
+            message += " More than one folder matches: ask the user which one before opening any."
+        if found["unavailable_folders"]:
+            message += " Not searched: " + "; ".join(f"{u['folder']} ({u['reason']})" for u in found["unavailable_folders"]) + "."
+        if found["unreadable_subfolders"]:
+            message += f" {found['unreadable_subfolders']} subfolder(s) could not be read."
+        if found["truncated"]:
+            message += " The search limit was reached; more matches may exist (a more specific name or one root helps)."
+        return ToolOutcome(True, message, found)
+
+    def _prepare_open(self, name: str, definition: "ToolDefinition", arguments: dict, user_message: str) -> PreparedToolCall:
+        """Resolve the target (and app) now, so the summary and any confirmation show exactly what opens.
+        Direct when the user asked to open it and named it (or chose it from a search in this
+        conversation), and named the app if one is given; otherwise the user approves first."""
+        roots = self._search_roots()
+        try:
+            display, path, is_folder = computer_utilities.resolve_target(roots, arguments["path"])
+        except UtilityError as error:
+            raise ToolError(str(error)) from error
+        if name == "open_in_editor":
+            if self.developer is None or not self.developer.settings.editor:
+                raise ToolError("No editor is configured. Set editor under [developer] in config.ini.")
+            application = self.developer.settings.editor
+        else:
+            application = arguments.get("application")
+        if application is not None:
+            application = next((app for app in self._open_applications() if app.casefold() == application.casefold()), None)
+            if application is None:
+                raise ToolError("That application is not on the approved list.")
+            if is_folder and application.casefold() not in computer_utilities.FOLDER_APPLICATIONS:
+                raise ToolError(f"{application} cannot open a folder. Folders can be opened in Finder or the editor.")
+            if not is_folder and application.casefold() in computer_utilities.EXECUTING_APPLICATIONS:
+                raise ToolError(f"Files are not opened in {application}, because it could run them.")
+        elif not is_folder and path.suffix.lower() not in computer_utilities.OPENABLE_EXTENSIONS:
+            raise ToolError("Only these document types open with their default app: "
+                            f"{', '.join(sorted(computer_utilities.OPENABLE_EXTENSIONS))}. Name an app such as the editor.")
+        self._check_unambiguous("paths", display, user_message)
+        named = display in self._seen_paths or _mentions(user_message, path.name) or _mentions(user_message, display.split("/")[0]) and "/" not in display
+        app_named = application is None or name == "open_in_editor" or _mentions(user_message, application) or (
+            application.casefold() == "visual studio code" and re.search(r"\b(?:vs ?code|code|editor)\b", user_message, re.IGNORECASE))
+        open_words = r"\b(?:open|launch|show|bring up|pull up|view|edit)\b"
+        asked = bool(re.search(open_words, user_message, re.IGNORECASE))
+        record = self._candidates.get("paths")
+        if not asked and display in self._seen_paths and record and re.search(open_words, record[0], re.IGNORECASE):
+            # "Find my robotics folder and open it in VS Code" listed several; "the Desktop one" picks one.
+            asked, app_named = True, application is None or name == "open_in_editor" or _mentions(record[0], application) or app_named
+        direct = asked and named and bool(app_named)
+        prepared = {"path": display, **({"application": application} if application else {})}
+        where = f" in {application}" if application else (" in Finder" if is_folder else " with its default app")
+        return PreparedToolCall(name=name, arguments=prepared, summary=f"Open {'folder' if is_folder else 'file'} {display}{where}",
+                                always_confirm=definition.always_confirm or not direct, direct_write=True)
+
+    def _open_target(self, display_path: str, application: str | None) -> ToolOutcome:
+        # Re-check at execution time: the item may have changed while awaiting confirmation.
+        try:
+            display, path, is_folder = computer_utilities.resolve_target(self._search_roots(), display_path)
         except UtilityError as error:
             return _utility_failure(error)
         if not computer_utilities.open_supported():
             return ToolOutcome(False, "Opening files is only supported on macOS.")
-        if not self.open_runner([str(file_path)]):
-            return ToolOutcome(False, f"macOS could not open {display_path}.")
-        return ToolOutcome(True, f"Requested macOS to open {display_path}.", {"path": display_path})
+        if application is None:
+            if not self.open_runner([str(path)]):
+                return ToolOutcome(False, f"macOS could not open {display}. Check that it still exists and that the "
+                                   "app running K.R.I.S. may access that folder (Privacy & Security > Files and Folders).")
+            where = "in Finder" if is_folder else "with its default app"
+            return ToolOutcome(True, f"Requested macOS to open {display} {where}.", {"path": display})
+        bundle = computer_utilities.find_application(application)
+        if bundle is None:
+            return ToolOutcome(False, f"{application} is not installed (looked in /Applications, ~/Applications and the "
+                               "system folders). Install it or choose another app.")
+        # `open -a <bundle> <item>`: the app reuses its window for an item it already has open.
+        if not self.open_runner(["-a", str(bundle), str(path)]):
+            return ToolOutcome(False, f"macOS could not open {display} in {application}. Check that it still exists "
+                               "and that macOS allows access to that folder.")
+        return ToolOutcome(True, f"Requested macOS to open {display} in {application}.",
+                           {"path": display, "application": application})
+
+    def _open_file(self, arguments: dict) -> ToolOutcome:
+        return self._open_target(arguments["path"], arguments.get("application"))
+
+    def _open_in_editor(self, arguments: dict) -> ToolOutcome:
+        return self._open_target(arguments["path"], self.developer.settings.editor)
 
     def _open_website(self, arguments: dict) -> ToolOutcome:
         url = validate_http_url(arguments["url"])

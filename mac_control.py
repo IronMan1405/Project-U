@@ -12,6 +12,7 @@ Other media (a video in a browser, for example) cannot be controlled: macOS has 
 permission-free interface for the system-wide media keys.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -76,7 +77,7 @@ on run argv
       previous track
     end if
     delay 0.3
-    set st to (player state as text)
+    set playerState to (player state as text)
     set trackName to ""
     set trackArtist to ""
     try
@@ -84,7 +85,7 @@ on run argv
       set trackArtist to artist of current track
     end try
   end tell
-  return st & (character id 31) & trackName & (character id 31) & trackArtist
+  return playerState & (character id 31) & trackName & (character id 31) & trackArtist
 end run
 """
 
@@ -92,7 +93,7 @@ STATUS_SCRIPT = """
 on run argv
   if not (application id "{bundle}" is running) then return "not_running"
   tell application id "{bundle}"
-    set st to (player state as text)
+    set playerState to (player state as text)
     set trackName to ""
     set trackArtist to ""
     try
@@ -100,7 +101,7 @@ on run argv
       set trackArtist to artist of current track
     end try
   end tell
-  return st & (character id 31) & trackName & (character id 31) & trackArtist
+  return playerState & (character id 31) & trackName & (character id 31) & trackArtist
 end run
 """
 
@@ -117,6 +118,18 @@ class MacControlError(Exception):
         super().__init__(message)
         self.kind = kind
         self.message = message
+
+
+def script_error(stderr: str | None) -> str:
+    """A short, safe summary of an osascript failure: AppleScript's message and error number
+    (e.g. "Can't get kind. (-1728)"), without the script's line and column offsets, capped."""
+    text = " ".join((stderr or "").split())
+    match = re.search(r"execution error: (.*?)\s*\((-?\d+)\)\s*$", text)
+    if match:
+        text = f"{match.group(1)} ({match.group(2)})"
+    else:
+        text = re.sub(r"^\d+:\d+: ", "", text)  # a compile error's position prefix
+    return (text[:160] + "...") if len(text) > 160 else (text or "no details")
 
 
 def _run_osascript(script: str, arguments: list[str]) -> subprocess.CompletedProcess:
@@ -142,13 +155,13 @@ class MacControl:
         except OSError:
             raise MacControlError("unavailable", "macOS scripting could not be started.") from None
         if result.returncode == 0:
-            return result.stdout.strip()
+            return result.stdout.rstrip("\r\n")  # not strip(): it would also remove trailing \x1f separators
         error = (result.stderr or "").lower()
         if "-1743" in error or "not allowed" in error or "not authorized" in error:
             raise MacControlError("denied", _PERMISSION_HELP.format(app=app or "that application"))
         if "-600" in error or "-609" in error:
             raise MacControlError("not_running", f"{app or 'The application'} is not running.")
-        raise MacControlError("failed", "macOS reported an error.")
+        raise MacControlError("failed", f"{app or 'macOS'} reported an error: {script_error(result.stderr)}.")
 
     @staticmethod
     def _volume_state(output: str) -> dict:
@@ -213,3 +226,107 @@ class MacControl:
 
     def running_players(self) -> list[str]:
         return [player for player in PLAYERS if self.is_running(player)]
+
+
+# --- Apple Music library playback -----------------------------------------------------------
+# Music's scripting dictionary can search the user's own library ("search library playlist 1
+# for ...", the same as its Search field) and play a specific track or playlist; it has no
+# Apple Music catalogue search. So only songs and playlists already in the library (including
+# Apple Music songs added to it) can be played by name. Items are identified by Music's
+# persistent ID, and playback is verified by reading the current track or playlist back.
+
+MAX_MUSIC_RESULTS = 15
+_PERSISTENT_ID = re.compile(r"^[0-9A-F]{16}$")
+
+MUSIC_SEARCH_SCRIPT = """
+on run argv
+  set q to item 1 of argv
+  set output to {}
+  tell application id "com.apple.Music"
+    set found to search library playlist 1 for q
+    if found is missing value then set found to {}
+    set n to count of found
+    if n > 15 then set n to 15
+    repeat with i from 1 to n
+      set t to item i of found
+      set end of output to "track" & (character id 31) & (persistent ID of t) & (character id 31) & (name of t) & (character id 31) & (artist of t) & (character id 31) & (album of t)
+    end repeat
+    set lists to (user playlists whose name contains q and smart is false)
+    repeat with p in lists
+      set end of output to "playlist" & (character id 31) & (persistent ID of p) & (character id 31) & (name of p) & (character id 31) & "" & (character id 31) & ""
+    end repeat
+  end tell
+  set AppleScript's text item delimiters to (character id 30)
+  return output as text
+end run
+"""
+
+MUSIC_PLAY_SCRIPT = """
+on run argv
+  -- Not "kind" or "st": both are reserved AppleScript terms ("kind" cannot be set; "st" is
+  -- the ordinal suffix in "1st"), and using them made this script fail.
+  set {itemKind, itemId} to argv
+  tell application id "com.apple.Music"
+    if itemKind is "track" then
+      play (first track of library playlist 1 whose persistent ID is itemId)
+    else
+      play (first user playlist whose persistent ID is itemId)
+    end if
+    set waited to 0
+    repeat while player state is not playing and waited < 6
+      delay 0.5
+      set waited to waited + 1
+    end repeat
+    set playerState to (player state as text)
+    set trackId to ""
+    set trackName to ""
+    set trackArtist to ""
+    set listId to ""
+    try
+      set trackId to persistent ID of current track
+      set trackName to name of current track
+      set trackArtist to artist of current track
+    end try
+    try
+      set listId to persistent ID of current playlist
+    end try
+  end tell
+  return playerState & (character id 31) & trackId & (character id 31) & trackName & (character id 31) & trackArtist & (character id 31) & listId
+end run
+"""
+
+
+def _music_call(control: "MacControl", script: str, arguments: list[str]) -> str:
+    return control._call(script, arguments, "Music")
+
+
+def music_search(control: "MacControl", query: str) -> list[dict]:
+    """Songs and playlists in the user's Music library matching the query (Music's own search)."""
+    query = " ".join((query or "").split())
+    if not query or len(query) > 200:
+        raise MacControlError("invalid", "Give a song, artist, album or playlist name of up to 200 characters.")
+    output = _music_call(control, MUSIC_SEARCH_SCRIPT, [query])
+    items = []
+    for record in output.split("\x1e"):
+        fields = record.split(FIELD)
+        if len(fields) == 5 and _PERSISTENT_ID.fullmatch(fields[1]):
+            kind, pid, name, artist, album = fields
+            items.append({"kind": kind, "item_id": f"{kind}:{pid}", "name": name, "artist": artist or None,
+                          "album": album or None})
+    return items
+
+
+def music_play(control: "MacControl", item_id: str) -> dict:
+    """Play one library track or playlist by its item ID and verify that it is what plays."""
+    kind, _, pid = (item_id or "").partition(":")
+    if kind not in ("track", "playlist") or not _PERSISTENT_ID.fullmatch(pid):
+        raise MacControlError("invalid", "That is not a Music item from find_music.")
+    output = _music_call(control, MUSIC_PLAY_SCRIPT, [kind, pid])
+    state, track_id, name, artist, list_id = (output.split(FIELD) + [""] * 5)[:5]
+    playing = state == "playing"
+    matched = track_id == pid if kind == "track" else list_id == pid
+    if not (playing and matched):
+        raise MacControlError("failed", f"Music did not start that {kind}: it reports {state or 'no state'}"
+                              + (f" with \"{name}\"" if name else "") + ". Check Music; an Apple Music song may need "
+                              "to download or your subscription may need attention.")
+    return {"state": state, "track": name or None, "artist": artist or None, "kind": kind}

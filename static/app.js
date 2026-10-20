@@ -896,7 +896,7 @@ function toolLabel(toolName) {
     get_system_info: "Checking system information",
     open_website: "Opening website",
     find_files: "Searching approved folders",
-    open_file: "Requesting file open",
+    open_file: "Opening",
     open_application: "Opening app",
     document_context: "Using document context",
     create_gmail_draft: "Creating Gmail draft",
@@ -940,7 +940,10 @@ function toolLabel(toolName) {
     git_recent_commits: "Reading recent commits",
     run_project_tests: "Running tests",
     get_test_results: "Checking test results",
-    open_project: "Opening project",
+    find_folders: "Searching folders",
+    open_in_editor: "Opening in editor",
+    find_music: "Searching the Music library",
+    play_music: "Starting music",
   };
   return labels[toolName] || "Using an assistant tool";
 }

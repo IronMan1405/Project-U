@@ -167,3 +167,21 @@ heavy) and launchd agents (persistent files in ~/Library/LaunchAgents, one-shot 
 cleanup; more intrusive than the problem warrants). For an alert that must fire while
 K.R.I.S. is closed, an Apple Reminder at the end time is the verified, cancellable native
 option (already supported by the reminder tools).
+
+### Apple Music catalogue search (evaluated 2026-10-19, not adopted)
+
+Checked on macOS 26.6.2 for playing any song or album from the Apple Music catalogue by name:
+
+- Music's AppleScript dictionary (`sdef /System/Applications/Music.app`) has `search` for a
+  playlist of the user's library ("identical to entering search text in the Search field"),
+  `play` for a track or playlist, and `current track`/`current playlist` to read back what plays.
+  It has no catalogue search; `open location` only opens a URL that is already known.
+  K.R.I.S. uses this for library songs and playlists (`find_music`, `play_music`).
+- Music.app declares no App Intents actions. `_MediaPlayer_AppIntents` declares only search
+  entities (AudioSearchCriteria/Result) used by the system, and no callable actions.
+- Shortcuts lists "Find iTunes Store Items", "Find Music", "Play Music" and "Get Current Song",
+  but only as actions inside a shortcut the user builds by hand. Whether "Play Music" plays a
+  catalogue result from "Find iTunes Store Items" on macOS was not verified, and running user
+  shortcuts was already rejected as unreliable (see the Shortcuts section above).
+- Not used: UI scripting, MusicKit (needs a developer token and a signed app), and the iTunes
+  Search web API (web scraping/HTTP is out of scope, and it cannot start playback).

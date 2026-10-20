@@ -509,15 +509,17 @@ class TestRunTests(unittest.TestCase):
         self.assertIn("Tests for Proj passed", registry.execute(prepared).message)
         self.assertIn("passed", registry.execute(registry.prepare("get_test_results", {}, "?")).message)
 
-    def test_open_project_uses_the_configured_editor_with_argument_lists(self):
+    def test_open_in_editor_uses_the_configured_editor_with_argument_lists(self):
         runner = Mock(return_value=True)
         settings = DeveloperSettings({"Proj": self.project}, {}, "Visual Studio Code")
         registry = ToolRegistry(self.project / "r.sqlite3", developer=DeveloperCompanion(settings), open_runner=runner)
-        prepared = registry.prepare("open_project", {"project": "Proj"}, "Open Project-U in my editor")
+        prepared = registry.prepare("open_in_editor", {"path": "Proj"}, "Open Proj in my editor")
         self.assertFalse(prepared.always_confirm)
-        with patch.object(computer_utilities, "open_supported", return_value=True):
+        bundle = Path("/Applications/Visual Studio Code.app")
+        with patch.object(computer_utilities, "open_supported", return_value=True), \
+                patch.object(computer_utilities, "find_application", return_value=bundle):
             self.assertTrue(registry.execute(prepared).ok)
-        runner.assert_called_once_with(["-a", "Visual Studio Code", str(self.project)])
+        runner.assert_called_once_with(["-a", str(bundle), str(self.project)])
 
 
 class MutationBoundaryTests(unittest.TestCase):

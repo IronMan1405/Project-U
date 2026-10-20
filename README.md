@@ -458,9 +458,10 @@ earlier), and each result is read back before it is reported.
 | Add, complete or move an Apple Reminder | Creating Gmail drafts |
 | Mark an email read or unread; star or unstar it | Archiving, trashing or labelling email |
 | Open an approved app you named, or a website you named | All Calendar changes |
-| Set or change the volume; mute or unmute | Deleting tasks or notes; opening a file |
+| Set or change the volume; mute or unmute | Deleting tasks or notes |
 | Play, pause or skip in Music or Spotify | Opening an app or website the model chose itself |
-| Run a project's configured tests; open a project in the editor | Any tool named as a file change, install or Git change (none exist) |
+| Run a project's configured tests; open a file or folder you named (or chose from a search) in its default app, a named app, or the editor | Opening something you did not name, or in an app you did not name |
+| Play a song or playlist you chose from your Music library | Any tool named as a file change, install or Git change (none exist) |
 
 A timer with an end-of-timer reminder is direct only when you asked to be reminded. Tasks
 and notes keep their earlier rule (direct when your message asks for that exact write).
@@ -499,6 +500,12 @@ its name, so it cannot wake itself (standby has also released the microphone whi
   only when that player is already running (it is never launched). The first use asks for
   permission to control that player (System Settings > Privacy & Security > Automation).
   Video or audio in a browser cannot be controlled.
+- Music library: "play Cornfield Chase by Hans Zimmer" or "play my Interstellar playlist"
+  searches your Music library (Music's own search) and plays the one song or playlist you
+  mean, then checks that it is what Music is playing before saying so. Several matches
+  (two versions of a song) are listed and you choose. The Apple Music catalogue cannot be
+  searched (see FUTURE.md), so a song must be in your library; an album cannot be played as
+  an album, only its songs or a playlist. Searching opens Music if it is not running.
 - Apps and websites: approved apps (`allowed_apps`) and validated http(s) URLs, as above;
   "is Safari running?" checks an approved app without opening it.
 - System: `get_system_info` adds load averages (with the core count) and uptime to the
@@ -672,16 +679,43 @@ roots so no root is starved), and returns at most 20 matches as
 `Label/relative/path`. Results state the words searched and name any root the
 entry limit cut short. It is read-only and runs without confirmation.
 
-`open_file` opens one of those `Label/relative/path` values in its default macOS
-app after you confirm. Every path component is checked without following
-symbolic links; hidden items, package contents, directories, `.`/`..`, and paths
-outside the folder are refused, and only `.pdf .txt .md .csv .docx .xlsx .pptx
-.png .jpg .jpeg` files open. The checks run again after you confirm, just
-before opening.
+`find_files` and `find_folders` also search the projects in `[projects]` (by label,
+e.g. `Project-U/config.ini`), and both report roots macOS would not let them read.
 
-`open_application` opens an app from `allowed_apps` (exact name) after you
-confirm. Both open tools run the fixed `/usr/bin/open` executable with an
-argument list, never a shell, and are macOS-only.
+`find_folders` finds folders by name ("find my Project-U folder", "where is the SOLVE
+folder?", "search my Desktop for folders containing electronics"). Every word must
+start a word in the folder name, ignoring case and separators ("solve" matches
+`SOLVE` and `Solve Notes`, not `Resolve`). Exact names come first, each result has
+its full location, and when more than one folder fits, K.R.I.S. lists them and
+asks. It goes six levels deep and examines at most 20,000 entries; symbolic links
+are never followed, packages never entered, and hidden, dependency, build and
+cache folders (`node_modules`, `build`, `dist`, `__pycache__`, `.git`, ...) are
+not searched unless you ask for hidden or build folders. It is read-only.
+
+`open_file` opens a file or folder you identified: a search result, a project
+(`Project-U`), or a path inside one (`Project-U/tests`). Without an app it uses
+the default app (folders open in Finder; only `.pdf .txt .md .csv .docx .xlsx
+.pptx .png .jpg .jpeg` files, so nothing executable runs). With an app ("open the
+report in Preview") it uses exactly that app: one from `allowed_apps` or the
+editor, checked to be installed in `/Applications`, `~/Applications` or the
+system folders; if it is missing K.R.I.S. says so and does not fall back to the
+default. Folders open only in apps that open folders (Finder, VS Code and a few
+editors), and files are never opened in Terminal, Script Editor or similar apps
+that could run them. `open_in_editor` does the same with the `[developer]` editor
+("open config.ini in VS Code"). Every path component is checked without following
+symbolic links; hidden items, package contents, `.`/`..` and paths outside the
+roots are refused, and the checks run again just before opening.
+
+Opening runs directly when you asked to open it and named it (or picked it from a
+search in this conversation) and named the app, if any; otherwise you confirm
+first. Opening one of several matches from the same request is refused until you
+say which one ("the one on my Desktop", or "the second one").
+
+`open_application` opens an app from `allowed_apps` (exact name). All open tools
+run the fixed `/usr/bin/open` executable with an argument list (`open -a <app
+bundle> <path>`), never a shell, and are macOS-only. An app that already has the
+item open reuses its window, so VS Code does not open a duplicate window for a
+folder it already shows.
 
 ### Voice (push-to-talk)
 

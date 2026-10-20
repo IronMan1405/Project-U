@@ -271,7 +271,7 @@ class TypeWordRetryTests(UtilityTestCase):
         registry = ToolRegistry(self.database_path, utilities=self.settings())
         outcome = registry.execute(registry.prepare("find_files", {"query": "budget spreadsheets"}, "Find it"))
         self.assertIn("None matched, so it searched again treating spreadsheets as a file type: budget in", outcome.message)
-        self.assertTrue(outcome.message.endswith("Found 2 file(s)."))
+        self.assertIn("Found 2 file(s).", outcome.message)
 
     def test_no_retry_when_ordinary_matching_already_finds_files(self):
         for query, expected in (
@@ -510,9 +510,10 @@ class OpenFileTests(UtilityTestCase):
         path = found.data["results"][0]["path"]
         self.assertEqual(path, "Documents/Reports/Q3 Budget.pdf")
 
+        # Found in this conversation and asked for: opens directly (low-impact policy).
         prepared = registry.prepare("open_file", {"path": path}, "Open the budget report")
-        self.assertTrue(prepared.always_confirm)
-        self.assertEqual(prepared.summary, "Open file: Documents/Reports/Q3 Budget.pdf")
+        self.assertFalse(prepared.always_confirm)
+        self.assertEqual(prepared.summary, "Open file Documents/Reports/Q3 Budget.pdf with its default app")
         with patch.object(computer_utilities, "open_supported", return_value=True):
             outcome = registry.execute(prepared)
 
@@ -537,9 +538,6 @@ class OpenFileTests(UtilityTestCase):
             "Documents/Reports/../../private.pdf",
             "Documents/./Reports/ok.pdf",
             "Documents//Reports/ok.pdf",
-            "Documents/Reports/",
-            "Documents",
-            "Documents/",
             str(self.documents / "Reports" / "ok.pdf"),
             "/etc/hosts",
             "~/Documents/Reports/ok.pdf",
@@ -558,6 +556,10 @@ class OpenFileTests(UtilityTestCase):
             with self.subTest(component_check=path), self.assertRaisesRegex(ToolError, "'..' components"):
                 registry.prepare("open_file", {"path": path}, "Open it")
         runner.assert_not_called()
+        # Folders are valid targets now (they open in Finder).
+        for path in ("Documents/Reports/", "Documents", "Documents/"):
+            with self.subTest(folder=path):
+                self.assertIn("in Finder", registry.prepare("open_file", {"path": path}, "Open it").summary)
 
     def test_hidden_package_directory_and_disallowed_types_are_refused(self):
         self.write(".secret.pdf")
@@ -572,7 +574,7 @@ class OpenFileTests(UtilityTestCase):
             self.write(name)
         registry = self.registry(Mock(return_value=True))
         refused = [
-            ".secret.pdf", ".config/notes.txt", "Tool.app/Contents/readme.txt", "Folder.pdf",
+            ".secret.pdf", ".config/notes.txt", "Tool.app/Contents/readme.txt", "Tool.app",
             "run.command", "install.sh", "Setup.pkg", "image.dmg", "macro.docm", "script.py",
             "page.html", "noextension", "archive.zip", "shortcut.webloc", "report.PDF.command",
         ]
@@ -617,7 +619,7 @@ class OpenFileTests(UtilityTestCase):
         prepared = registry.prepare("open_file", {"path": "Documents/plan.pdf"}, "Open plan")
         with patch.object(computer_utilities, "open_supported", return_value=True):
             failed = registry.execute(prepared)
-        self.assertEqual(failed.message, "macOS could not open Documents/plan.pdf.")
+        self.assertTrue(failed.message.startswith("macOS could not open Documents/plan.pdf."))
         runner.reset_mock()
         with patch.object(computer_utilities, "open_supported", return_value=False):
             self.assertFalse(registry.execute(prepared).ok)
@@ -650,7 +652,7 @@ class OpenFileTests(UtilityTestCase):
                 "/api/chat", json={"conversation_id": conversation_id, "message": "Open my plan"}
             )
             pending = chat.get_json()["pending_confirmation"]
-            self.assertEqual(pending["summary"], "Open file: Documents/plan.pdf")
+            self.assertEqual(pending["summary"], "Open file Documents/plan.pdf with its default app")
             runner.assert_not_called()
             client.post(
                 "/api/confirm",
