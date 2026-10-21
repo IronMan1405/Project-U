@@ -152,6 +152,11 @@ class ReplyKindTests(unittest.TestCase):
         # Longer speech that happens to contain the word is an ordinary message.
         self.assertIsNone(voice.classify_reply("Can you confirm what time the meeting is tomorrow?"))
 
+    def test_the_wake_word_alone_is_never_a_confirmation_answer(self):
+        for text in ("Kris.", "Kris", "Hey Kris!", "Chris?"):
+            with self.subTest(text=text):
+                self.assertIsNone(voice.classify_reply(text))
+
     def test_anything_more_than_a_bare_reply_is_an_ordinary_message(self):
         for text in (
             "No, open the March one instead.", "Yes, and also create a task.", "Yes delete task 3 and 4",

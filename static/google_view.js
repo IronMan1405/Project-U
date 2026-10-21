@@ -8,6 +8,19 @@
 })(typeof self !== "undefined" ? self : this, function () {
   const text = (value, limit = 200) => (typeof value === "string" ? value.slice(0, limit) : "");
 
+  // With several Google accounts the panels show the default one; the others are named after it.
+  function otherAccounts(status) {
+    const accounts = Array.isArray(status.accounts) ? status.accounts : [];
+    if (accounts.length < 2) return "";
+    const others = accounts.filter((item) => item && !item.default).map((item) => {
+      const name = text(item.name, 24);
+      const email = text(item.email, 120);
+      const state = item.mismatch ? "check sign-in" : item.connected ? email || "connected" : "not connected";
+      return `${name} (${state})`;
+    });
+    return ` · default: ${text(status.default_account, 24)}; also ${others.join(", ")}`;
+  }
+
   function connectionView(status) {
     if (!status || typeof status !== "object") {
       return { text: "Google Workspace status is unavailable.", tone: "warning", connect: false, disconnect: false, ready: false };
@@ -27,8 +40,9 @@
     }
     const account = text(status.account, 120);
     const partial = Boolean(status.message);
+    const connectedText = account ? `Connected as ${account}` : "Connected.";
     return {
-      text: partial ? text(status.message) : account ? `Connected as ${account}` : "Connected.",
+      text: (partial ? text(status.message) : connectedText) + otherAccounts(status),
       tone: partial ? "warning" : "ok",
       connect: partial, // reconnect to grant what is missing
       disconnect: true,

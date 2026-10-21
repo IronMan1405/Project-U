@@ -103,3 +103,18 @@ test("the calendar panel describes its own display range", () => {
   assert.equal(calendarView({ status: "ok", events: [] }, new Date(), 30).note, "No events in the next month.");
   assert.equal(calendarView({ status: "ok", events: [], truncated: true }, new Date(), 30).note, "Showing the first 100 events.");
 });
+
+test("with several Google accounts the status names the default and the others", () => {
+  const status = {
+    configured: true, connected: true, account: "me@gmail.example", message: null, default_account: "personal",
+    accounts: [
+      { name: "personal", email: "me@gmail.example", default: true, connected: true },
+      { name: "BITS", email: "daks@bits.example", default: false, connected: true },
+      { name: "work", email: null, default: false, connected: false },
+    ],
+  };
+  const view = connectionView(status);
+  assert.equal(view.text, "Connected as me@gmail.example · default: personal; also BITS (daks@bits.example), work (not connected)");
+  const single = connectionView({ ...status, accounts: [status.accounts[0]] });
+  assert.equal(single.text, "Connected as me@gmail.example");
+});

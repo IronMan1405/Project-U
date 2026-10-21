@@ -1,3 +1,4 @@
+import atexit
 import json
 import logging
 import sqlite3
@@ -15,7 +16,9 @@ import notifications
 import voice
 from config import (
     load_developer_settings,
+    load_google_default_account,
     load_google_settings,
+    load_resource_alert_settings,
     load_settings,
     load_ui_settings,
     load_utility_settings,
@@ -23,9 +26,11 @@ from config import (
 )
 from developer import DeveloperCompanion
 from mac_control import MacControl
+from google_accounts import GoogleAccounts
 from google_workspace import GoogleError, GoogleWorkspaceProvider
 from computer_utilities import UtilitySettings
 from reminders import AppleReminders
+from resource_alerts import ResourceMonitor
 from timers import TimerService
 from voice import VoiceError, VoiceSettings, VoiceTimeout, VoiceUnavailable
 from documents import (
@@ -66,6 +71,7 @@ def create_app(
     mac: MacControl | None = None,
     developer: DeveloperCompanion | None = None,
     ui_settings: dict[str, bool] | None = None,
+    resource_monitor: ResourceMonitor | None = None,
 ) -> Flask:
     app = Flask(__name__)
     conversations: dict[str, AssistantRuntime] = {}
@@ -90,7 +96,10 @@ def create_app(
     if telemetry is None:
         telemetry = system_telemetry.shared_service()
     if google is None:
-        google = GoogleWorkspaceProvider(load_google_settings())
+        # Every connected Google account; the original connection is the default (google_accounts.py).
+        google = GoogleAccounts(load_google_settings(), default_name=load_google_default_account())
+    elif isinstance(google, GoogleWorkspaceProvider):
+        google = GoogleAccounts.single(google)
     if reminders is None and AppleReminders.available():
         reminders = AppleReminders()
     if timers is None:
@@ -99,6 +108,12 @@ def create_app(
         timers = TimerService(app.config["DATABASE_PATH"], notifier=notifications.notify,
                               reminder_closer=reminders.complete if reminders is not None else None)
     app.config["TIMERS"] = timers
+    if resource_monitor is None:
+        # Shares the telemetry service (and its CPU sampler) with the System panel. Its thread is
+        # started only by the server below, never by tests or imports.
+        resource_monitor = ResourceMonitor(telemetry.snapshot, load_resource_alert_settings(),
+                                           notifier=notifications.notify)
+    app.config["RESOURCE_MONITOR"] = resource_monitor
     if mac is None and MacControl.available():
         mac = MacControl()
     if developer is None:
@@ -298,6 +313,14 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.get("/api/resource-alerts")
+    def resource_alerts_status():
+        # Read-only: which resources are high and the recent alerts (fixed text with the measured
+        # value), so the page can list them and, if speech is on, speak each new one once.
+        response = jsonify(resource_monitor.status())
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.get("/api/system/telemetry")
     def system_telemetry_status():
         # Read-only. Each metric is independent; see system_telemetry.py for the shape.
@@ -329,17 +352,24 @@ def create_app(
     def google_status():
         return google_json(google.status())
 
+    def requested_account() -> str | None:
+        data = request.get_json(silent=True) if request.method == "POST" else None
+        value = (data or {}).get("account") if isinstance(data, dict) else request.args.get("account")
+        return value if isinstance(value, str) and value.strip() else None
+
     @app.post("/api/google/connect")
     def google_connect():
+        # Without an account: (re)connect the default. With one: that account, or a new name.
         try:
-            return google_json({"authorization_url": google.begin_authorization(google_redirect_uri())})
+            google.redirect_uri = google_redirect_uri()
+            return google_json({"authorization_url": google.begin_authorization(google.redirect_uri, requested_account())})
         except GoogleError as error:
             return google_failure(error)
 
     @app.get("/oauth/google/callback")
     def google_callback():
         try:
-            google.complete_authorization(
+            connected = google.complete_authorization(
                 request.args.get("state"), request.args.get("code"), request.args.get("error")
             )
         except GoogleError as error:
@@ -347,7 +377,8 @@ def create_app(
                 render_template("google_callback.html", connected=False, message=error.message), status=400
             )
         else:
-            response = Response(render_template("google_callback.html", connected=True, message=None))
+            response = Response(render_template("google_callback.html", connected=True, message=None,
+                                                account=connected["name"], email=connected["email"]))
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"  # the URL carried a one-time code
         return response
@@ -355,14 +386,14 @@ def create_app(
     @app.post("/api/google/disconnect")
     def google_disconnect():
         try:
-            return google_json(google.disconnect())
+            return google_json(google.disconnect(requested_account()))
         except GoogleError as error:
             return google_failure(error)
 
     @app.get("/api/google/inbox")
     def google_inbox():
         try:
-            return google_json(google.inbox_summary())
+            return google_json(google.check(google.resolve(requested_account())).inbox_summary())
         except GoogleError as error:
             return google_failure(error)
 
@@ -375,7 +406,7 @@ def create_app(
             return google_json({"status": "error", "kind": "invalid", "message": "Choose 14 or 30 days.",
                                 "reconnect": False}, 400)
         try:
-            return google_json(google.upcoming_events(int(days)))
+            return google_json(google.check(google.resolve(requested_account())).upcoming_events(int(days)))
         except GoogleError as error:
             return google_failure(error)
 
@@ -722,4 +753,8 @@ if __name__ == "__main__":
     # Recover timers that ended while K.R.I.S. was closed (reported as missed), then check
     # every second so a timer alerts on time while the server runs.
     server.config["TIMERS"].start_background()
+    # Resource alerts: one daemon thread (started once), stopped when the process exits.
+    monitor = server.config["RESOURCE_MONITOR"]
+    monitor.start()
+    atexit.register(monitor.stop)
     server.run(host="127.0.0.1", port=5000, threaded=True)

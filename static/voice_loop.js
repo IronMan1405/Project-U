@@ -206,6 +206,7 @@
     thinking: "Thinking",
     speaking: "Speaking",
     awaiting_confirmation: "Waiting for confirmation",
+    speaking_interruptible: "Speaking · say “Kris” to interrupt",
     standby: "Standby · say “Kris”",
     paused: "Hands-free paused",
     error: "Error",
@@ -222,7 +223,9 @@
     else if (loop.notice) state = loop.notice.kind;
     else if (facts.error) state = "error";
     else state = "idle";
-    return { state, label: VIEW_LABELS[state], canStopSpeaking: Boolean(facts.speaking) };
+    // While a reply can be interrupted by the name, say so (the state, and its styling, stay "speaking").
+    const label = state === "speaking" && facts.interruptible ? VIEW_LABELS.speaking_interruptible : VIEW_LABELS[state];
+    return { state, label, canStopSpeaking: Boolean(facts.speaking) };
   }
 
   // What a transcript does to a pending confirmation. kind is the server's reply_kind

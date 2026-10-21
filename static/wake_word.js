@@ -22,6 +22,17 @@
 //   error       the microphone failed or disconnected, or checks kept failing
 // Only "enable" (the user switching it on) leaves off, denied, or error, so the page never
 // re-enables wake listening by itself.
+//
+// Interrupting a spoken reply ("barge" states). While a hands-free reply is being spoken, the
+// page sends "speech_started"; from active (a wake-word conversation) or paused (a conversation
+// started by a tap) the same level detector listens again (barge_starting, barge_standby,
+// barge_checking). Only short isolated sounds are checked, exactly as in standby; nothing is
+// transcribed continuously. A confirmed name returns "interrupt" once and goes to active; the
+// page then stops the reply and listens through the existing barge-in path. "speech_ended"
+// (the reply finished or was stopped) returns to where it came from. A failed or busy check
+// never touches the reply. Protection against K.R.I.S. hearing itself: the browser's echo
+// cancellation on this microphone, no checks while the sentence being spoken mentions the name
+// (mentionsWakeName), and the server accepting only a clip that is just the name.
 (function (root, factory) {
   const api = factory();
   if (typeof module === "object" && module.exports) module.exports = api;
@@ -196,13 +207,16 @@
     unsupported: "Wake word needs audio processing this browser does not provide.",
   };
   const CAPTURE_STATES = new Set(["starting", "standby", "checking"]);
-  const ENABLED = new Set(["starting", "standby", "checking", "activating", "active", "paused"]);
+  const BARGE_STATES = new Set(["barge_starting", "barge_standby", "barge_checking"]);
+  const ENABLED = new Set(["starting", "standby", "checking", "activating", "active", "paused", ...BARGE_STATES]);
 
   function createWakeState() {
     return { state: "off", failures: 0, message: null };
   }
 
   const to = (wake, state, actions = [], changes = {}) => ({ wake: { ...wake, message: null, ...changes, state }, actions });
+  // Leave the barge states for where the reply started (active or paused), releasing the microphone.
+  const back = (wake) => to(wake, wake.returnTo || "paused", [{ type: "stop_capture" }], { returnTo: null });
   const ignore = (wake) => ({ wake, actions: [] });
   const fail = (wake, state, key) => ({
     wake: { ...wake, state, failures: 0, message: MESSAGES[key] },
@@ -213,7 +227,34 @@
   // start_conversation, notify { message }. Events that do not fit the state are ignored.
   function reduce(wake, event) {
     const state = wake.state;
+    if (BARGE_STATES.has(state)) {
+      switch (event.type) {
+        case "capture_started":
+          return state === "barge_starting" ? to(wake, "barge_standby") : ignore(wake);
+        case "capture_failed": // cannot listen during this reply: the reply simply continues
+        case "capture_lost":
+        case "suspend":
+        case "speech_ended":
+          return back(wake);
+        case "burst":
+          return state === "barge_standby" ? to(wake, "barge_checking", [{ type: "check_clip", clip: event.clip }]) : ignore(wake);
+        case "check_result":
+          if (state !== "barge_checking") return ignore(wake);
+          if (event.wake) return to(wake, "active", [{ type: "stop_capture" }, { type: "interrupt" }], { returnTo: null, failures: 0 });
+          return to(wake, "barge_standby");
+        case "check_failed": // a failed check never stops the reply or disables the wake word
+          return state === "barge_checking" ? to(wake, "barge_standby") : ignore(wake);
+        case "disable":
+          return to(wake, "off", [{ type: "stop_capture" }], { failures: 0, returnTo: null });
+        default:
+          return ignore(wake);
+      }
+    }
     switch (event.type) {
+      case "speech_started": // a hands-free reply began; listen for the name while it plays
+        return state === "active" || state === "paused"
+          ? to(wake, "barge_starting", [{ type: "open_capture" }], { returnTo: state })
+          : ignore(wake);
       case "enable": // the user switched Wake word on
         if (ENABLED.has(state)) return ignore(wake);
         return to(wake, event.allowed ? "starting" : "paused", event.allowed ? [{ type: "open_capture" }] : [], { failures: 0 });
@@ -280,12 +321,28 @@
     return { text, recent: [...recent, text].slice(-ACK_HISTORY) };
   }
 
+  // Whether a spoken reply may be interrupted by the name, from page facts (all booleans):
+  //   visible, handsFree, loopSpeaking (the hands-free loop is speaking a reply), recording,
+  //   transcribing.
+  function bargeAllowed(facts) {
+    return Boolean(facts.visible && facts.handsFree && facts.loopSpeaking) && !facts.recording && !facts.transcribing;
+  }
+
+  // True when text being spoken contains the name (as the server recognises it), so a check
+  // during it could be K.R.I.S. hearing itself.
+  const NAME_PATTERN = /\b(?:k\.?\s?r\.?\s?i\.?\s?s\.?|kris|chris|cris|kriss|chriss|krys)\b/i;
+  function mentionsWakeName(text) {
+    return NAME_PATTERN.test(String(text || ""));
+  }
+
   const capturing = (wake) => CAPTURE_STATES.has(wake.state);
+  const barging = (wake) => BARGE_STATES.has(wake.state);
   const enabled = (wake) => ENABLED.has(wake.state);
 
   return {
     createBurstDetector, createSampleRing, downsample, encodeWav,
-    createWakeState, reduce, standbyAllowed, capturing, enabled, pickAcknowledgement,
+    createWakeState, reduce, standbyAllowed, bargeAllowed, mentionsWakeName, capturing, barging, enabled,
+    pickAcknowledgement,
     BURST_TUNING, MESSAGES, MAX_CHECK_FAILURES, ACKNOWLEDGEMENTS, ACK_HISTORY,
   };
 });

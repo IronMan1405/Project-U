@@ -221,8 +221,9 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Live tests from the terminal that runs K.R.I.S. (2026-10-19): `LIVE_NOTIFY=1` passed; `LIVE_REMINDERS=1` first failed (Reminders reports `allday due date` for timed reminders too, so read-back saw a date-only reminder), fixed, then passed
 - [x] Evaluate macOS Shortcuts as a native alarm/timer backend (2026-10-19): not reliable enough (see FUTURE.md); K.R.I.S.-managed timers stay
 - [x] Optional verified Apple Reminder at a timer's end ("remind me when it's over"), completed on cancel and after it alerts; tests
-- [ ] Run `LIVE_REMINDERS=1` again (now includes the timer reminder test)
+- [x] Run `LIVE_REMINDERS=1` again (now includes the timer reminder test)
 - [ ] Review the planning diff and commit
+
 ### 17. Mac control, developer companion and interaction polish
 - [x] Voice confirmation: explicit "confirm"/"cancel" for the action read out, through `/api/confirm`
 - [x] Confirmation policy: low-impact actions direct when asked; consequential ones still confirmed
@@ -230,10 +231,10 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Volume, mute, Music/Spotify playback, app status, load average and uptime
 - [x] Projects: read-only Git, allowlisted test runs, open in editor
 - [x] Tasks tab hidden behind `[ui] tasks_tab`
-- [ ] Live checks: spoken confirm/cancel hands-free; wake acknowledgements; mute/unmute; Music
+- [x] Live checks: spoken confirm/cancel hands-free; wake acknowledgements; mute/unmute; Music
       and Spotify playback (Automation permission); open a project in VS Code
-- [ ] Add your `name` to profile.json if you want K.R.I.S. to use it
-- [ ] Review the diff and commit
+- [x] Add your `name` to profile.json if you want K.R.I.S. to use it
+- [x] Review the diff and commit
 
 ### 18. Folder search, opening anything, Apple Music library
 - [x] `find_folders` (word-start matching, exact first, ambiguity reported, symlink-safe, skips build folders)
@@ -242,7 +243,23 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Apple Music: library songs and playlists only (catalogue search has no native interface)
 - [x] Live: `LIVE_MUSIC=1` search and verified play of a library song (2026-10-20; fixed reserved AppleScript
       variable names `st` and `kind` that stopped the play, playback-control and now-playing scripts compiling)
-- [ ] Live: open a file and a folder in VS Code; Spotify playback controls
+- [x] Live: open a file and a folder in VS Code; Spotify playback controls
+- [ ] Review the diff and commit
+
+### 19. Resource alerts and wake-word interruption
+- [x] Resource monitor: sustained crossings, hysteresis, one notification each, optional speech when idle
+- [x] Real threshold check with a lowered threshold in a script (2026-10-21): one notification per crossing
+- [x] Interrupt a hands-free reply by saying "Kris" (light detector during speech; no continuous transcription)
+- [ ] Live: interrupt a long reply, then a confirmation read-back; idle wake word; Stop speaking; no self-wakes
+- [ ] Review the diff and commit
+
+### 20. Several Google accounts
+- [x] Named accounts; original account keeps its Keychain item (no migration); per-account items
+- [x] Account selection (explicit, by ID, by name in the message, default; ask for unnamed email searches)
+- [x] Account-aware Gmail and Calendar tools, approvals naming the account, all-calendars briefing
+- [x] Account tools: list, default, connect (browser sign-in), disconnect (confirmed)
+- [x] Live: existing account works through the new path (list, Gmail search, Calendar search, briefing)
+- [ ] Live: connect a second account; account-specific and all-account requests; ambiguous request
 - [ ] Review the diff and commit
 
 ## Scope Rules

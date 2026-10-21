@@ -131,6 +131,11 @@ const timerNotices = [];
 const announcedTimers = new Set();
 let timersLoaded = false;
 const TIMER_NOTICE_MS = 2 * 60 * 1000;
+// Resource alerts (see refreshResourceAlerts): the resources that are high now, and the last
+// alert seen, so each new alert is logged (and, if enabled, spoken) once.
+let highResources = [];
+let lastResourceAlertId = null;
+const RESOURCE_POLL_MS = 10000;
 // Wake word (static/wake_word.js decides; this carries out its actions). wakeConversation is
 // true while the hands-free conversation it started is running.
 let wake = window.WakeWord.createWakeState();
@@ -139,6 +144,9 @@ let standby = null; // wake-word standby's { stream, track, source, node, onEnde
 let standbySession = 0;
 let wakeWorkletReady = null;
 let wakeSyncing = false;
+// The sentence being spoken and the one before it (its audio may still be in the room), so a
+// burst heard while either mentions the name is not checked (WakeWord.mentionsWakeName).
+let spokenSegments = null;
 
 // The hands-free loop (static/voice_loop.js) decides when to listen again; this reports
 // events to it and carries out its actions. Events from the wrong state are ignored there.
@@ -168,13 +176,15 @@ function renderVoiceView() {
     busy: isSending || confirmationResolving,
     error: !errorMessage.hidden,
     standby: window.WakeWord.capturing(wake),
+    interruptible: window.WakeWord.barging(wake),
   });
   const state = voiceAvailable ? view.state : "idle";
   if (state !== renderedVoiceState) {
     renderedVoiceState = state;
     voiceIndicator.dataset.state = state;
-    voiceIndicatorLabel.textContent = window.VoiceLoop.VIEW_LABELS[state];
   }
+  const label = voiceAvailable ? view.label : window.VoiceLoop.VIEW_LABELS.idle;
+  if (voiceIndicatorLabel.textContent !== label) voiceIndicatorLabel.textContent = label; // a live region
   const hideStop = !(voiceAvailable && view.canStopSpeaking);
   if (hideStop && document.activeElement === stopSpeakingButton) {
     (micButton.hidden ? input : micButton).focus();
@@ -231,6 +241,7 @@ function renderAlerts() {
     alerts.push(["info", `Timer ${timer.timer_id}`, text]);
   }
   for (const notice of timerNotices) alerts.push(["warning", "Timer", notice.text]);
+  for (const alert of highResources) alerts.push(["warning", "Resources", alert.title]);
   if (voiceLoop.notice) alerts.push([voiceLoop.notice.kind === "error" ? "danger" : "warning", "Hands-free", voiceLoop.notice.message]);
   const key = JSON.stringify(alerts);
   if (key === renderedAlerts) return;
@@ -1014,7 +1025,7 @@ function renderConfirmationPreview(preview) {
     renderPreviewSections(preview);
     return;
   }
-  const rows = [];
+  const rows = preview.account ? [["Account", preview.account]] : [];
   if (kind === "gmail_draft") {
     rows.push(
       ["Type", preview.reply ? "Reply draft in the original thread (not sent)" : "New email draft (not sent)"],
@@ -1045,6 +1056,13 @@ function renderConfirmationPreview(preview) {
 // Sends and Calendar changes: headed groups of exact label/value rows plus warnings, all
 // built by the server from the action it will run. Rendered with textContent only.
 function renderPreviewSections(preview) {
+  if (preview.account) {
+    const term = document.createElement("dt");
+    term.textContent = "Account";
+    const detail = document.createElement("dd");
+    detail.textContent = preview.account;
+    confirmationPreview.append(term, detail);
+  }
   for (const section of preview.sections || []) {
     if (section.heading) {
       const heading = document.createElement("dt");
@@ -1466,6 +1484,7 @@ function stopReplyAudio() {
     URL.revokeObjectURL(replyAudio.src);
     replyAudio = null;
   }
+  spokenSegments = null;
   const finish = replyFinish;
   replyFinish = null;
   finish?.(null); // cancelled or replaced
@@ -1542,6 +1561,7 @@ function speakReply(text) {
         next = index + 1 < segments.length ? synthesize(segments[index + 1]) : null;
         next?.catch(() => {}); // a failure surfaces when it is awaited
         if (replyAudio) URL.revokeObjectURL(replyAudio.src);
+        spokenSegments = { current: segments[index], previous: segments[index - 1] || "" };
         await play(audio);
         if (!current()) return;
       }
@@ -1702,6 +1722,7 @@ function dispatchWake(event) {
     else if (action.type === "stop_capture") closeStandby();
     else if (action.type === "check_clip") checkWakeClip(action.clip);
     else if (action.type === "acknowledge") acknowledgeWake();
+    else if (action.type === "interrupt") interruptForWake();
     else if (action.type === "start_conversation") startWakeConversation();
     else if (action.type === "notify") setVoiceState(action.message);
   }
@@ -1717,6 +1738,19 @@ function syncWake() {
   try {
     const facts = wakeFacts();
     const allowed = window.WakeWord.standbyAllowed(facts);
+    // Interrupting a spoken hands-free reply with the name (see wake_word.js, "barge" states).
+    const barge = window.WakeWord.bargeAllowed({
+      visible: facts.visible, handsFree: handsFreeToggle.checked, recording: facts.recording,
+      transcribing: facts.transcribing, loopSpeaking: voiceLoop.state === "speaking" && facts.speaking,
+    });
+    if (window.WakeWord.barging(wake)) {
+      if (!barge) dispatchWake({ type: "speech_ended" });
+      return;
+    }
+    if (barge && (wake.state === "active" || wake.state === "paused")) {
+      dispatchWake({ type: "speech_started" });
+      return;
+    }
     if (wake.state === "active" && voiceLoop.state === "off" && !facts.recording && !facts.transcribing &&
         !facts.speaking && !isSending) {
       wakeConversation = false;
@@ -1757,7 +1791,7 @@ async function openStandby() {
     }
     return;
   }
-  if (session !== standbySession || wake.state !== "starting") {
+  if (session !== standbySession || (wake.state !== "starting" && wake.state !== "barge_starting")) {
     stream.getTracks().forEach((track) => track.stop()); // switched off or suspended meanwhile
     return;
   }
@@ -1786,7 +1820,12 @@ async function openStandby() {
     if (session !== standbySession) return;
     ring.push(event.data);
     const burst = detector.update(window.VoiceActivity.rmsDb(event.data), (ring.written / rate) * 1000);
-    if (!burst || wake.state !== "standby") return;
+    if (!burst || (wake.state !== "standby" && wake.state !== "barge_standby")) return;
+    // While K.R.I.S. says its own name, a burst may be its own voice: do not check it.
+    if (wake.state === "barge_standby" &&
+        (window.WakeWord.mentionsWakeName(spokenSegments?.current) || window.WakeWord.mentionsWakeName(spokenSegments?.previous))) {
+      return;
+    }
     const samples = ring.slice(Math.floor((burst.startMs / 1000) * rate), Math.ceil((burst.endMs / 1000) * rate));
     const clip = window.WakeWord.encodeWav(window.WakeWord.downsample(samples, rate, 16000), Math.min(rate, 16000));
     dispatchWake({ type: "burst", clip });
@@ -1839,6 +1878,22 @@ async function acknowledgeWake() {
   // A short pause so the end of the acknowledgment is not at the start of the recording.
   await new Promise((resolve) => window.setTimeout(resolve, 150));
   dispatchWake({ type: "acknowledged" });
+}
+
+// The name was heard while a hands-free reply was being spoken: stop it and listen, exactly
+// like tapping "Interrupt and talk". The name itself was only checked, never sent, and it
+// approves nothing; a pending confirmation keeps waiting under the usual spoken-answer rules.
+function interruptForWake() {
+  if (voiceLoop.state !== "speaking") return; // the reply already ended; nothing to interrupt
+  logActivity("Interrupted by “Kris”");
+  wakeConversation = true;
+  voiceTurn = true;
+  dispatchLoop({ type: "start", maxSilences: 1 });
+  setVoiceState("Listening…");
+  startRecording(true).then((result) => {
+    if (result === "failed") dispatchLoop({ type: "listen_failed" });
+    else if (result === "cancelled") dispatchLoop({ type: "stopped_by_user" });
+  });
 }
 
 function startWakeConversation() {
@@ -2443,8 +2498,40 @@ async function refreshTimers() {
   window.setTimeout(refreshTimers, activeTimers.length || timerNotices.length ? 1000 : 5000);
 }
 
+// --- Resource alerts (resource_alerts.py) ------------------------------------------------
+// The server notifies once per crossing; the page lists resources that are still high and, if
+// speech is on for alerts, speaks a new alert once, only when nothing else is going on.
+function voiceIdle() {
+  return recorder === null && !startPending && !transcribing && !isSending && !confirmationResolving &&
+    replyFinish === null && pendingConfirmationId === null && voiceLoop.state === "off" &&
+    !["checking", "activating"].includes(wake.state);
+}
+
+async function refreshResourceAlerts() {
+  try {
+    const response = await fetch("/api/resource-alerts", { cache: "no-store" });
+    if (!response.ok) throw new Error("resource alerts unavailable");
+    const data = await response.json();
+    const latest = new Map(data.recent.map((alert) => [alert.resource, alert]));
+    highResources = data.high.map((name) => latest.get(name)).filter(Boolean);
+    const fresh = lastResourceAlertId === null ? [] : data.recent.filter((alert) => alert.id > lastResourceAlertId);
+    if (data.recent.length) lastResourceAlertId = Math.max(lastResourceAlertId ?? 0, ...data.recent.map((a) => a.id));
+    else if (lastResourceAlertId === null) lastResourceAlertId = 0;
+    for (const alert of fresh) {
+      logActivity(alert.title, "warning");
+      if (data.speech && voiceStatus.speech_output && voiceIdle()) speakReply(alert.spoken);
+    }
+    renderAlerts();
+    if (!data.enabled) return; // nothing will change
+  } catch {
+    highResources = [];
+  }
+  window.setTimeout(refreshResourceAlerts, RESOURCE_POLL_MS);
+}
+
 refreshHealth();
 loadVoiceStatus();
 refreshTimers();
+refreshResourceAlerts();
 window.setInterval(refreshHealth, 10000);
 startConversation().catch((error) => showError(error.message));

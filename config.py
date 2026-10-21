@@ -3,6 +3,7 @@ from pathlib import Path
 
 from computer_utilities import UtilitySettings, build_utility_settings
 from developer import DeveloperSettings, build_developer_settings
+from resource_alerts import ResourceAlertSettings, build_resource_alert_settings
 from google_workspace import GoogleSettings, build_google_settings
 from voice import VoiceSettings, build_voice_settings
 
@@ -46,6 +47,21 @@ def load_developer_settings(config_path: Path = CONFIG_PATH, home: Path | None =
     tests = dict(parser.items("project_tests")) if parser.has_section("project_tests") else {}
     developer = dict(parser.items("developer")) if parser.has_section("developer") else {}
     return build_developer_settings(dict(parser.items("projects")), tests, developer, home)
+
+
+def load_resource_alert_settings(config_path: Path = CONFIG_PATH) -> ResourceAlertSettings:
+    """[resource_alerts]; without the section the defaults apply (on, notifications, no speech)."""
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(config_path)
+    values = dict(parser.items("resource_alerts")) if parser.has_section("resource_alerts") else {}
+    return build_resource_alert_settings(values)
+
+
+def load_google_default_account(config_path: Path = CONFIG_PATH) -> str | None:
+    """[google] default_account: the local name of the original account (and the first default)."""
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(config_path)
+    return (parser.get("google", "default_account", fallback="") or "").strip() or None
 
 
 def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, bool]:

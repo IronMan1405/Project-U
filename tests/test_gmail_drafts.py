@@ -365,7 +365,7 @@ class ConfirmationTests(DraftTestCase):
         model = Mock(side_effect=[tool_call(arguments), {"role": "assistant", "content": "Draft saved in Gmail."}])
         runtime = self.runtime(model)
         bodies = []
-        provider = runtime.registry.google
+        provider = runtime.registry.google.provider()  # the default (only) account
         opener = self.google
         provider._opener = lambda request, timeout=None: (
             bodies.append(json.loads(request.data.decode())) if request.full_url == DRAFTS_URL else None

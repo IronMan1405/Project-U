@@ -154,6 +154,27 @@ kept in server memory for each open conversation and cleared when a new one is
 started or the server stops. The status indicator checks Ollama and the
 configured model. Stop the server with `Ctrl+C` in its terminal.
 
+## Resource alerts
+
+While the server runs, a background check reads the same telemetry every
+`sample_interval_seconds` (default 10) and sends one macOS notification when a
+resource stays high: "High memory usage — 93%", "High CPU usage — 94%", "High GPU
+usage — 91%" or "High thermal pressure detected (serious)". It needs
+`sustained_samples` readings in a row (default 3, so about 30 seconds) at or above
+the warning level, stays quiet however long the resource stays high, and only
+alerts again after the resource has recovered (`recovery_margin`, default 10
+points, below the warning level; thermal pressure: below the warning level) and
+crossed again. Each resource is independent. A reading macOS does not provide
+(for example GPU utilization on some Macs) never alerts and never clears an
+alert. The text states only the measured value, never a cause. Alerts also appear
+in the Alerts panel while the resource is high, and in the Activity log. With
+`speech = on`, a new alert is also spoken once through K.R.I.S.'s voice, but only
+when it is idle (not listening, speaking, thinking or waiting for a confirmation);
+otherwise it is only shown. Configure it under `[resource_alerts]` in
+`config.ini` (see `config.ini.example`); `enabled = off` stops the check. Its cost
+is about 45 ms of CPU per check. Notifications appear under the app that runs
+K.R.I.S. (for example Terminal), which macOS may ask to allow once.
+
 ## System telemetry
 
 On macOS the System panel shows live readings, refreshed about every 3 seconds
@@ -198,6 +219,41 @@ and (stage 4) **send email** (a new message, a reply, a forward, or an existing
 draft) and **search, read, create, change and cancel Calendar events**. Every
 send and every change asks you first. It cannot permanently delete email, send in
 bulk, create labels, or change past events.
+
+### Several Google accounts
+
+K.R.I.S. can use more than one Google account, each under a local name you choose.
+
+- Your first account keeps its existing sign-in (the Keychain item it always used) and is the
+  default, named by `default_account` under `[google]` in `config.ini` (otherwise `primary`).
+  Nothing is migrated and you do not reconnect.
+- "Connect my BITS Google account" (or "add my work Google account") opens Google sign-in in
+  the browser for that name. The account is added only after Google verifies the sign-in, and
+  its email always comes from Google, never from the name. Its token is stored in its own
+  Keychain item (`oauth:<name>`), so accounts can never overwrite each other. Signing in with
+  an account that is already connected under another name, or reconnecting a name with a
+  different Google account, is refused and nothing changes. The callback page says which
+  account was connected ("Connected BITS to daks@...").
+- Name the account to use it: "What's on my BITS calendar tomorrow?", "Search my personal
+  Gmail for flight tickets", "Send this from my BITS account". Without a name, the default is
+  used, except an email search, where K.R.I.S. asks which account to search (or all of them);
+  the choice applies to that request only. A message, event or draft found in one account
+  is only ever used with that account, so a reply or change cannot go out through the other.
+- "What's on all my calendars?" and "Brief me on all my calendars" search every connected
+  account and group the results by account; an event in two accounts (an invitation both
+  received) is listed once, noting the other account. If one account is unavailable, it is
+  named and the others are still shown. "What's on my calendar?" still uses the default.
+- With more than one account, every approval names the account ("from your BITS account,
+  daks@...", "on your BITS calendar"), and results say which account they came from.
+- "What Google accounts are connected?", "Which account is my default?", "Use BITS as my
+  default Google account" (saved), and "Disconnect my BITS Google account" (asks for
+  confirmation; it revokes and deletes K.R.I.S.'s access, and does not change the Google
+  account). The Google panel shows the default account and names the others.
+- The list of accounts (names, verified emails, which is the default) is kept in
+  `data/google_accounts.json`, which never contains tokens. If an account's stored sign-in no
+  longer matches the email it was connected as, it is reported and not used until reconnected.
+- `workspace_domain`, if set, applies to every account. All accounts share the one OAuth client
+  and its existing scopes.
 
 ### Workflows across tools
 K.R.I.S. can combine its tools in one request: "What do I have tomorrow?"
@@ -851,8 +907,25 @@ The indicator shows **Standby · say "Kris"** with a hollow dot while it is
 monitoring, and Listening with a solid pulsing dot only when your words are
 actually being recorded. While standby is on, the macOS microphone indicator
 stays on. Standby pauses (and releases the microphone) whenever K.R.I.S. is
-recording, transcribing, speaking or in a conversation, so its own voice cannot
-wake it, and resumes afterwards.
+recording, transcribing, speaking or in a conversation, and resumes afterwards.
+
+**Interrupting with "Kris".** With Wake word on, while K.R.I.S. speaks a
+hands-free reply the indicator reads **Speaking · say "Kris" to interrupt**:
+the same level-only detector listens again during the reply, and only short
+isolated sounds are checked by the local model (nothing is transcribed
+continuously). Say "Kris" on its own and the reply stops at once (the rest of
+it is dropped), then K.R.I.S. listens for your next request exactly as after
+tapping **Interrupt and talk**; "Kris" itself is never sent as a request and
+never approves anything. If a confirmation was being read out, your next words
+are judged as an answer to it as usual ("confirm", "cancel", or anything else
+keeps it waiting). Ordinary speech during a reply is ignored, a failed or busy
+check leaves the reply playing, and Stop speaking works as before. So that
+K.R.I.S. does not interrupt itself: the microphone uses the browser's echo
+cancellation, no check is made while the sentence being spoken (or the one just
+before) contains the name, and the server still accepts only a clip that is just
+the name. Each check takes about 0.3 s and 0.2 s of CPU on an M3 and happens only
+when a short isolated sound is heard. Replies that are not spoken hands-free
+(Speak replies in Review mode, timer announcements) are not interruptible this way.
 
 Limits, honestly:
 - "Kris" and "Chris" sound the same, so saying "Chris" on its own will also wake

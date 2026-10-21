@@ -11,7 +11,7 @@
   <main class="panel oauth-result-panel" data-section="G-WS">
     <h1 class="panel-title">Google Workspace</h1>
     {% if connected %}
-    <p class="oauth-result-message">Connected. K.R.I.S. can now show your inbox headers and upcoming events.</p>
+    <p class="oauth-result-message">Connected {{ account }} to {{ email or "your Google account" }}. K.R.I.S. can now use its Gmail and Calendar.</p>
     {% else %}
     <p class="oauth-result-message oauth-result-error">{{ message }}</p>
     {% endif %}

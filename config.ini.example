@@ -37,6 +37,24 @@ test_timeout_seconds = 300
 # through chat and in briefings. Set to on to show the tab again.
 tasks_tab = off
 
+[resource_alerts]
+# One macOS notification when a resource stays high, and another only after it has recovered
+# (fallen recovery_margin points below the warning level) and crossed again.
+enabled = on
+notifications = on
+# Also speak new alerts through K.R.I.S.'s voice, only while it is idle.
+speech = off
+sample_interval_seconds = 10
+# Samples in a row at or above a warning level before alerting (3 x 10 s = 30 s).
+sustained_samples = 3
+cpu_warning = 90
+memory_warning = 90
+# GPU utilization is best effort; Macs that do not report it are never alerted on.
+gpu_warning = 90
+recovery_margin = 10
+# macOS thermal pressure level that alerts: fair, serious or critical.
+thermal_warning = serious
+
 [voice]
 # Local push-to-talk. Remove this section to turn voice off. Install with
 # `brew install ffmpeg whisper.cpp` and place ggml-base.en.bin in data/models/ (see README).
@@ -68,3 +86,6 @@ say_voice =
 # Keep the Desktop-app OAuth client file outside this repository. Uncomment to enable.
 # client_secrets_file = ~/Library/Application Support/KRIS/google-oauth-client.json
 # workspace_domain = example.org
+# Local name of the first Google account and the first default; more accounts are added from
+# chat ("connect my work Google account") and listed in data/google_accounts.json (no tokens).
+# default_account = personal

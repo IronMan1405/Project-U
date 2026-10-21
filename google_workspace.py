@@ -271,13 +271,21 @@ def load_client(path: Path) -> OAuthClient:
 
 
 class KeychainTokenStore:
-    """One generic-password item in the login Keychain, written over stdin (never argv)."""
+    """One generic-password item in the login Keychain, written over stdin (never argv).
+
+    Each connected Google account has its own item: the first (original) account keeps the
+    item it always had ("oauth"); further accounts use "oauth:<name>" (google_accounts.py), so
+    their tokens can never overwrite each other."""
 
     SERVICE = "K.R.I.S. Google Workspace"
     ACCOUNT = "oauth"
+    _ITEM = re.compile(r"^oauth(?::[a-z0-9_-]{1,24})?$")
 
-    def __init__(self, run: Callable = subprocess.run):
+    def __init__(self, run: Callable = subprocess.run, account: str = ACCOUNT):
+        if not self._ITEM.fullmatch(account):
+            raise ValueError("invalid Keychain item name")
         self._run = run
+        self.ACCOUNT = account
 
     def _security(self, arguments: list[str] | None = None, stdin: str | None = None):
         if not Path(SECURITY).is_file():
@@ -552,7 +560,14 @@ class GoogleWorkspaceProvider:
             params["hd"] = self.settings.workspace_domain  # a hint only; enforced after sign-in
         return f"{AUTH_URL}?{urllib.parse.urlencode(params)}"
 
-    def complete_authorization(self, state: str | None, code: str | None, error: str | None) -> dict:
+    def has_pending(self, state: str | None) -> bool:
+        with self._lock:
+            return (state or "") in self._pending
+
+    def complete_authorization(self, state: str | None, code: str | None, error: str | None,
+                               accept_identity: Callable[[str], None] | None = None) -> dict:
+        """accept_identity(email), if given, may refuse the signed-in account (raising GoogleError)
+        before anything is stored; the new grant is then revoked and nothing changes."""
         with self._lock:
             pending = self._pending.pop(state or "", None)
         if pending is None or self._clock() - pending[2] >= PENDING_FLOW_SECONDS:
@@ -587,8 +602,13 @@ class GoogleWorkspaceProvider:
         claims = _decode_id_token(tokens.get("id_token") or "")
         try:
             self._check_identity(claims, client)
-        except GoogleError:
-            self._revoke(refresh_token)
+            if accept_identity is not None:
+                accept_identity(claims["email"])
+        except GoogleError as refused:
+            # Revoking ends the whole grant for that Google account and this app, so never do it
+            # when the account is already connected under another name (its token would die too).
+            if getattr(refused, "revoke_grant", True):
+                self._revoke(refresh_token)
             raise
         granted = set(str(tokens.get("scope") or "").split())
         record = {

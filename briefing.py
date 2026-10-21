@@ -1,7 +1,8 @@
 """The daily briefing: one verified picture of a day from K.R.I.S.'s sources.
 
-Sources: Google Calendar (the existing provider), K.R.I.S. tasks (SQLite), Apple Reminders,
-and K.R.I.S. timers. Each source reports its own status ("ok", "not_connected" or
+Sources: Google Calendar (the default Google account, or with calendar_accounts="all" every
+connected account, grouped by account), K.R.I.S. tasks (SQLite), Apple Reminders, and K.R.I.S.
+timers. Each source reports its own status ("ok", "not_connected" or
 "unavailable" with the reason), so a briefing never presents missing data as an empty day.
 Nothing is inferred: tasks have no completion time, so "completed today" is not reported.
 A task and a reminder with the same title due the same day are shown once.
@@ -65,6 +66,40 @@ def _cap(items: list[dict]) -> dict:
     return {"items": items[:MAX_ITEMS], "more": max(0, len(items) - MAX_ITEMS)}
 
 
+def _all_calendars(accounts, day_events) -> dict:
+    """Every connected account's events, grouped by account. An event that appears in several
+    accounts (an invitation both received) is listed once, in the first, with also_in naming the
+    others. One account failing is reported for that account; the others still count."""
+    groups, unavailable, seen = [], [], {}
+    for name in accounts.names:
+        status = accounts.account_status(name)
+        if not status["connected"]:
+            unavailable.append({"account": name, "reason": status["message"] or "Not connected."})
+            continue
+        try:
+            found = day_events(accounts.check(name))
+        except google_workspace.GoogleError as error:
+            unavailable.append({"account": name, "reason": error.message})
+            continue
+        events = []
+        for event in found["events"]:
+            key = (event.get("title"), event.get("start"), event.get("end"))
+            if key in seen:
+                seen[key].setdefault("also_in", []).append(name)
+                continue
+            seen[key] = event
+            events.append(event)
+        groups.append({"account": name, "email": status["email"], "events": events, "more": found["more_available"]})
+    if not groups:
+        return {"status": "unavailable", "reason": "; ".join(f"{u['account']}: {u['reason']}" for u in unavailable)
+                or "No Google account is connected."}
+    result = {"status": "ok", "accounts": groups,
+              "note": "Events are grouped by account; always say which account each event is in."}
+    if unavailable:
+        result["unavailable_accounts"] = unavailable
+    return result
+
+
 def build_briefing(
     now: datetime,
     day: str = "today",
@@ -73,6 +108,7 @@ def build_briefing(
     google: "google_workspace.GoogleWorkspaceProvider | None" = None,
     reminders: AppleReminders | None = None,
     timers=None,
+    calendar_accounts: str | None = None,
 ) -> dict:
     now = _local_now(now)
     target = now.date() + timedelta(days=1 if day == "tomorrow" else 0)
@@ -85,18 +121,26 @@ def build_briefing(
         "sources": {},
     }
 
-    # Calendar: Google, through the existing provider (never invented when unavailable).
+    # Calendar: Google (never invented when unavailable). The default account unless all were asked for.
+    def day_events(provider) -> dict:
+        found = provider.search_events(day_start.isoformat(), day_end.isoformat(), None, google_workspace.MAX_EVENT_RESULTS)
+        if day == "today":
+            for event in found["events"]:
+                end = event.get("end") or ""
+                event["finished"] = bool(not event["all_day"] and end and datetime.fromisoformat(end) <= now)
+        return found
+
+    accounts = google if hasattr(google, "provider") else None  # several accounts (google_accounts.py)
     if google is None or not google.settings.enabled:
         briefing["sources"]["calendar"] = {"status": "not_connected", "reason": "Google Calendar is not connected."}
+    elif calendar_accounts == "all" and accounts is not None and accounts.multiple:
+        briefing["sources"]["calendar"] = _all_calendars(accounts, day_events)
     else:
         try:
-            found = google.search_events(day_start.isoformat(), day_end.isoformat(), None, google_workspace.MAX_EVENT_RESULTS)
-            events = found["events"]
-            if day == "today":
-                for event in events:
-                    end = event.get("end") or ""
-                    event["finished"] = bool(not event["all_day"] and end and datetime.fromisoformat(end) <= now)
-            briefing["sources"]["calendar"] = {"status": "ok", "events": events, "more": found["more_available"]}
+            found = day_events(accounts.check(accounts.default) if accounts is not None else google)
+            briefing["sources"]["calendar"] = {"status": "ok", "events": found["events"], "more": found["more_available"]}
+            if accounts is not None and accounts.multiple:
+                briefing["sources"]["calendar"]["account"] = accounts.default
         except google_workspace.GoogleError as error:
             briefing["sources"]["calendar"] = {"status": "unavailable", "reason": error.message}
 
