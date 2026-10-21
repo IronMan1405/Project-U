@@ -64,6 +64,14 @@ def load_google_default_account(config_path: Path = CONFIG_PATH) -> str | None:
     return (parser.get("google", "default_account", fallback="") or "").strip() or None
 
 
+def load_ui_control_settings(config_path: Path = CONFIG_PATH):
+    """[ui_control] apps: the apps whose named controls K.R.I.S. may inspect and act on (off if unset)."""
+    from ui_control import build_ui_control_settings
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(config_path)
+    return build_ui_control_settings(parser.get("ui_control", "apps", fallback=""))
+
+
 def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, bool]:
     """[ui] switches. tasks_tab: show the Tasks tab (hidden by default; Apple Reminders is primary)."""
     parser = configparser.ConfigParser(interpolation=None)

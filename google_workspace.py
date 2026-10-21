@@ -51,6 +51,7 @@ through an always-confirmed tool (CONSEQUENTIAL_OPERATIONS, enforced in tool_reg
 from __future__ import annotations
 
 import base64
+import calendar_filters
 import email.policy
 import hashlib
 import json
@@ -91,6 +92,8 @@ SCOPE_GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPE_GMAIL_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 SCOPE_GMAIL_SEND = "https://www.googleapis.com/auth/gmail.send"
 SCOPE_CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
+# Optional ([google] calendar_labels = on): read calendar settings, for Calendar label names.
+SCOPE_CALENDAR_CALENDARS_READONLY = "https://www.googleapis.com/auth/calendar.calendars.readonly"
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,8 @@ CAPABILITIES = {
     "mail.modify": Capability("mail.modify", (SCOPE_GMAIL_MODIFY,), True),
     "mail.send": Capability("mail.send", (SCOPE_GMAIL_SEND,), True),
     "calendar.write": Capability("calendar.write", (SCOPE_CALENDAR_EVENTS,), True),
+    # Opt-in: requested only with calendar_labels = on, so it never forces anyone to re-consent.
+    "calendar.labels": Capability("calendar.labels", (SCOPE_CALENDAR_CALENDARS_READONLY,), False),
 }
 # Planned, not requested. Each needs re-consent for its scope and a confirmed tool.
 FUTURE_CAPABILITIES = {
@@ -179,6 +184,7 @@ MAX_PENDING_FLOWS = 5
 CACHE_SECONDS = 60
 INBOX_LIMIT = 10
 CALENDAR_MAX_EVENTS = 100
+FILTER_SCAN = 250  # events checked in a range when filtering by kind, title or label (one API page)
 _DOMAIN = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 _STORE_SAFE = re.compile(r"^[A-Za-z0-9_=-]+$")
 
@@ -222,6 +228,7 @@ class GoogleSettings:
     client_secrets_file: Path | None = None
     workspace_domain: str | None = None
     problem: str | None = None  # a configuration problem, safe to display
+    calendar_labels: bool = False  # also ask for permission to read Calendar label names
 
 
 def build_google_settings(values: dict, home: Path | None = None) -> GoogleSettings:
@@ -234,7 +241,8 @@ def build_google_settings(values: dict, home: Path | None = None) -> GoogleSetti
         return GoogleSettings(problem="client_secrets_file must be an absolute path (or start with ~).")
     if domain is not None and not _DOMAIN.match(domain):
         return GoogleSettings(problem="workspace_domain must be a domain such as example.org.")
-    return GoogleSettings(enabled=True, client_secrets_file=path, workspace_domain=domain)
+    labels = str(values.get("calendar_labels") or "").strip().casefold() in ("1", "on", "true", "yes")
+    return GoogleSettings(enabled=True, client_secrets_file=path, workspace_domain=domain, calendar_labels=labels)
 
 
 @dataclass(frozen=True)
@@ -548,7 +556,8 @@ class GoogleWorkspaceProvider:
             "client_id": client.client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": " ".join(requested_scopes()),
+            "scope": " ".join(requested_scopes(
+                (*ENABLED_CAPABILITIES, "calendar.labels") if self.settings.calendar_labels else ENABLED_CAPABILITIES)),
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
@@ -1090,31 +1099,97 @@ class GoogleWorkspaceProvider:
     # prepared from a fresh copy of the event, and are refused if it changed (etag) since.
 
     def search_events(self, start: str | None = None, end: str | None = None, query: str | None = None,
-                      max_results: int = MAX_EVENT_RESULTS) -> dict:
-        """Any range, past or future. Without a start, searches from now on (upcoming events)."""
+                      max_results: int = MAX_EVENT_RESULTS, *, kind: str | None = None,
+                      title_contains: str | None = None, label: str | None = None,
+                      event_type: str | None = None) -> dict:
+        """Any range, past or future. Without a start, searches from now on (upcoming events).
+        Optional structured filters (calendar_filters.py): kind, title_contains, label (a Google
+        Calendar label, by name), event_type (Google's eventType). With kind, title or label the
+        range is scanned (up to FILTER_SCAN events) and each match says why it matched."""
         self._client()
         self._require("calendar.read", "Google Calendar")
         time_min = parse_bound(start, self._now()) if start else self._now().replace(microsecond=0)
         time_max = parse_bound(end, self._now()) if end else None
+        if time_max is None and isinstance(start, str) and start.strip().casefold() in ("yesterday", "today", "tomorrow"):
+            time_max = time_min + timedelta(days=1)  # "tomorrow" means that day
+        if time_max is not None and time_max == time_min and isinstance(end, str) and _DATE.match(end.strip()):
+            time_max = time_min + timedelta(days=1)  # a date-only end is inclusive: start and end on one day = that day
         if time_max is not None and time_max <= time_min:
             raise GoogleError("invalid", "The end of the search range must be after its start.")
         if not isinstance(max_results, int) or isinstance(max_results, bool) or not 1 <= max_results <= MAX_EVENT_RESULTS:
             raise GoogleError("invalid", f"max_results must be between 1 and {MAX_EVENT_RESULTS}.")
+        if kind is not None and kind not in calendar_filters.KINDS:
+            raise GoogleError("invalid", f"kind must be one of {', '.join(calendar_filters.KINDS)}.")
+        if event_type is not None and event_type not in calendar_filters.EVENT_TYPES:
+            raise GoogleError("invalid", f"event_type must be one of {', '.join(calendar_filters.EVENT_TYPES)}.")
+        title_contains = " ".join((title_contains or "").split())[:100] or None
+        label_id = label_name = None
+        if label:
+            label_id, label_name = self._label(label)
+        filtering = bool(kind or title_contains or label_id)
         params = {
             "timeMin": time_min.isoformat(), "singleEvents": "true", "orderBy": "startTime",
-            "maxResults": max_results,
-            "fields": "items(id,summary,start,end,status,location,recurringEventId,attendees(email)),nextPageToken",
+            "maxResults": FILTER_SCAN if filtering else max_results,
+            "fields": "items(id,summary,start,end,status,location,recurringEventId,attendees(email,self),eventType,"
+                      "eventLabelId,hangoutLink,conferenceData(conferenceId)" + (",description" if kind else "")
+                      + "),nextPageToken",
         }
         if time_max is not None:
             params["timeMax"] = time_max.isoformat()
         if query:
             params["q"] = validate_query(query)
+        if event_type:
+            params["eventTypes"] = event_type
         result = self._get(f"{CALENDAR_API}/calendars/primary/events", params, "Google Calendar")
-        events = [summary for summary in (event_summary(item) for item in result.get("items") or []) if summary]
-        found = {"events": events, "more_available": bool(result.get("nextPageToken"))}
-        if len(events) > 1:
+        items = result.get("items") or []
+        more = bool(result.get("nextPageToken"))
+        events = []
+        for item in items:
+            reasons = (calendar_filters.match(item, kind=kind, title_contains=title_contains, label_id=label_id,
+                                              label_name=label_name) if filtering else [])
+            summary = event_summary(item) if reasons is not None else None
+            if summary:
+                if filtering:
+                    summary["matched_by"] = reasons
+                events.append(summary)
+        found = {"events": events[:max_results], "more_available": more or len(events) > max_results}
+        if filtering or event_type:
+            found["filters"] = calendar_filters.describe(kind, title_contains, label_name, event_type)
+            if more:
+                found["incomplete"] = (f"Only the first {FILTER_SCAN} events in the range were checked; "
+                                       "narrow the date range to be sure nothing is missed.")
+        if len(found["events"]) > 1:
             found["note"] = AMBIGUITY_NOTE
         return found
+
+    def event_labels(self) -> list[dict]:
+        """The Google Calendar labels defined on the primary calendar (id, name). Needs the opt-in
+        calendar.labels permission; without it, says how to allow it."""
+        self._client()
+        self._require("calendar.read", "Google Calendar")
+        granted = set(self._record().get("scopes") or [])
+        if not _has_scope(granted, SCOPE_CALENDAR_CALENDARS_READONLY):
+            how = ("Reconnect this Google account to allow it." if self.settings.calendar_labels else
+                   "Set calendar_labels = on under [google] in config.ini, restart K.R.I.S., and reconnect.")
+            raise GoogleError("labels_not_granted", "Google Calendar label names need K.R.I.S. to have read access to "
+                              f"calendar settings, which it does not have. {how} Until then events can be filtered "
+                              "by title, words, type or meeting details, but not by label.", True)
+
+        def read() -> dict:
+            calendar = self._get(f"{CALENDAR_API}/calendars/primary", {"fields": "labelProperties"}, "Google Calendar")
+            labels = ((calendar.get("labelProperties") or {}).get("eventLabels") or [])
+            return {"labels": [{"id": item["id"], "name": str(item.get("name") or "")[:50]}
+                               for item in labels if isinstance(item, dict) and isinstance(item.get("id"), str)]}
+        return self._cached("calendar_labels", read)["labels"]
+
+    def _label(self, name: str) -> tuple[str, str]:
+        wanted = " ".join(str(name).split()).casefold()
+        labels = self.event_labels()
+        for item in labels:
+            if item["name"].casefold() == wanted:
+                return item["id"], item["name"]
+        names = ", ".join(sorted(item["name"] for item in labels if item["name"])) or "none"
+        raise GoogleError("invalid", f"This calendar has no label named \"{str(name)[:50]}\". Its labels: {names}.")
 
     def read_event(self, event_id: str) -> dict:
         self._client()
@@ -1578,6 +1653,9 @@ def parse_bound(value, now: datetime) -> datetime:
     if not isinstance(value, str):
         raise GoogleError("invalid", "Dates must be written like 2026-10-28 or 2026-10-28T14:00.")
     value = value.strip()
+    relative = {"yesterday": -1, "today": 0, "tomorrow": 1}.get(value.casefold())
+    if relative is not None:  # the words people (and the model) use for a day
+        return datetime.combine(now.date() + timedelta(days=relative), clock_time(0), tzinfo=now.tzinfo)
     try:
         if _DATE.match(value):
             return datetime.combine(date.fromisoformat(value), clock_time(0), tzinfo=now.tzinfo)
@@ -1750,6 +1828,9 @@ def event_summary(item: dict) -> dict | None:
         "location": str(item.get("location") or "")[:120],
         "attendee_count": len(item.get("attendees") or []),
         "occurrence_of_series": isinstance(item.get("recurringEventId"), str),
+        "event_type": item.get("eventType") or "default",
+        "has_label": bool(item.get("eventLabelId")),
+        "video_call": bool(item.get("hangoutLink") or (item.get("conferenceData") or {}).get("conferenceId")),
     }
 
 

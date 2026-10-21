@@ -13,11 +13,12 @@ from pathlib import Path
 
 
 PROFILE_PATH = Path(__file__).resolve().parent / "profile.json"
-MAX_PROFILE_SIZE = 4096
+# Room for MAX_ABOUT facts of MAX_TEXT_LENGTH characters plus the other fields, with JSON overhead.
+MAX_PROFILE_SIZE = 8192
 MAX_TEXT_LENGTH = 200
 MAX_INTERESTS = 8
 MAX_NAME_LENGTH = 80
-MAX_ABOUT = 8
+MAX_ABOUT = 20  # facts in "about"; more are rejected (the whole profile then falls back to defaults)
 
 DEFAULT_PROFILE = {
     "response_style": "clear and concise",

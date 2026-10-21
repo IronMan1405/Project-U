@@ -12,12 +12,15 @@ from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlsplit
 
+import calendar_filters
 import computer_utilities
 import google_workspace
 import system_telemetry
 from computer_utilities import UtilityError, UtilitySettings
 from developer import MAX_COMMITS, DeveloperCompanion, DeveloperError
 from google_accounts import ALL as ALL_ACCOUNTS, GoogleAccounts
+import ui_control
+from ui_control import UIController, UIControlError
 from mac_control import MEDIA_ACTIONS, PLAYERS, MacControl, MacControlError, music_play, music_search
 from briefing import build_briefing
 from reminders import AppleReminders, Due, RemindersError
@@ -26,8 +29,11 @@ from storage import (
     TOOL_DUE_AT_FORMAT_DESCRIPTION,
     TOOL_DUE_AT_PATTERN,
     RecordNotFound,
+    capture_note,
     create_note,
     create_task,
+    find_open_task,
+    search_notes,
     delete_note,
     delete_task,
     describe_due_at,
@@ -191,6 +197,7 @@ def _explicit_write_requested(name: str, message: str) -> bool:
     patterns = {
         "create_task": [
             rf"^{prefixes}(?:add|create|make|record)\b.{{0,120}}\b(?:tasks?|todos?)\b",
+            rf"^{prefixes}(?:turn|convert|make)\b.{{0,80}}\b(?:a |into a |into |as a )?(?:tasks?|todos?)\b",
         ],
         "set_task_completed": [
             rf"^{prefixes}(?:mark|complete|finish|reopen)\b.{{0,120}}\b(?:tasks?|todos?)\b",
@@ -332,7 +339,9 @@ class ToolRegistry:
         timers: "TimerService | None" = None,
         mac: "MacControl | None" = None,
         developer: "DeveloperCompanion | None" = None,
+        ui: "UIController | None" = None,
     ):
+        self.ui = ui
         self.mac = mac
         self.developer = developer
         self.database_path = database_path
@@ -383,6 +392,8 @@ class ToolRegistry:
                             "pattern": TOOL_DUE_AT_PATTERN,
                             "description": f"Optional. {due_at_description}",
                         },
+                        "note_id": {**note_id, "description": "Optional: the saved note this task comes from "
+                                    "(from capture_note or search_notes), for 'turn that into a task'."},
                     },
                     ("title",),
                 ),
@@ -443,6 +454,41 @@ class ToolRegistry:
                 _object_schema({"note_id": note_id}, ("note_id",)),
                 self._get_note,
             ),
+            "capture_note": ToolDefinition(
+                "capture_note",
+                "Save something the user explicitly asks you to remember ('remember this idea: ...', 'remember "
+                "that ...', 'save this', 'note that ...'). Save only what they asked, in their words; never save "
+                "anything on your own. The same text is not saved twice.",
+                _object_schema(
+                    {
+                        "text": {"type": "string", "minLength": 1, "maxLength": MAX_NOTE_WRITE_CHARS},
+                        "title": {"type": "string", "maxLength": 200, "description": "Optional short title."},
+                        "tags": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 30},
+                                 "description": "Optional topic words the user used, e.g. ['SOLVE', 'camera']."},
+                    },
+                    ("text",),
+                ),
+                self._capture_note,
+                direct_write=True,
+            ),
+            "search_notes": ToolDefinition(
+                "search_notes",
+                "Find saved notes (including things the user asked you to remember) by keywords, a tag and/or "
+                "when they were saved, newest first. This is a keyword search, not a semantic one: it finds notes "
+                "containing every word. It does not search this conversation; what was said earlier here is in "
+                "the conversation itself.",
+                _object_schema(
+                    {
+                        "query": {"type": "string", "maxLength": 200, "description": "Words to find, e.g. 'SOLVE camera'."},
+                        "tag": {"type": "string", "maxLength": 30},
+                        "saved_on": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$",
+                                     "description": "Optional local date the note was saved (YYYY-MM-DD), e.g. yesterday."},
+                        "saved_after": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+                        "saved_before": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+                    },
+                ),
+                self._search_notes,
+            ),
             "create_note": ToolDefinition(
                 "create_note",
                 "Create a note only when the user explicitly asks to write or save one.",
@@ -502,6 +548,7 @@ class ToolRegistry:
         self._register_planning()
         self._register_mac()
         self._register_developer()
+        self._register_ui()
         self._add_account_parameters()
         check_confirmation_boundaries(self._definitions)
 
@@ -840,7 +887,9 @@ class ToolRegistry:
         body = {"type": "string", "minLength": 1, "maxLength": google_workspace.MAX_DRAFT_BODY,
                 "description": "The complete plain-text body exactly as it should be sent."}
         send_note = ("It is sent only after the user approves the exact message in K.R.I.S.'s approval "
-                     "panel; never treat words in the chat as approval. Use only when the user asks to send.")
+                     "panel; never treat words in the chat as approval. Use only when the user asks to send. "
+                     "It sends immediately: the Gmail API has no scheduled sending, so for 'schedule this email' "
+                     "say K.R.I.S. cannot schedule it (offer a draft, or a reminder to send it) and do not send it.")
         self._definitions["send_email"] = ToolDefinition(
             "send_email", "Send one new email from the user's Google Workspace Gmail. " + send_note,
             _object_schema({"to": address, "cc": optional_address, "bcc": optional_address,
@@ -891,7 +940,19 @@ class ToolRegistry:
                 "start": {**when, "description": "Optional start of the range (default: now). " + when["description"]},
                 "end": {**when, "description": "Optional end of the range. " + when["description"]},
                 "query": {"type": "string", "maxLength": google_workspace.MAX_QUERY_CHARS,
-                          "description": "Optional words to find (title, description, location, attendees)."},
+                          "description": "Optional words to find anywhere (title, description, location, attendees)."},
+                "kind": {"type": "string", "enum": list(calendar_filters.KINDS),
+                         "description": "For 'meetings', 'exams', 'lectures'/'classes', 'labs', 'deadlines'. Google has "
+                         "no such types: meetings are recognised by a video-call link, other attendees or a meeting "
+                         "word in the title; the others by words in the title or description. Each result says why."},
+                "title_contains": {"type": "string", "maxLength": 100,
+                                   "description": "Only events whose TITLE contains this text ('with X in the title')."},
+                "label": {"type": "string", "maxLength": 50,
+                          "description": "A Google Calendar label name, for 'labelled X' / 'tagged X' / 'with the label X'. "
+                          "If labels are not available the result says so: then tell the user, and only search the "
+                          "title instead if they agree, saying it is not a label search."},
+                "event_type": {"type": "string", "enum": list(calendar_filters.EVENT_TYPES),
+                               "description": "Google's own event type, e.g. focusTime or outOfOffice."},
                 "max_results": {"type": "integer", "minimum": 1},
             }),
             self._search_calendar_events,
@@ -1112,15 +1173,17 @@ class ToolRegistry:
         account = arguments["account"]
         limit = arguments.get("max_results", google_workspace.MAX_EVENT_RESULTS)
         try:
+            filters = {key: arguments.get(key) for key in ("kind", "title_contains", "label", "event_type")}
             results, failures = self._each_account(account, lambda provider: provider.search_events(
-                arguments.get("start"), arguments.get("end"), arguments.get("query"), limit))
+                arguments.get("start"), arguments.get("end"), arguments.get("query"), limit, **filters))
         except google_workspace.GoogleError as error:
             return ToolOutcome(False, error.message)
         if account != ALL_ACCOUNTS:
             name, result = results[0]
             self._seen_event_ids.update((name, event["event_id"]) for event in result["events"])
             more = " More match; narrow the range." if result["more_available"] else ""
-            return ToolOutcome(True, f"Found {len(result['events'])} event(s){self._in(name)}.{more}", {**result, "account": name})
+            how = f" Filtered by {result['filters']}." if result.get("filters") else ""
+            return ToolOutcome(True, f"Found {len(result['events'])} event(s){self._in(name)}.{more}{how}", {**result, "account": name})
         by_account = []
         for name, result in results:
             self._seen_event_ids.update((name, event["event_id"]) for event in result["events"])
@@ -1408,6 +1471,8 @@ class ToolRegistry:
             arguments = {**arguments, "folder": root}
         if name in ("open_file", "open_in_editor"):
             return self._prepare_open(name, definition, arguments, user_message)
+        if name == "ui_action":
+            return self._prepare_ui_action(definition, arguments, user_message)
         if name == "play_music":
             if arguments["item_id"] not in self._seen_music:
                 raise ToolError("Find the song or playlist with find_music first; only its results can be played.")
@@ -1423,6 +1488,11 @@ class ToolRegistry:
         if name in GOOGLE_TOOLS and self.google is not None:
             account = self._google_account(name, arguments, user_message)
             arguments = {**arguments, "account": account}
+            # "Search my BITS calendar for meetings": the account name chose the account; it is not
+            # also a word the events must contain.
+            query = str(arguments.get("query") or "").strip().casefold()
+            if query and account != ALL_ACCOUNTS and query in {account.casefold(), (self.google.email(account) or "").casefold()}:
+                arguments.pop("query")
             if account != ALL_ACCOUNTS:
                 try:
                     self._gprovider(account)  # refuses an account whose identity no longer matches
@@ -1483,6 +1553,15 @@ class ToolRegistry:
         if name == "start_timer" and arguments.get("remind_when_done"):
             # Creating a reminder is a second write: direct only when the user asked to be reminded.
             direct_intent = direct_intent and bool(re.search(r"\bremind", user_message, re.IGNORECASE))
+        if name == "capture_note":
+            # Saved directly only when the user asked to remember something and the text is their own
+            # words (most of its words appear in their message); otherwise they see it and approve.
+            asked = bool(re.search(r"\b(?:remember|save|note (?:down|that)|jot|keep (?:a note|in mind)|capture)\b",
+                                   user_message, re.IGNORECASE))
+            said = set(re.findall(r"\w{3,}", user_message.casefold()))
+            words = re.findall(r"\w{3,}", arguments["text"].casefold())
+            own_words = bool(words) and sum(word in said for word in words) >= 0.8 * len(words)
+            direct_intent = asked and own_words
         if name in {"create_note", "update_note"}:
             supplied_content = _normalized_content(arguments["content"])
             user_content = _normalized_content(user_message)
@@ -1546,6 +1625,8 @@ class ToolRegistry:
             return f"Delete task {arguments['task_id']}"
         if name == "create_note":
             return f"Create note: {arguments['title']} ({_note_preview(arguments['content'])})"
+        if name == "capture_note":
+            return f"Remember: {_note_preview(arguments['text'])}"
         if name == "update_note":
             return f"Edit note {arguments['note_id']}: {arguments['title']} ({_note_preview(arguments['content'])})"
         if name == "delete_note":
@@ -1574,9 +1655,18 @@ class ToolRegistry:
         return name.replace("_", " ").capitalize()
 
     def _create_task(self, arguments: dict) -> ToolOutcome:
+        title = arguments["title"].strip()
+        existing = find_open_task(title, arguments.get("due_at"), self.database_path)
+        if existing is not None:
+            return ToolOutcome(True, f"An identical open task already exists (task {existing['id']}); nothing new was "
+                               "added.", {**existing, "already_existed": True})
+        description = arguments.get("description", "")
+        if arguments.get("note_id"):
+            note = get_note(arguments["note_id"], self.database_path)
+            description = (description + "\n\n" if description else "") + f"From saved note {note['id']}: {note['title']}"
         task = create_task(
-            arguments["title"].strip(),
-            arguments.get("description", ""),
+            title,
+            description,
             self.database_path,
             due_at=arguments.get("due_at"),
         )
@@ -1637,6 +1727,59 @@ class ToolRegistry:
         note["content_truncated"] = len(content) > MAX_NOTE_CONTENT_RESULT
         note["content_characters"] = len(content)
         return ToolOutcome(True, "Note retrieved.", note)
+
+    def _capture_note(self, arguments: dict) -> ToolOutcome:
+        text = arguments["text"].strip()
+        title = (arguments.get("title") or "").strip() or _capture_title(text)
+        try:
+            note, created = capture_note(title, text, tags=arguments.get("tags"), source="K.R.I.S. conversation",
+                                         database_path=self.database_path)
+        except ValueError as error:
+            return ToolOutcome(False, str(error))
+        saved = _local_time(note["created_at"])
+        if not created:
+            return ToolOutcome(True, f"Already saved on {saved} (note {note['id']}); nothing new was added.",
+                               {**_note_brief(note), "already_saved": True})
+        return ToolOutcome(True, f"Saved as note {note['id']} ({saved}).", _note_brief(note))
+
+    def _search_notes(self, arguments: dict) -> ToolOutcome:
+        # Words as typed (so "100%" stays "100%"), without surrounding punctuation or filler words.
+        words = [w for w in (part.strip(".,;:!?\"'()[]") for part in (arguments.get("query") or "").casefold().split())
+                 if w and w not in _NOTE_FILLER]
+        tag = arguments.get("tag")
+        if tag and tag.casefold() in words:
+            tag = None  # the words already search tags; requiring the tag as well would hide untagged notes
+        bounds = {}
+        try:
+            if arguments.get("saved_on"):
+                day = date.fromisoformat(arguments["saved_on"])
+                bounds = {"created_after": _utc_start(day), "created_before": _utc_start(day + timedelta(days=1))}
+            if arguments.get("saved_after"):
+                bounds["created_after"] = _utc_start(date.fromisoformat(arguments["saved_after"]))
+            if arguments.get("saved_before"):
+                bounds["created_before"] = _utc_start(date.fromisoformat(arguments["saved_before"]))
+            found = search_notes(words, tag=tag, database_path=self.database_path, **bounds)
+            if tag and not found["notes"] and not words:
+                # Nothing carries the tag: say so, and show notes that contain the word instead, as such.
+                words = [w for w in tag.casefold().split() if w not in _NOTE_FILLER]
+                by_word = search_notes(words, database_path=self.database_path, **bounds)
+                if by_word["notes"]:
+                    notes = [_note_brief(note, words) for note in by_word["notes"]]
+                    return ToolOutcome(True, f"No note is tagged '{tag}', but {len(notes)} saved note(s) contain the "
+                                       f"word '{tag}' (keyword search, not semantic). Say they are word matches, not tags.",
+                                       {"notes": notes, "matched": "word, not tag"})
+        except ValueError as error:
+            return ToolOutcome(False, str(error))
+        criteria = ", ".join(filter(None, [
+            f"every word of: {', '.join(words)}" if words else "", f"tag '{tag}'" if tag else "",
+            f"saved on {arguments['saved_on']}" if arguments.get("saved_on") else ""])) or "any note"
+        notes = [_note_brief(note, words) for note in found["notes"]]
+        if not notes:
+            return ToolOutcome(True, f"No saved note matches ({criteria}; keyword search, not semantic). Nothing about "
+                               "this was saved as a note; it may still be in this conversation.", {"notes": []})
+        more = " More match; narrow the search." if found["more"] else ""
+        return ToolOutcome(True, f"Found {len(notes)} saved note(s) with {criteria} (keyword search, not semantic), newest "
+                           f"first.{more} If several could be what the user means, ask which.", {"notes": notes})
 
     def _create_note(self, arguments: dict) -> ToolOutcome:
         note = create_note(
@@ -1920,6 +2063,80 @@ class ToolRegistry:
         if result is None:
             return ToolOutcome(True, "No test run has been recorded since K.R.I.S. started. Ask to run the tests.")
         return ToolOutcome(True, f"Latest run ({result['finished_at']}): {result['status']}.", result)
+
+    def _register_ui(self) -> None:
+        """Named UI elements in approved apps through macOS Accessibility (ui_control.py)."""
+        if self.ui is None or not self.ui.settings.apps:
+            return
+        apps = list(self.ui.settings.apps)
+        roles = list(ui_control.ROLES)
+        self._definitions["inspect_ui"] = ToolDefinition(
+            "inspect_ui", "List the named buttons, menu items, text fields and other controls of an app the user "
+            f"may control ({', '.join(apps)}), optionally one role, window or name. Read-only. Use it to find "
+            "the exact element before acting.",
+            _object_schema({"app": {"type": "string", "enum": apps}, "role": {"type": "string", "enum": roles},
+                            "window": {"type": "string", "maxLength": 200},
+                            "name": {"type": "string", "maxLength": 200, "description": "Optional part of a name."}},
+                           ("app",)),
+            self._inspect_ui,
+        )
+        self._definitions["ui_action"] = ToolDefinition(
+            "ui_action", "Act on ONE named element in an approved app: press a button or menu item, focus a "
+            "control, or set the text of a text field. Give the app, the element's role and exact name (from "
+            "inspect_ui), and window or menu if several match. Pressing and entering text are approved by the "
+            "user first. Never use this to send email, change Calendar events, or approve anything.",
+            _object_schema({
+                "app": {"type": "string", "enum": apps}, "role": {"type": "string", "enum": roles},
+                "name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "action": {"type": "string", "enum": list(ui_control.ACTIONS)},
+                "text": {"type": "string", "maxLength": ui_control.MAX_TEXT, "description": "Only for set_text."},
+                "window": {"type": "string", "maxLength": 200}, "menu": {"type": "string", "maxLength": 200},
+            }, ("app", "role", "name", "action")),
+            self._ui_action, direct_write=True,
+        )
+
+    def _inspect_ui(self, arguments: dict) -> ToolOutcome:
+        try:
+            result = self.ui.inspect(arguments["app"], arguments.get("role"), arguments.get("window"), arguments.get("name"))
+        except UIControlError as error:
+            return ToolOutcome(False, error.message, {"error": error.kind})
+        more = " More exist; narrow by role, window or name." if result["more"] else ""
+        return ToolOutcome(True, f"{len(result['elements'])} named element(s) in {result['app']}.{more}", result)
+
+    def _prepare_ui_action(self, definition: "ToolDefinition", arguments: dict, user_message: str) -> PreparedToolCall:
+        """Find the exact element now, so the summary (and any approval) names exactly what is acted on."""
+        action, role = arguments["action"], arguments["role"]
+        if role not in ui_control.ACTION_ROLES[action]:
+            raise ToolError(f"A {role} cannot be used with {action}.")
+        if action == "set_text" and arguments.get("text") is None:
+            raise ToolError("Give the text to enter.")
+        try:
+            element = self.ui.find(arguments["app"], role, arguments["name"], arguments.get("window"), arguments.get("menu"))
+        except UIControlError as error:
+            detail = (" Candidates: " + "; ".join(
+                f"{c.get('name')} ({c.get('window') or c.get('menu') or 'no window'})" for c in error.candidates)
+                      if error.candidates else "")
+            raise ToolError(error.message + detail) from error
+        app = self.ui.app(arguments["app"])
+        where = f" (window \"{element.window}\")" if element.window else (f" (menu \"{element.menu}\")" if element.menu else "")
+        verb = f"Type {_note_preview(arguments['text'])} into" if action == "set_text" else action.capitalize()
+        summary = f"{verb} the {role} \"{element.name}\" in {app}{where}"
+        # Pressing and typing change the app: always approved. Focus is low-impact when asked for.
+        asked = bool(re.search(r"\b(?:focus|click into|select|go to|put the cursor)\b", user_message, re.IGNORECASE))
+        prepared = {key: arguments.get(key) for key in ("app", "role", "name", "action", "text", "window", "menu")
+                    if arguments.get(key) is not None}
+        return PreparedToolCall(name="ui_action", arguments={**prepared, "window": element.window or prepared.get("window"),
+                                                              "menu": element.menu or prepared.get("menu")},
+                                summary=summary, always_confirm=action != "focus" or not asked, direct_write=True)
+
+    def _ui_action(self, arguments: dict) -> ToolOutcome:
+        try:
+            result = self.ui.act(arguments["app"], arguments["role"], arguments["name"], arguments["action"],
+                                 arguments.get("text"), arguments.get("window") or None, arguments.get("menu") or None)
+        except UIControlError as error:
+            return ToolOutcome(False, error.message, {"error": error.kind})
+        return ToolOutcome(True, f"{result['action'].replace('_', ' ').capitalize()}: the {result['role']} "
+                           f"\"{result['name']}\" in {result['app']} ({result['verified']}).", result)
 
     def _get_system_info(self, arguments: dict) -> ToolOutcome:
         now = datetime.now().astimezone()
@@ -2244,6 +2461,36 @@ class ToolRegistry:
         if not accepted:
             return ToolOutcome(False, "The default browser did not accept the URL.")
         return ToolOutcome(True, "The default browser accepted the URL.", {"url": url})
+
+
+_NOTE_FILLER = frozenset({"a", "an", "the", "my", "about", "on", "of", "for", "to", "in", "and", "note", "notes",
+                          "idea", "ideas", "saved", "save", "what", "did", "i", "you", "me", "remember", "anything"})
+
+
+def _capture_title(text: str) -> str:
+    words = text.split()
+    return " ".join(words[:8]) + ("…" if len(words) > 8 else "")
+
+
+def _local_time(stamp: str) -> str:
+    try:
+        return datetime.fromisoformat(stamp).astimezone().strftime("%a %d %b %Y %H:%M")
+    except ValueError:
+        return stamp
+
+
+def _utc_start(day: date) -> str:
+    return datetime.combine(day, datetime.min.time()).astimezone().astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _note_brief(note: dict, words: list[str] | None = None) -> dict:
+    """A note for a result: enough to tell notes apart, with a short excerpt around the first match."""
+    content = note["content"]
+    index = min((content.casefold().find(word) for word in words or [] if word in content.casefold()), default=0)
+    start = max(0, index - 60)
+    excerpt = ("…" if start else "") + content[start:start + 220] + ("…" if len(content) > start + 220 else "")
+    return {"note_id": note["id"], "title": note["title"], "saved": _local_time(note["created_at"]),
+            "tags": note.get("tags", []), "source": note.get("source") or "", "excerpt": excerpt}
 
 
 def _utility_failure(error: UtilityError) -> ToolOutcome:

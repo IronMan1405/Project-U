@@ -48,6 +48,22 @@ class ProfileLoadingTests(unittest.TestCase):
         self.profile_path.write_text(json.dumps({"name": "", "about": []}), encoding="utf-8")
         self.assertEqual(user_profile.load_profile(self.profile_path), user_profile.DEFAULT_PROFILE)
 
+    def test_about_holds_up_to_the_limit_and_rejects_more(self):
+        facts = [f"Fact number {index} about the user, in a sentence of ordinary length." for index in range(1, 21)]
+        for count in (9, user_profile.MAX_ABOUT):
+            with self.subTest(count=count):
+                self.profile_path.write_text(json.dumps({"name": "Sam", "about": facts[:count]}), encoding="utf-8")
+                profile = user_profile.load_profile(self.profile_path)
+                self.assertEqual(profile["about"], facts[:count])
+                self.assertEqual(profile["name"], "Sam")
+        self.assertEqual(user_profile.MAX_ABOUT, 20)
+        self.profile_path.write_text(json.dumps({"about": facts + ["one more"]}), encoding="utf-8")
+        with self.assertLogs("user_profile", level="WARNING"):
+            self.assertEqual(user_profile.load_profile(self.profile_path), user_profile.DEFAULT_PROFILE)
+        # Twenty facts of the maximum length still fit the size limit.
+        self.profile_path.write_text(json.dumps({"about": ["x" * user_profile.MAX_TEXT_LENGTH] * 20}), encoding="utf-8")
+        self.assertEqual(len(user_profile.load_profile(self.profile_path)["about"]), 20)
+
     def test_profile_context_names_the_user_without_inventing_anything(self):
         named = user_profile.profile_context_message({**user_profile.DEFAULT_PROFILE, "name": "Sam"})["content"]
         self.assertIn("The user's name is Sam.", named)

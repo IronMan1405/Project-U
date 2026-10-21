@@ -188,6 +188,12 @@ def initialize_database(database_path: str | Path | None = None) -> None:
         for column in ("reminder_id", "reminder_due", "reminder_state"):
             if column not in timer_columns:
                 connection.execute(f"ALTER TABLE timers ADD COLUMN {column} TEXT")
+        # Quick capture ("remember this ..."): optional tags (comma-separated, lower case) and
+        # where a note came from ("" for notes written in the Notes tab).
+        note_columns = {row["name"] for row in connection.execute("PRAGMA table_info(notes)").fetchall()}
+        for column in ("tags", "source"):
+            if column not in note_columns:
+                connection.execute(f"ALTER TABLE notes ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
 
 def list_tasks(database_path: str | Path | None = None) -> list[dict]:
@@ -326,6 +332,95 @@ def update_note(
             (note_id,),
         ).fetchone()
     return dict(row)
+
+
+MAX_NOTE_TAGS = 8
+MAX_SEARCH_RESULTS = 10
+_TAG = re.compile(r"^[\w][\w .+#-]{0,29}$")
+
+
+def normalize_text(text: str) -> str:
+    """Case, punctuation and spacing ignored: for spotting the same note or task twice."""
+    return " ".join(re.sub(r"[^\w\s]", " ", (text or "").casefold()).split())
+
+
+def normalize_tags(tags) -> str:
+    if tags is None:
+        return ""
+    if not isinstance(tags, (list, tuple)) or len(tags) > MAX_NOTE_TAGS:
+        raise ValueError(f"tags must be a list of at most {MAX_NOTE_TAGS} short words.")
+    cleaned = []
+    for tag in tags:
+        tag = " ".join(str(tag).split()).casefold()
+        if not _TAG.fullmatch(tag):
+            raise ValueError("Each tag must be 1-30 letters, digits, spaces or . + # -.")
+        if tag not in cleaned:
+            cleaned.append(tag)
+    return ",".join(cleaned)
+
+
+def capture_note(title: str, content: str, *, tags=None, source: str = "",
+                 database_path: str | Path | None = None) -> tuple[dict, bool]:
+    """Save a captured note; returns (note, created). The same text already saved (case,
+    punctuation and spacing ignored) is not saved twice: the existing note is returned."""
+    tag_text = normalize_tags(tags)
+    wanted = normalize_text(content)
+    with _connection(database_path) as connection:
+        for row in connection.execute("SELECT id, content FROM notes").fetchall():
+            if normalize_text(row["content"]) == wanted:
+                return _note(connection, row["id"]), False
+        now = _timestamp()
+        cursor = connection.execute(
+            "INSERT INTO notes (title, content, created_at, updated_at, tags, source) VALUES (?, ?, ?, ?, ?, ?)",
+            (title, content, now, now, tag_text, source[:100]),
+        )
+        return _note(connection, cursor.lastrowid), True
+
+
+def _note(connection, note_id: int) -> dict:
+    row = connection.execute(
+        "SELECT id, title, content, created_at, updated_at, tags, source FROM notes WHERE id = ?", (note_id,)
+    ).fetchone()
+    note = dict(row)
+    note["tags"] = [tag for tag in note["tags"].split(",") if tag]
+    return note
+
+
+def search_notes(words: list[str] | None = None, *, tag: str | None = None, created_after: str | None = None,
+                 created_before: str | None = None, limit: int = MAX_SEARCH_RESULTS,
+                 database_path: str | Path | None = None) -> dict:
+    """Keyword search (not semantic): notes whose title, text or tags contain every word, newest
+    first, optionally with a tag and within a creation-time range (UTC ISO bounds)."""
+    clauses, values = [], []
+    for word in words or []:
+        pattern = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        clauses.append("(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')")
+        values += [pattern, pattern, pattern]
+    if tag:
+        clauses.append("(',' || tags || ',') LIKE ?")
+        values.append(f"%,{normalize_tags([tag])},%")
+    if created_after:
+        clauses.append("created_at >= ?")
+        values.append(created_after)
+    if created_before:
+        clauses.append("created_at < ?")
+        values.append(created_before)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _connection(database_path) as connection:
+        rows = connection.execute(
+            f"SELECT id FROM notes {where} ORDER BY created_at DESC, id DESC LIMIT ?", (*values, limit + 1)
+        ).fetchall()
+        notes = [_note(connection, row["id"]) for row in rows[:limit]]
+    return {"notes": notes, "more": len(rows) > limit}
+
+
+def find_open_task(title: str, due_at: str | None, database_path: str | Path | None = None) -> dict | None:
+    """An open task with the same title (case, punctuation and spacing ignored) and due date."""
+    wanted = normalize_text(title)
+    for task in list_tasks(database_path):
+        if not task["completed"] and normalize_text(task["title"]) == wanted and task["due_at"] == due_at:
+            return task
+    return None
 
 
 def delete_note(note_id: int, database_path: str | Path | None = None) -> None:

@@ -55,8 +55,9 @@ class FakeProvider:
         self._call("read_message")
         return {"message": {"id": message_id, "body": "text"}}
 
-    def search_events(self, start, end, query, limit):
+    def search_events(self, start, end, query, limit, **filters):
         self._call("search_events")
+        self.filters = filters
         return {"events": [dict(event) for event in self.events], "more_available": False}
 
     def read_event(self, event_id):

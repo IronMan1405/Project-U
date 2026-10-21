@@ -117,7 +117,7 @@ cp profile.example.json profile.json
 
 The supported fields are `response_style` and `explanation_detail` (short text
 values), plus `interests` (a list of short strings). Two optional fields tell K.R.I.S.
-who you are: `name` (what it should call you) and `about` (up to eight short facts you
+who you are: `name` (what it should call you) and `about` (up to 20 short facts you
 choose to share, such as "Computer engineering student"). K.R.I.S. knows only what is
 written here and in the current conversation: asked who you are, it answers from the
 profile, says plainly when something is not there, and never invents details. It uses
@@ -311,6 +311,28 @@ Google Calendar also refuses the change if the event changed (K.R.I.S. sends the
 event's version tag). Times without a time zone use this Mac's time zone. Only
 the primary calendar is used.
 
+
+**Finding events by kind, title or label.** Calendar searches can be narrowed, and every
+result says why it matched:
+- "Show me all meetings this week": Google Calendar has no "meeting" type, so a meeting is
+  an event with a video-call link, at least one other attendee, or a meeting word in its title
+  (meeting, call, sync, stand-up, 1:1, interview, catch-up).
+- "Find my exams", "What lectures do I have tomorrow?", labs and deadlines: the listed words
+  (exam, midsem, compre, endsem, quiz, viva...; lecture, class, tutorial, seminar; lab,
+  practical; deadline, due, submission) in the title or description.
+- "Find events with Robotics in the title": the title only.
+- Google's own event types (focus time, out of office, working location, birthday, from Gmail).
+- "Find events labelled Robotics": real Google Calendar labels. Every event carries its label,
+  but the label *names* need permission to read calendar settings, which K.R.I.S. does not ask
+  for by default. Set `calendar_labels = on` under `[google]`, restart, and reconnect each Google
+  account to allow it. Until then a label search says so and is not replaced by a text search.
+- Filtered searches check up to 250 events in the range and say if the range held more.
+These work with account selection as usual ("Search my BITS calendar for meetings").
+
+**Scheduled email is not available.** The Gmail API has no scheduled sending: drafts have no
+send time, there is no scheduled label or method, and Gmail's "Schedule send" exists only in
+Gmail's own apps (consumer and Workspace alike). Asked to schedule an email, K.R.I.S. says so and
+offers a draft or a reminder instead; it never sends early. See FUTURE.md.
 ### Reading and searching Gmail
 Ask in chat, for example "What did Ada say about the quarterly numbers?" or
 "Summarise my unread email from this week". K.R.I.S. searches with Gmail's own
@@ -410,6 +432,21 @@ version, so you are asked to reconnect and approve it, and every new action is a
 model tool that always asks for your confirmation before it runs.
 
 ## Tasks and notes
+
+**Quick capture.** "Remember this idea: use an eye-in-hand camera for the SOLVE arm" saves a
+note with the time, optional tags ("SOLVE", "camera") and its source (the K.R.I.S.
+conversation). It is saved at once only when you asked to remember something and the text is
+your own words; otherwise you see it and approve it first. The same text is not saved twice.
+Nothing is ever saved unless you ask: there is no automatic memory.
+
+"What ideas have I saved about SOLVE?", "What did I save yesterday?", "Find my notes tagged
+robotics": a keyword search (not semantic) over saved notes' titles, text and tags, newest first,
+with a short excerpt and when each was saved. If nothing matches, K.R.I.S. says nothing was
+saved about it, which is different from what was said earlier in the conversation.
+
+"Turn that into a task", "Make this a task for tomorrow": a K.R.I.S. task, linked to the note it
+came from. An identical open task (same title and due date) is not created twice. If "that"
+could mean several things, K.R.I.S. asks which.
 
 Use the Notes tab in the web interface's workspace panel to create, edit and delete notes.
 The Tasks tab is hidden by default because Apple Reminders is the reminder workflow (see
@@ -567,6 +604,26 @@ its name, so it cannot wake itself (standby has also released the microphone whi
 - System: `get_system_info` adds load averages (with the core count) and uptime to the
   battery, memory, disk, CPU, GPU and thermal readings; anything unavailable is reported
   as unavailable, never estimated. Nothing polls in the background for this.
+
+### Named controls in apps (Accessibility)
+
+A first, deliberately small step towards computer control. For the apps listed under
+`[ui_control] apps` in `config.ini` (Finder, Calculator and TextEdit to start), K.R.I.S. can list
+an app's named buttons, menu items, text fields and similar controls, and act on exactly one of
+them: press it, focus it, or set the text of a text field.
+
+- It uses macOS Accessibility (the AXUIElement API): elements are found by role and exact name,
+  optionally in a named window or menu, never by screen coordinates or screenshots.
+- If no element or several match, nothing happens: K.R.I.S. says so and lists the candidates.
+- Pressing and typing are always approved first (the approval names the app, window, role and
+  element); focusing runs directly when you ask. Password fields are never typed into.
+- Browsers, Terminal, System Settings, Keychain Access, Script Editor, Automator, Shortcuts and
+  similar apps can never be listed, so this cannot be used to approve, send or change settings
+  around K.R.I.S.'s other safeguards.
+- Permission: turn on the app that runs K.R.I.S. (for example Terminal) in System Settings >
+  Privacy & Security > Accessibility. Without it, K.R.I.S. says exactly that.
+- Not supported yet: other apps, keyboard shortcuts, mouse movement, coordinates, drag and drop,
+  scripts, and multi-step tasks.
 
 ### Developer companion
 

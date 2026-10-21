@@ -55,6 +55,13 @@ recovery_margin = 10
 # macOS thermal pressure level that alerts: fair, serious or critical.
 thermal_warning = serious
 
+[ui_control]
+# Apps whose named buttons, menu items and text fields K.R.I.S. may inspect and act on, through
+# macOS Accessibility (allow the app that runs K.R.I.S. under Privacy & Security > Accessibility).
+# Pressing and typing are always approved first. Browsers, Terminal, System Settings and similar
+# apps can never be listed. Leave empty to keep this off.
+apps = Finder, Calculator, TextEdit
+
 [voice]
 # Local push-to-talk. Remove this section to turn voice off. Install with
 # `brew install ffmpeg whisper.cpp` and place ggml-base.en.bin in data/models/ (see README).

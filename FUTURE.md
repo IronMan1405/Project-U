@@ -185,3 +185,22 @@ Checked on macOS 26.6.2 for playing any song or album from the Apple Music catal
   shortcuts was already rejected as unreliable (see the Shortcuts section above).
 - Not used: UI scripting, MusicKit (needs a developer token and a signed app), and the iTunes
   Search web API (web scraping/HTTP is out of scope, and it cannot start playback).
+
+### Scheduled Gmail sending (evaluated 2026-10-22, not available)
+
+Checked against the Gmail API discovery document (revision 20261019): no method, field, label or
+parameter schedules a message. A Draft is only `id` and `message`; drafts can be created,
+updated, listed, sent (immediately) or deleted. Gmail's "Schedule send" is a feature of Gmail's
+own web and mobile apps with no API equivalent, for consumer and Workspace accounts alike, and no
+other Google API offers it. K.R.I.S. therefore does not schedule email and says so.
+
+A possible separate design, not built: K.R.I.S. stores an approved message (with the account,
+recipients, subject and the send time shown in the approval) and its own timer sends it at the
+time, only while K.R.I.S. is running, re-checking it and reporting missed sends. It would be
+clearly labelled as K.R.I.S. scheduling, not Gmail scheduling.
+
+### Calendar label names (opt-in)
+
+Google Calendar labels (`eventLabelId`, names in the calendar's `labelProperties`) are read with
+`calendars.get`, which needs `calendar.calendars.readonly`. That scope is requested only with
+`[google] calendar_labels = on`, so turning it on means reconnecting each account.

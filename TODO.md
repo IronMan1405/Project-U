@@ -222,7 +222,7 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Evaluate macOS Shortcuts as a native alarm/timer backend (2026-10-19): not reliable enough (see FUTURE.md); K.R.I.S.-managed timers stay
 - [x] Optional verified Apple Reminder at a timer's end ("remind me when it's over"), completed on cancel and after it alerts; tests
 - [x] Run `LIVE_REMINDERS=1` again (now includes the timer reminder test)
-- [ ] Review the planning diff and commit
+- [x] Review the planning diff and commit
 
 ### 17. Mac control, developer companion and interaction polish
 - [x] Voice confirmation: explicit "confirm"/"cancel" for the action read out, through `/api/confirm`
@@ -244,14 +244,14 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Live: `LIVE_MUSIC=1` search and verified play of a library song (2026-10-20; fixed reserved AppleScript
       variable names `st` and `kind` that stopped the play, playback-control and now-playing scripts compiling)
 - [x] Live: open a file and a folder in VS Code; Spotify playback controls
-- [ ] Review the diff and commit
+- [x] Review the diff and commit
 
 ### 19. Resource alerts and wake-word interruption
 - [x] Resource monitor: sustained crossings, hysteresis, one notification each, optional speech when idle
 - [x] Real threshold check with a lowered threshold in a script (2026-10-21): one notification per crossing
 - [x] Interrupt a hands-free reply by saying "Kris" (light detector during speech; no continuous transcription)
-- [ ] Live: interrupt a long reply, then a confirmation read-back; idle wake word; Stop speaking; no self-wakes
-- [ ] Review the diff and commit
+- [x] Live: interrupt a long reply, then a confirmation read-back; idle wake word; Stop speaking; no self-wakes
+- [x] Review the diff and commit
 
 ### 20. Several Google accounts
 - [x] Named accounts; original account keeps its Keychain item (no migration); per-account items
@@ -259,7 +259,17 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [x] Account-aware Gmail and Calendar tools, approvals naming the account, all-calendars briefing
 - [x] Account tools: list, default, connect (browser sign-in), disconnect (confirmed)
 - [x] Live: existing account works through the new path (list, Gmail search, Calendar search, briefing)
-- [ ] Live: connect a second account; account-specific and all-account requests; ambiguous request
+- [x] Live: connect a second account; account-specific and all-account requests; ambiguous request
+- [x] Review the diff and commit
+
+### 21. Calendar filters, scheduling check, profile, UI control, quick capture
+- [x] Calendar: kind/title/event-type filters with match reasons; real labels behind opt-in permission
+- [x] Gmail scheduled send: not in the API; documented, K.R.I.S. says so
+- [x] Profile `about` up to 20 entries
+- [x] Accessibility foundation: inspect, press, focus, set text in approved apps
+- [x] Quick capture: capture_note, search_notes, note -> task, duplicate checks
+- [x] Live: grant Accessibility to the K.R.I.S. terminal, then `LIVE_UI=1` (read-only) and one approved press
+- [ ] Optional: `calendar_labels = on` and reconnect, to search by label
 - [ ] Review the diff and commit
 
 ## Scope Rules

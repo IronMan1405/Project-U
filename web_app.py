@@ -20,6 +20,7 @@ from config import (
     load_google_settings,
     load_resource_alert_settings,
     load_settings,
+    load_ui_control_settings,
     load_ui_settings,
     load_utility_settings,
     load_voice_settings,
@@ -31,6 +32,7 @@ from google_workspace import GoogleError, GoogleWorkspaceProvider
 from computer_utilities import UtilitySettings
 from reminders import AppleReminders
 from resource_alerts import ResourceMonitor
+from ui_control import UIController
 from timers import TimerService
 from voice import VoiceError, VoiceSettings, VoiceTimeout, VoiceUnavailable
 from documents import (
@@ -72,6 +74,7 @@ def create_app(
     developer: DeveloperCompanion | None = None,
     ui_settings: dict[str, bool] | None = None,
     resource_monitor: ResourceMonitor | None = None,
+    ui: UIController | None = None,
 ) -> Flask:
     app = Flask(__name__)
     conversations: dict[str, AssistantRuntime] = {}
@@ -114,6 +117,8 @@ def create_app(
         resource_monitor = ResourceMonitor(telemetry.snapshot, load_resource_alert_settings(),
                                            notifier=notifications.notify)
     app.config["RESOURCE_MONITOR"] = resource_monitor
+    if ui is None:
+        ui = UIController(load_ui_control_settings())
     if mac is None and MacControl.available():
         mac = MacControl()
     if developer is None:
@@ -222,7 +227,7 @@ def create_app(
                 database_path=app.config["DATABASE_PATH"],
                 tool_registry=ToolRegistry(
                     app.config["DATABASE_PATH"], utilities=utility_settings, telemetry=telemetry,
-                    google=google, reminders=reminders, timers=timers, mac=mac, developer=developer,
+                    google=google, reminders=reminders, timers=timers, mac=mac, developer=developer, ui=ui,
                 ),
                 activity_callback=update_activity,
             )
