@@ -147,6 +147,9 @@ let wakeSyncing = false;
 // The sentence being spoken and the one before it (its audio may still be in the room), so a
 // burst heard while either mentions the name is not checked (WakeWord.mentionsWakeName).
 let spokenSegments = null;
+// True while an automation run is executing in this conversation (from the activity poll): the
+// activity line offers Stop, and a lone "stop" heard by the wake-word detector cancels the run.
+let automationActive = false;
 
 // The hands-free loop (static/voice_loop.js) decides when to listen again; this reports
 // events to it and carries out its actions. Events from the wrong state are ignored there.
@@ -951,6 +954,7 @@ function toolLabel(toolName) {
     git_recent_commits: "Reading recent commits",
     run_project_tests: "Running tests",
     get_test_results: "Checking test results",
+    start_automation: "Planning",
     find_folders: "Searching folders",
     open_in_editor: "Opening in editor",
     find_music: "Searching the Music library",
@@ -960,6 +964,9 @@ function toolLabel(toolName) {
 }
 
 function showLiveActivity(activity) {
+  const wasAutomation = automationActive;
+  automationActive = Boolean(activity && activity.status === "automation" && isSending);
+  if (wasAutomation !== automationActive) renderVoiceView(); // the wake detector listens for "stop"
   if (!activity || activity.status === "idle") {
     clearToolActivity();
     return;
@@ -971,8 +978,32 @@ function showLiveActivity(activity) {
     ? `${toolLabel(activity.tool)}...`
     : activity.status === "thinking" ? "K.R.I.S. is thinking..." : activity.summary || "Assistant action";
   toolActivity.append(label);
+  if (automationActive) {
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "secondary-action automation-stop";
+    stop.textContent = "Stop";
+    stop.setAttribute("aria-label", "Stop the automation after the current step");
+    stop.addEventListener("click", cancelAutomation);
+    toolActivity.append(stop);
+  }
   if (activity.status !== "thinking") logActivity(label.textContent, "tool"); // the core already logs Thinking
   toolActivity.hidden = false;
+}
+
+// Stops the running automation before its next step (finished steps are kept and reported).
+async function cancelAutomation() {
+  if (!conversationId || !automationActive) return;
+  try {
+    await apiRequest("/api/automation/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: conversationId }),
+    });
+    logActivity("Stopping the automation…", "warning");
+  } catch (error) {
+    showError(error.message || "The automation could not be stopped.");
+  }
 }
 
 async function pollConversationActivity() {
@@ -1723,6 +1754,7 @@ function dispatchWake(event) {
     else if (action.type === "check_clip") checkWakeClip(action.clip);
     else if (action.type === "acknowledge") acknowledgeWake();
     else if (action.type === "interrupt") interruptForWake();
+    else if (action.type === "cancel_automation") cancelAutomation();
     else if (action.type === "start_conversation") startWakeConversation();
     else if (action.type === "notify") setVoiceState(action.message);
   }
@@ -1741,7 +1773,9 @@ function syncWake() {
     // Interrupting a spoken hands-free reply with the name (see wake_word.js, "barge" states).
     const barge = window.WakeWord.bargeAllowed({
       visible: facts.visible, handsFree: handsFreeToggle.checked, recording: facts.recording,
-      transcribing: facts.transcribing, loopSpeaking: voiceLoop.state === "speaking" && facts.speaking,
+      transcribing: facts.transcribing,
+      // Also while an automation runs during a hands-free conversation, so "stop" can be heard.
+      loopSpeaking: (voiceLoop.state === "speaking" && facts.speaking) || (voiceLoop.state === "thinking" && automationActive),
     });
     if (window.WakeWord.barging(wake)) {
       if (!barge) dispatchWake({ type: "speech_ended" });
@@ -1855,13 +1889,15 @@ async function checkWakeClip(clip) {
   try {
     const formData = new FormData();
     formData.append("audio", new Blob([clip], { type: "audio/wav" }), "wake.wav");
-    const response = await fetch("/api/voice/wake", { method: "POST", body: formData });
+    const url = automationActive ? "/api/voice/wake?stop=1" : "/api/voice/wake";
+    const response = await fetch(url, { method: "POST", body: formData });
     if (response.status === 429) {
       result = { type: "check_result", wake: false }; // busy transcribing something else
     } else if (!response.ok) {
       result = { type: "check_failed" };
     } else {
-      result = { type: "check_result", wake: Boolean((await response.json()).wake) };
+      const answer = await response.json();
+      result = { type: "check_result", wake: Boolean(answer.wake), stop: Boolean(answer.stop) };
     }
   } catch {
     result = { type: "check_failed" };

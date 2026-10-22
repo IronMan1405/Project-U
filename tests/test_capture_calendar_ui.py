@@ -147,6 +147,8 @@ class CalendarFilterTests(ProviderTestCase):
         provider.search_events("tomorrow", None, None, 25)
         self.assertEqual(self.requests[-1]["timeMin"], ["2027-03-01T00:00:00+00:00"])
         self.assertEqual(self.requests[-1]["timeMax"], ["2027-03-02T00:00:00+00:00"])
+        provider.search_events("tomorrow", "tomorrow", None, 25)  # relative words work as both ends too
+        self.assertEqual(self.requests[-1]["timeMax"], ["2027-03-02T00:00:00+00:00"])
         provider.search_events("2027-03-05", "2027-03-05", None, 25)  # one date as both ends: that whole day
         self.assertEqual((self.requests[-1]["timeMin"], self.requests[-1]["timeMax"]),
                          (["2027-03-05T00:00:00+00:00"], ["2027-03-06T00:00:00+00:00"]))

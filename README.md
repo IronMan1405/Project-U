@@ -534,6 +534,51 @@ still alert. After a timer with a reminder ends, K.R.I.S. marks the reminder
 complete a couple of minutes later, so finished timers do not pile up as
 overdue reminders. Without the request, no reminder is created.
 
+## Automation: objectives, not just commands
+
+Ask for an outcome and K.R.I.S. works out the steps: "Get my workspace ready for Project-U",
+"What's on my BITS calendar tomorrow, and get the relevant project open", "Remember that I need to
+test the camera tomorrow and remind me at 10", "Find the latest email from X about the SOP and draft
+a reply". There is no special command: when one request needs several different things done, the
+chat model hands the objective to the automation layer (`start_automation`); single actions still
+go straight to their tool.
+
+- **Plan.** The local model writes a short structured plan using only K.R.I.S.'s existing tools (each
+  step: tool, arguments, purpose, what it depends on). Values that depend on an earlier result (an
+  event, a message ID, a path) are filled in when that step is reached. Something no tool can do is
+  reported ("I can't do this part: booking flights"); a request too vague to act on gets one question.
+- **Approve.** If any step would need approval under the usual rules, the whole plan is shown once
+  ("Run this plan: 1. ... 2. ..."), on screen and spoken, and one Confirm (button or a spoken
+  "confirm") approves exactly those steps. A consequential step whose details are not known yet (a
+  draft's text, a Calendar change, a UI press) gets its usual confirmation with the full preview when
+  it is reached. If the plan changes after approval (another tool, a new step that needs approval),
+  it is asked for again. Read-only plans just run.
+- **Run, look, adapt.** Each step goes through the same checks as a direct request (validation,
+  Google account, IDs found in this conversation, allowed apps). After a step whose result later
+  steps depend on, or one that found nothing or failed, the model decides: fill in the next step,
+  change the remaining plan, ask you, or finish. When the planned steps are done it may add what the
+  results now make possible (opening the project it identified), within the same limits and approvals.
+- **Verify.** Changes are checked with a separate read where one exists: a task or note is read
+  back, a reminder is read from Reminders, a timer must be running, a draft must be in Gmail's
+  drafts, a Calendar event is read again (or must be gone), an opened project needs its app running.
+  Each step ends as done, not confirmed (with why) or failed.
+- **Report.** The reply answers from what was found, then lists exactly what was done, what could not
+  be confirmed, what failed and what was not done, from the step records, never from the model's
+  account of them.
+- **Stop.** Press Stop on the activity line while a run executes, say "stop" (or "Kris, stop") with
+  the wake word on, decline the plan, or send a new message: no further step runs, finished steps
+  are kept and reported. Push-to-talk is unavailable while K.R.I.S. is busy, so use Stop or the wake word.
+- **Bounds** (`[automation]` in `config.ini`): at most 8 steps, 3 plan changes, 1 retry of a transient
+  failure per step, and 300 seconds of execution per stretch (waiting for your approval does not
+  count). A run cannot start another run; there are no shell, script or code steps, only registered
+  tools, and the Accessibility allowlist is never widened. Failures are classed as transient (retried),
+  permission (says which permission), ambiguous (asks), missing, unsupported or failed (stops).
+- Google steps keep the account named in the objective; a message or event found in one account
+  can never be acted on through another. Nothing is saved to notes unless you ask to remember it.
+
+The local model takes roughly 10-40 seconds per planning decision, so a run of a few steps takes
+one to three minutes. Runs are kept in memory with the conversation.
+
 ## Approvals, spoken confirmation and the Mac
 
 ### Confirmation policy

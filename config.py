@@ -72,6 +72,14 @@ def load_ui_control_settings(config_path: Path = CONFIG_PATH):
     return build_ui_control_settings(parser.get("ui_control", "apps", fallback=""))
 
 
+def load_automation_limits(config_path: Path = CONFIG_PATH):
+    """[automation]: on/off and the bounds of one run (steps, plan changes, retries, seconds)."""
+    from automation import build_automation_limits
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(config_path)
+    return build_automation_limits(dict(parser.items("automation")) if parser.has_section("automation") else {})
+
+
 def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, bool]:
     """[ui] switches. tasks_tab: show the Tasks tab (hidden by default; Apple Reminders is primary)."""
     parser = configparser.ConfigParser(interpolation=None)

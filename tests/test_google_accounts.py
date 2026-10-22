@@ -66,7 +66,7 @@ class FakeProvider:
 
     def prepare_draft(self, to, cc, subject, body, reply):
         self._call("prepare_draft")
-        return {"to": [to], "cc": [], "subject": subject or "", "body": body, "reply": None}
+        return {"to": [to or "sender@example.org"], "cc": [], "subject": subject or "", "body": body, "reply": None}
 
     def create_draft(self, draft):
         self._call("create_draft")

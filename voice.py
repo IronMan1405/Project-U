@@ -401,6 +401,34 @@ def is_wake_phrase(text: str) -> bool:
     return len(words) == 1 and words[0] in WAKE_NAMES
 
 
+# Said on its own while an automation runs: stop it. ("Kris, stop" is one short clip too.)
+_STOP_PHRASES = frozenset({"stop", "cancel", "abort", "stop it", "stop that", "cancel it", "cancel that",
+                           "stop now", "please stop"})
+
+
+def is_stop_phrase(text: str) -> bool:
+    words = re.findall(r"[a-z]+", (text or "").casefold())
+    while words and (words[0] in _WAKE_LEADING or words[0] in WAKE_NAMES):
+        words = words[1:]
+    return " ".join(words) in _STOP_PHRASES
+
+
+def check_clip(settings: VoiceSettings, audio: bytes, stop: bool = False) -> dict:
+    """One short clip: whether it was just the name, and (with stop) whether it was "stop"/"cancel".
+    The transcript stays here; only the two booleans leave."""
+    if len(audio) > MAX_WAKE_AUDIO_BYTES:
+        raise VoiceError("The wake-word clip is too long.")
+    try:
+        text = transcribe(settings, audio, "audio/wav", max_seconds=WAKE_MAX_CLIP_SECONDS)
+    except VoiceUnavailable:
+        raise
+    except VoiceError as error:
+        if str(error) == NO_SPEECH_MESSAGE:
+            return {"wake": False, "stop": False}
+        raise
+    return {"wake": is_wake_phrase(text), "stop": stop and is_stop_phrase(text)}
+
+
 def detect_wake_word(settings: VoiceSettings, audio: bytes) -> bool:
     """Transcribe one short standby clip locally and report only whether it was the name."""
     if len(audio) > MAX_WAKE_AUDIO_BYTES:

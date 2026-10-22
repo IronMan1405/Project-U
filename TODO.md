@@ -272,6 +272,15 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [ ] Optional: `calendar_labels = on` and reconnect, to search by label
 - [ ] Review the diff and commit
 
+### 22. Automation runs
+- [x] AutomationRun/Runner: structured plans over existing tools, dependency filling, re-planning, verification
+- [x] One plan approval through the existing confirmation path; exact per-step confirmation for consequential steps
+- [x] Bounds (steps, plan changes, retries, time), no nested runs, failure classes
+- [x] Cancellation: Stop on the activity line, spoken "stop" via the wake detector, declining, a new message
+- [x] Real-model battery (8 different objectives, one by voice, one cancelled mid-run)
+- [ ] Live in the browser: a hands-free run approved with "confirm" and stopped with "stop"
+- [ ] Review the diff and commit
+
 ## Scope Rules
 - One feature at a time.
 - Keep the project local-first.

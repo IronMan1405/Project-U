@@ -15,6 +15,7 @@ import system_telemetry
 import notifications
 import voice
 from config import (
+    load_automation_limits,
     load_developer_settings,
     load_google_default_account,
     load_google_settings,
@@ -117,6 +118,7 @@ def create_app(
         resource_monitor = ResourceMonitor(telemetry.snapshot, load_resource_alert_settings(),
                                            notifier=notifications.notify)
     app.config["RESOURCE_MONITOR"] = resource_monitor
+    automation_limits = load_automation_limits()
     if ui is None:
         ui = UIController(load_ui_control_settings())
     if mac is None and MacControl.available():
@@ -230,6 +232,7 @@ def create_app(
                     google=google, reminders=reminders, timers=timers, mac=mac, developer=developer, ui=ui,
                 ),
                 activity_callback=update_activity,
+                automation_limits=automation_limits,
             )
             conversation_activity[conversation_id] = {
                 "status": "idle",
@@ -479,6 +482,9 @@ def create_app(
         if not transcription_slot.acquire(blocking=False):
             return jsonify(wake=False, busy=True), 429
         try:
+            if request.args.get("stop") == "1":
+                # While an automation runs, a lone "stop" (or "Kris, stop") cancels it.
+                return jsonify(voice.check_clip(voice_settings, audio, stop=True))
             wake = voice.detect_wake_word(voice_settings, audio)
         except VoiceError as error:
             return voice_error_response(error)
@@ -572,6 +578,30 @@ def create_app(
             return jsonify(error="Conversation not found. Start a new conversation."), 404
         conversation_documents.pop(conversation_id, None)
         return "", 204
+
+    @app.post("/api/automation/cancel")
+    def automation_cancel():
+        # Works while the automation's own request is still running: it only sets the run's
+        # cancel flag, which the runner checks before every step.
+        data = request.get_json(silent=True)
+        conversation_id = data.get("conversation_id") if isinstance(data, dict) else None
+        if not _valid_conversation_id(conversation_id):
+            return jsonify(error="Invalid conversation ID."), 400
+        runtime = conversations.get(conversation_id)
+        if runtime is None:
+            return jsonify(error="Conversation not found. Start a new conversation."), 404
+        return jsonify(cancelling=runtime.cancel_automation())
+
+    @app.get("/api/conversations/<conversation_id>/automation")
+    def automation_status(conversation_id: str):
+        if not _valid_conversation_id(conversation_id):
+            return jsonify(error="Invalid conversation ID."), 400
+        runtime = conversations.get(conversation_id)
+        if runtime is None:
+            return jsonify(error="Conversation not found. Start a new conversation."), 404
+        response = jsonify(automation=runtime.automation_status())
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.post("/api/confirm")
     def confirm_action():

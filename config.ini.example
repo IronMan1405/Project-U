@@ -62,6 +62,15 @@ thermal_warning = serious
 # apps can never be listed. Leave empty to keep this off.
 apps = Finder, Calculator, TextEdit
 
+[automation]
+# Multi-step objectives ("get me ready for tomorrow"): K.R.I.S. plans with its own tools, asks for
+# approval as usual, runs and checks each step. These bound one run.
+enabled = on
+max_steps = 8
+max_replans = 3
+max_retries = 1
+timeout_seconds = 300
+
 [voice]
 # Local push-to-talk. Remove this section to turn voice off. Install with
 # `brew install ffmpeg whisper.cpp` and place ggml-base.en.bin in data/models/ (see README).

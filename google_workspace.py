@@ -1112,7 +1112,8 @@ class GoogleWorkspaceProvider:
         time_max = parse_bound(end, self._now()) if end else None
         if time_max is None and isinstance(start, str) and start.strip().casefold() in ("yesterday", "today", "tomorrow"):
             time_max = time_min + timedelta(days=1)  # "tomorrow" means that day
-        if time_max is not None and time_max == time_min and isinstance(end, str) and _DATE.match(end.strip()):
+        if time_max is not None and time_max == time_min and isinstance(end, str) and (
+                _DATE.match(end.strip()) or end.strip().casefold() in ("yesterday", "today", "tomorrow")):
             time_max = time_min + timedelta(days=1)  # a date-only end is inclusive: start and end on one day = that day
         if time_max is not None and time_max <= time_min:
             raise GoogleError("invalid", "The end of the search range must be after its start.")

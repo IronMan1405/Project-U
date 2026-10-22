@@ -240,6 +240,7 @@
           return state === "barge_standby" ? to(wake, "barge_checking", [{ type: "check_clip", clip: event.clip }]) : ignore(wake);
         case "check_result":
           if (state !== "barge_checking") return ignore(wake);
+          if (event.stop) return to(wake, "barge_standby", [{ type: "cancel_automation" }]); // keep listening
           if (event.wake) return to(wake, "active", [{ type: "stop_capture" }, { type: "interrupt" }], { returnTo: null, failures: 0 });
           return to(wake, "barge_standby");
         case "check_failed": // a failed check never stops the reply or disables the wake word
@@ -275,8 +276,9 @@
         return state === "paused" ? to(wake, "starting", [{ type: "open_capture" }]) : ignore(wake);
       case "burst": // a short isolated sound in standby
         return state === "standby" ? to(wake, "checking", [{ type: "check_clip", clip: event.clip }]) : ignore(wake);
-      case "check_result": // event.wake: the server heard just the name
+      case "check_result": // event.wake: the server heard just the name; event.stop: "stop" during an automation
         if (state !== "checking") return ignore(wake);
+        if (event.stop) return to(wake, "standby", [{ type: "cancel_automation" }], { failures: 0 });
         if (event.wake) return to(wake, "activating", [{ type: "stop_capture" }, { type: "acknowledge" }], { failures: 0 });
         return to(wake, "standby", [], { failures: 0 });
       case "check_failed": {

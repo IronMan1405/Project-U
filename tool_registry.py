@@ -550,6 +550,18 @@ class ToolRegistry:
         self._register_developer()
         self._register_ui()
         self._add_account_parameters()
+        self._definitions["start_automation"] = ToolDefinition(
+            "start_automation",
+            "Carry out an objective that needs SEVERAL steps or tools together, e.g. 'get me ready for tomorrow', "
+            "'find what I need for SOLVE and open it', 'remember this and remind me tomorrow', 'find the email from X "
+            "and draft a reply', 'check my calendar and prepare my workspace'. K.R.I.S. plans the steps from its "
+            "tools, shows the plan for approval when needed, runs and checks each step, and reports. Do NOT use it "
+            "for a single action or question that one tool answers: call that tool directly.",
+            _object_schema({"objective": {"type": "string", "minLength": 3, "maxLength": 500,
+                                          "description": "The user's objective in their words, with any names, "
+                                          "accounts, dates and details they gave."}}, ("objective",)),
+            lambda arguments: ToolOutcome(False, "Automations are run by K.R.I.S.'s runtime, not as a step."),
+        )
         check_confirmation_boundaries(self._definitions)
 
     @property

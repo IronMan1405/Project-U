@@ -3090,3 +3090,10 @@ button {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Stop control on the live activity line while an automation runs. */
+.automation-stop {
+  margin-left: 0.75rem;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.8rem;
+}

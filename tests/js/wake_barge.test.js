@@ -139,3 +139,20 @@ test("the indicator says the reply can be interrupted, without changing the stat
   assert.equal(interruptible.state, "speaking");
   assert.equal(interruptible.label, "Speaking · say “Kris” to interrupt");
 });
+
+test("during an automation a lone 'stop' cancels it and listening continues", () => {
+  // Hands-free conversation: the barge detector is open while the run executes.
+  const barge = play([...activeConversation, { type: "speech_started" }, { type: "capture_started" },
+    { type: "burst", clip: "stop" }, { type: "check_result", wake: false, stop: true }]);
+  assert.equal(barge.wake.state, "barge_standby");
+  assert.deepEqual(barge.types.slice(-1), ["cancel_automation"]);
+  // Typed request with the wake word in standby: the same.
+  const standby = play([{ type: "enable", allowed: true }, { type: "capture_started" }, { type: "burst", clip: "stop" },
+    { type: "check_result", wake: false, stop: true }]);
+  assert.equal(standby.wake.state, "standby");
+  assert.deepEqual(standby.types.slice(-1), ["cancel_automation"]);
+  // A plain "Kris" still behaves as before, and nothing cancels without "stop".
+  const plain = play([{ type: "enable", allowed: true }, { type: "capture_started" }, { type: "burst", clip: "x" },
+    { type: "check_result", wake: false, stop: false }]);
+  assert.ok(!plain.types.includes("cancel_automation"));
+});
