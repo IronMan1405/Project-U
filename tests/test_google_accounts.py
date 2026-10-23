@@ -408,9 +408,14 @@ class ToolRoutingTests(AccountsCase):
 
 
 class BriefingTests(AccountsCase):
+    def database(self):
+        path = Path(self.temp.name) / "b.sqlite3"
+        storage.initialize_database(path)  # never the user's real data
+        return path
+
     def test_default_briefing_uses_the_default_calendar_only(self):
         accounts = self.two(personal_events=[event("Dinner", 18, "pevt001")], bits_events=[event("Midsem review", 10, "bevt001")])
-        result = build_briefing(datetime.now().astimezone(), "tomorrow", google=accounts)
+        result = build_briefing(datetime.now().astimezone(), "tomorrow", database_path=self.database(), google=accounts)
         calendar = result["sources"]["calendar"]
         self.assertEqual([e["title"] for e in calendar["events"]], ["Dinner"])
         self.assertEqual(calendar["account"], "personal")
@@ -419,7 +424,7 @@ class BriefingTests(AccountsCase):
         shared = event("Club meeting", 16, "sevt001")
         accounts = self.two(personal_events=[event("Dinner", 18, "pevt001"), shared],
                             bits_events=[event("Midsem review", 10, "bevt001"), dict(shared, event_id="sevt002")])
-        calendar = build_briefing(datetime.now().astimezone(), "tomorrow", google=accounts,
+        calendar = build_briefing(datetime.now().astimezone(), "tomorrow", database_path=self.database(), google=accounts,
                                   calendar_accounts="all")["sources"]["calendar"]
         groups = {g["account"]: [e["title"] for e in g["events"]] for g in calendar["accounts"]}
         self.assertEqual(groups, {"personal": ["Dinner", "Club meeting"], "BITS": ["Midsem review"]})
@@ -428,7 +433,7 @@ class BriefingTests(AccountsCase):
 
     def test_one_unavailable_account_does_not_hide_the_others(self):
         accounts = self.two(personal_events=[event("Dinner", 18, "pevt001")], bits={"fail": "Google Calendar is unavailable."})
-        calendar = build_briefing(datetime.now().astimezone(), "tomorrow", google=accounts,
+        calendar = build_briefing(datetime.now().astimezone(), "tomorrow", database_path=self.database(), google=accounts,
                                   calendar_accounts="all")["sources"]["calendar"]
         self.assertEqual(calendar["status"], "ok")
         self.assertEqual(calendar["unavailable_accounts"], [{"account": "BITS", "reason": "Google Calendar is unavailable."}])

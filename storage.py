@@ -182,6 +182,9 @@ def initialize_database(database_path: str | Path | None = None) -> None:
         }
         if "due_at" not in task_columns:
             connection.execute("ALTER TABLE tasks ADD COLUMN due_at TEXT")
+        # A task made from a saved note keeps a link to it (quick capture -> task).
+        if "source_note_id" not in task_columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN source_note_id INTEGER")
         # A timer's optional Apple Reminder at its end time (timers.py): ID, due (UTC) and
         # state (open, completed, or failed when Reminders refused to complete it).
         timer_columns = {row["name"] for row in connection.execute("PRAGMA table_info(timers)").fetchall()}
@@ -199,7 +202,7 @@ def initialize_database(database_path: str | Path | None = None) -> None:
 def list_tasks(database_path: str | Path | None = None) -> list[dict]:
     with _connection(database_path) as connection:
         rows = connection.execute(
-            "SELECT id, title, description, created_at, completed, due_at "
+            "SELECT id, title, description, created_at, completed, due_at, source_note_id "
             "FROM tasks ORDER BY completed ASC, created_at DESC, id DESC"
         ).fetchall()
     return [{**dict(row), "completed": bool(row["completed"]), "due_at": row["due_at"]} for row in rows]
@@ -211,15 +214,16 @@ def create_task(
     database_path: str | Path | None = None,
     *,
     due_at: str | None = None,
+    source_note_id: int | None = None,
 ) -> dict:
     due_at = validate_due_at(due_at)
     with _connection(database_path) as connection:
         cursor = connection.execute(
-            "INSERT INTO tasks (title, description, created_at, due_at) VALUES (?, ?, ?, ?)",
-            (title, description, _timestamp(), due_at),
+            "INSERT INTO tasks (title, description, created_at, due_at, source_note_id) VALUES (?, ?, ?, ?, ?)",
+            (title, description, _timestamp(), due_at, source_note_id),
         )
         row = connection.execute(
-            "SELECT id, title, description, created_at, completed, due_at FROM tasks WHERE id = ?",
+            "SELECT id, title, description, created_at, completed, due_at, source_note_id FROM tasks WHERE id = ?",
             (cursor.lastrowid,),
         ).fetchone()
     return {**dict(row), "completed": bool(row["completed"]), "due_at": row["due_at"]}
@@ -251,7 +255,7 @@ def update_task(
             if cursor.rowcount == 0:
                 raise RecordNotFound("Task not found.")
         row = connection.execute(
-            "SELECT id, title, description, created_at, completed, due_at FROM tasks WHERE id = ?",
+            "SELECT id, title, description, created_at, completed, due_at, source_note_id FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
     if row is None:

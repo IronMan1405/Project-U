@@ -281,6 +281,25 @@ Math rendering remains deferred; the sampled live response contained no LaTeX-st
 - [ ] Live in the browser: a hands-free run approved with "confirm" and stopped with "stop"
 - [ ] Review the diff and commit
 
+### 23. v1.1 Assistant intelligence
+- [x] Working context (dated, bounded, from tool results and decisions) given to the model and planner
+- [x] Draft edits in place (update_gmail_draft); task -> note link
+- [x] Priorities and focus in the briefing; recent important mail; Focus panel (/api/focus)
+- [x] Tell/help/do routing; propose-then-do; resume interrupted runs
+- [x] project_overview; partial-match guard
+- [x] Live in the browser: a full Gmail follow-up on the real account (draft, edit, decline send)
+- [ ] Review the diff and commit
+
+### 24. v1.1 responsiveness and release validation
+- [x] Benchmark gemma4:e4b vs gemma4:12b (factual, follow-up, "what's important", project, help, multi-step; fakes and temporary databases)
+- [x] Default stays gemma4:e4b; [ollama] think setting (off measured worse, not recommended)
+- [x] Warm the fixed prompt on a new conversation and after an objective; clear 504 message on a model timeout
+- [x] Plain questions skip the routing call; an invalid next step gets one correction
+- [x] Focus panel: no overlap at 820-1180 px wide; names the calendar checked; says when it could not be read
+- [x] Tests never open data/project_u.sqlite3
+- [ ] Real Gmail account: draft, edit in place, decline send (opt-in; covered end to end with fake HTTP)
+- [ ] Review the diff and commit
+
 ## Scope Rules
 - One feature at a time.
 - Keep the project local-first.

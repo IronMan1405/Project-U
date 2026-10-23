@@ -105,7 +105,7 @@ class PlanningTests(AutomationCase):
         planner = Planner(plan(step("list_tasks", purpose="Check open tasks")),
                           {"action": "finish", "summary": "You have one open task: Lab report."})
         runtime = self.runtime(planner)
-        result = runtime.run_turn("What do I need to do?")
+        result = runtime.run_turn("Go through my open tasks for me")
         self.assertIsNone(result.pending_confirmation)
         self.assertEqual(result.response, "You have one open task: Lab report.")
         status = self.run_status(runtime)
@@ -174,6 +174,29 @@ class DependencyTests(AutomationCase):
         self.assertIn("Done: Create task: Test eye-in-hand camera", result.response)
         self.assertEqual(storage.list_tasks(self.database)[0]["title"], "Test eye-in-hand camera")
         self.assertEqual(self.run_status(runtime)["steps"][1]["verification"], "found in tasks")
+
+    def test_an_invalid_next_step_gets_one_chance_to_be_corrected(self):
+        for decisions, corrected in (([{"kind": "nap", "minutes": 25}, {"kind": "focus", "minutes": 25}], True),
+                                     ([{"kind": "nap", "minutes": 25}, {"kind": "snooze", "minutes": 25}], False)):
+            planner = Planner(
+                plan(step("search_notes", {"query": "camera"}, "Find the camera idea"),
+                     step("start_timer", later=True, purpose="Start a focus session", depends_on=[0])),
+                *[{"action": "run", "tool": "start_timer", "arguments": arguments} for arguments in decisions],
+                {"action": "finish", "summary": "Started."},
+            )
+            runtime = self.runtime(planner, objective="Find my camera idea and start a focus session")
+            before = len(runtime.registry.timers.active())
+            result = runtime.run_turn("Find my camera idea and start a focus session")
+            while result.pending_confirmation:
+                result = runtime.resolve_confirmation(result.pending_confirmation["confirmation_id"], True)
+            retry = json.loads(planner.requests[2][-1]["content"])
+            self.assertIn("kind must be one of", retry["rejected_next_step"])  # the model was told what was wrong
+            if corrected:
+                self.assertEqual(len(runtime.registry.timers.active()), before + 1)
+                self.assertEqual(self.run_status(runtime)["status"], "COMPLETED")
+            else:  # bounded: a second unusable answer stops the run
+                self.assertEqual(len(runtime.registry.timers.active()), before)
+                self.assertIn("the next step was not usable", result.response)
 
     def test_an_empty_result_makes_the_model_replan(self):
         planner = Planner(

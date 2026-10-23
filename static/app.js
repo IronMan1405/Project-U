@@ -1134,6 +1134,7 @@ function speechWanted() {
 
 function acceptTurnResult(result) {
   renderToolActivities(result.activities);
+  window.setTimeout(() => refreshFocus(), 500); // the reply may have changed what is being worked on
   const spoken = [];
   if (result.notice) {
     appendMessage("assistant", result.notice);
@@ -1845,6 +1846,7 @@ async function openStandby() {
   const rate = audioContext.sampleRate;
   const ring = window.WakeWord.createSampleRing(rate, WAKE_RING_SECONDS);
   const detector = window.WakeWord.createBurstDetector();
+  const silence = window.WakeWord.createSilenceWatch();
   const track = stream.getAudioTracks()[0] || null;
   const onEnded = () => {
     if (session === standbySession) dispatchWake({ type: "capture_lost" });
@@ -1853,7 +1855,14 @@ async function openStandby() {
   node.port.onmessage = (event) => {
     if (session !== standbySession) return;
     ring.push(event.data);
-    const burst = detector.update(window.VoiceActivity.rmsDb(event.data), (ring.written / rate) * 1000);
+    const level = window.VoiceActivity.rmsDb(event.data);
+    if (silence.update(level, (ring.written / rate) * 1000)) {
+      // Standby stays on (sound may start arriving), but say why nothing is being heard.
+      const message = window.WakeWord.silentInputMessage(track?.label);
+      setVoiceState(message);
+      logActivity(message, "warning");
+    }
+    const burst = detector.update(level, (ring.written / rate) * 1000);
     if (!burst || (wake.state !== "standby" && wake.state !== "barge_standby")) return;
     // While K.R.I.S. says its own name, a burst may be its own voice: do not check it.
     if (wake.state === "barge_standby" &&
@@ -2511,6 +2520,79 @@ function announceTimer(timer) {
   if (speak && !micBusy && replyFinish === null && !isSending) speakReply(text);
 }
 
+// --- Focus panel (GET /api/focus): next commitment, what needs attention and why, a suggestion. ---
+// Display only: refreshed on load, every five minutes while visible, and after each reply.
+const focusNext = document.querySelector("#focus-next");
+const focusAttention = document.querySelector("#focus-attention");
+const focusSuggestion = document.querySelector("#focus-suggestion");
+const focusWorkingRow = document.querySelector("#focus-working-row");
+const focusWorking = document.querySelector("#focus-working");
+const focusAsOf = document.querySelector("#focus-asof");
+const focusNote = document.querySelector("#focus-note");
+const FOCUS_REFRESH_MS = 5 * 60 * 1000;
+let focusTimer = null;
+let focusLoadedAt = 0;
+
+function renderFocus(view) {
+  const next = view.next_commitment;
+  focusNext.textContent = next
+    ? `${next.title} at ${next.start} (in ${next.minutes_until} min)${next.account ? ` · ${next.account}` : ""}`
+    : view.calendar_checked === false ? "Unknown: the calendar could not be read" : "Nothing else scheduled today";
+  const items = view.needs_attention.map((item) => {
+    const li = document.createElement("li");
+    li.textContent = item.title;
+    const why = document.createElement("span");
+    why.className = "focus-why";
+    why.textContent = `${item.why} · ${item.source}`;
+    li.append(why);
+    return li;
+  });
+  if (!items.length) {
+    const li = document.createElement("li");
+    li.textContent = "Nothing overdue or flagged";
+    items.push(li);
+  }
+  if (view.more_attention) {
+    const li = document.createElement("li");
+    li.className = "focus-why";
+    li.textContent = `+${view.more_attention} more: ask for a briefing`;
+    items.push(li);
+  }
+  focusAttention.replaceChildren(...items);
+  focusSuggestion.textContent = view.suggestion ? `${view.suggestion.text} (${view.suggestion.reason})` : "None";
+  const working = view.automation
+    ? `${view.automation.objective} · ${view.automation.status.toLowerCase().replace("_", " ")}`
+    : view.working_on ? `${view.working_on.text} · ${view.working_on.status.toLowerCase()}` : "";
+  focusWorkingRow.hidden = !working;
+  focusWorking.textContent = working;
+  focusAsOf.textContent = `as of ${view.as_of.slice(11, 16)}`;
+  // Say what was not checked, so "nothing scheduled" never reads as covering every calendar.
+  const notes = [view.calendar_scope, view.unavailable.length ? `Not available: ${view.unavailable.join("; ")}` : ""];
+  focusNote.textContent = notes.filter(Boolean).join(". ");
+  focusNote.hidden = !focusNote.textContent;
+}
+
+async function refreshFocus(force = false) {
+  window.clearTimeout(focusTimer);
+  if (document.visibilityState !== "hidden") {
+    try {
+      const params = new URLSearchParams();
+      if (conversationId) params.set("conversation_id", conversationId);
+      if (force) params.set("refresh", "1");
+      renderFocus(await apiRequest(`/api/focus?${params}`));
+      focusLoadedAt = Date.now();
+    } catch {
+      focusNext.textContent = "Unavailable";
+    }
+  }
+  focusTimer = window.setTimeout(() => refreshFocus(), FOCUS_REFRESH_MS);
+}
+
+// A page opened in the background has not loaded the panel yet; catch up when it is shown.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "hidden" && Date.now() - focusLoadedAt >= FOCUS_REFRESH_MS) refreshFocus();
+});
+
 async function refreshTimers() {
   try {
     const response = await fetch("/api/timers", { cache: "no-store" });
@@ -2567,6 +2649,7 @@ async function refreshResourceAlerts() {
 
 refreshHealth();
 loadVoiceStatus();
+refreshFocus();
 refreshTimers();
 refreshResourceAlerts();
 window.setInterval(refreshHealth, 10000);

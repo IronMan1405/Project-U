@@ -451,7 +451,7 @@ class ErrorAndSafetyTests(Stage3TestCase):
         self.assertNotIn("https://mail.google.com/", google_workspace.requested_scopes())
         names = {d["function"]["name"] for d in self.registry().definitions()}
         gmail_tools = {n for n in names if "gmail" in n or "email" in n or n in ("add_label", "remove_label")}
-        self.assertEqual(gmail_tools, {"create_gmail_draft", "search_gmail", "read_gmail_message",
+        self.assertEqual(gmail_tools, {"create_gmail_draft", "update_gmail_draft", "search_gmail", "read_gmail_message",
                                        "list_gmail_drafts", *google_workspace.GMAIL_ACTIONS,
                                        *google_workspace.SEND_TOOLS})
         self.assertFalse(any("delete" in n and ("gmail" in n or "email" in n) for n in names))

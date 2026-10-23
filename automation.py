@@ -116,9 +116,12 @@ class AutomationRun:
     finished_at: str | None = None
     deadline: float | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    propose_only: bool = False  # "help me": run the reads, then propose the changes without making them
+    resumed_from: str | None = None  # when the run was resumed after a pause, its earlier results may be stale
+    rejected: str | None = None  # the model's last next step that failed validation (it gets one chance to fix it)
 
     def view(self) -> dict:
-        return {"run_id": self.run_id, "objective": self.objective, "status": self.status,
+        return {"run_id": self.run_id, "objective": self.objective, "status": self.status, "proposal": self.propose_only,
                 "steps": [step.view(i) for i, step in enumerate(self.steps)],
                 "current_step": None if self.current is None else self.current + 1,
                 "question": self.question, "unsupported": self.unsupported, "failures": self.failures,
@@ -138,29 +141,60 @@ class PlanError(ValueError):
     pass
 
 
-ROUTE_SCHEMA = {"type": "object", "properties": {"multi_step": {"type": "boolean"}}, "required": ["multi_step"]}
-ROUTER_PROMPT = """Decide how K.R.I.S. should handle the user's latest message. Answer JSON {"multi_step": true|false}.
-true: it asks K.R.I.S. to carry out an objective that needs two or more different actions or tools, e.g. find
-something and then act on it, do several things, or get something ready (prepare a project, set up for an event).
-false: a question, a single action, a reply to K.R.I.S.'s last question, small talk, or anything unclear."""
+ROUTE_SCHEMA = {"type": "object", "properties": {"mode": {"type": "string", "enum": ["tell", "help", "do"]},
+                                                 "multi_step": {"type": "boolean"}}, "required": ["mode", "multi_step"]}
+ROUTER_PROMPT = """Decide how K.R.I.S. should handle the user's latest message. Answer JSON {"mode", "multi_step"}.
+mode: "tell" = they want information (explain, find, look up, summarise; nothing should change);
+"help" = they want help deciding or preparing (investigate, compare, organise, recommend, plan, "help me ...",
+"what should I ..."): look things up and propose changes, but do not make them yet;
+"do" = they want something done ("do", "send", "open", "set up", "get ... ready", "remind me", "take care of").
+multi_step: true only if carrying it out needs two or more different actions or tools (find something and then
+act on it, several things, getting something ready); false for a question, a single action, a reply to K.R.I.S.'s
+last question, small talk, or anything unclear."""
 # Cheap structural signs that a message may combine actions; only then is the model asked (one short call).
 _MAYBE_OBJECTIVE = re.compile(
     r"\b(?:and|then|also|after|before|plus)\b|,\s*\w+|\b(?:ready|prepare|set up|setup|take care|handle|organi[sz]e|"
     r"clean up|sort out|get (?:me|everything)|workspace)\b", re.IGNORECASE)
 
 
-def wants_automation(message: str, last_reply: str, ask_json) -> bool:
-    """Whether a message is an objective for an automation run. The model decides; this only skips
-    the question for short or single-clause messages."""
-    if len(message.split()) < 5 or not _MAYBE_OBJECTIVE.search(message):
-        return False
+def route(message: str, last_reply: str, ask_json) -> str | None:
+    """None (the ordinary path), "do" (run the objective) or "help" (look things up, then propose the
+    changes without making them). The model decides; this only skips the question for short or
+    single-clause messages and plain questions (which are answered, never automated)."""
+    if len(message.split()) < 5 or not _MAYBE_OBJECTIVE.search(message) or is_plain_question(message):
+        return None
     try:
         answer = ask_json([{"role": "system", "content": ROUTER_PROMPT},
                            {"role": "user", "content": (f"K.R.I.S. last said: {last_reply[:300]}\n" if last_reply else "")
                                                        + f"User: {message[:600]}"}], ROUTE_SCHEMA)
     except Exception:
-        return False  # no answer: the ordinary path handles it
-    return answer.get("multi_step") is True
+        return None  # no answer: the ordinary path handles it
+    if answer.get("multi_step") is not True or answer.get("mode") == "tell":
+        return None  # information requests stay informational, on the ordinary path
+    return "help" if answer.get("mode") == "help" else "do"
+
+
+def wants_automation(message: str, last_reply: str, ask_json) -> bool:
+    return route(message, last_reply, ask_json) is not None
+
+
+RESUME_WORDS = re.compile(r"^\W*(?:(?:ok(?:ay)?|yes|yeah|sure|please)[,!. ]+)?(?:do it|go ahead|proceed|continue|"
+                          r"resume|carry on|keep going|go on|finish (?:it|that|the rest)|do the rest|yes,? do it)\W*$",
+                          re.IGNORECASE)
+
+
+_QUESTION = re.compile(r"^\W*(?:what|which|when|where|who|whom|whose|why|how|is|are|am|do|does|did|was|were|have|has|"
+                       r"anything|any)\b[^?]*\?\W*$", re.IGNORECASE)
+
+
+def is_plain_question(message: str) -> bool:
+    """A question asking for information (no "and"/"then" joining actions): answer it, do not automate it."""
+    return bool(_QUESTION.match(message or "")) and not re.search(r"\b(?:and|then)\b", message, re.IGNORECASE)
+
+
+def is_resume_reply(message: str) -> bool:
+    """A short go-ahead for a proposed or interrupted automation ("do it", "continue", "go ahead")."""
+    return bool(RESUME_WORDS.match(message or ""))
 
 
 PLAN_SCHEMA = {
@@ -239,8 +273,10 @@ When all planned steps are done, either run what the objective still needs or fi
 class AutomationRunner:
     def __init__(self, registry, ask_json: Callable[[list[dict], dict], dict], *,
                  limits: AutomationLimits | None = None, notify: Callable[[dict], None] | None = None,
-                 clock: Callable[[], float] = time.monotonic, context: Callable[[], str] | None = None):
+                 clock: Callable[[], float] = time.monotonic, context: Callable[[], str] | None = None,
+                 observe: Callable[[str, dict, bool, str, object], None] | None = None):
         self.registry = registry
+        self.observe = observe or (lambda *args: None)  # the working context sees every executed step
         self.ask_json = ask_json
         self.limits = limits or AutomationLimits()
         self.notify = notify or (lambda activity: None)
@@ -385,7 +421,7 @@ class AutomationRunner:
     # --- Approval and execution ----------------------------------------------------------
 
     def start(self, run: AutomationRun) -> Outcome:
-        if run.status in (FAILED, PAUSED):
+        if run.status in (FAILED, PAUSED) and not run.resumed_from:
             return self._finish(run)
         if not run.steps:
             run.status = FAILED if run.unsupported else COMPLETED
@@ -400,7 +436,7 @@ class AutomationRunner:
                 kind = classify(str(error), None)
                 if kind in ("permission", "unsupported", "ambiguous", "missing"):
                     return self._step_failed(run, index, str(error), kind)
-        approval = self.needs_approval(run)
+        approval = [] if run.propose_only else self.needs_approval(run)  # a proposal changes nothing
         if approval:
             run.status = AWAITING_APPROVAL
             self._event(run, AWAITING_APPROVAL, "Waiting for approval of the plan")
@@ -442,6 +478,8 @@ class AutomationRunner:
                 return self._stop(run, f"it reached the limit of {self.limits.max_steps} steps")
             step = run.steps[index]
             run.current = index
+            if run.propose_only and self.tier(step.tool) != READ:
+                return self._propose(run)
             if self._needs_decision(run, index):
                 decision = self._decide(run, index)
                 if isinstance(decision, Outcome):
@@ -505,6 +543,7 @@ class AutomationRunner:
             self._event(run, EXECUTING, f"{position}: {prepared.summary}", tool=prepared.name)
             outcome = self.registry.execute(prepared)
             run.executed += 1
+            self.observe(prepared.name, prepared.arguments, outcome.ok, outcome.message, outcome.data)
             if outcome.ok:
                 break
             kind = classify(outcome.message, outcome.data)
@@ -539,6 +578,7 @@ class AutomationRunner:
             raw = self.ask_json(self._decision_messages(run, index), DECISION_SCHEMA)
         except Exception:
             return self._stop(run, "the local model did not answer while deciding the next step")
+        correcting, run.rejected = run.rejected is not None, None  # the note was shown once; now cleared
         action = raw.get("action")
         if action == "replan" and any(isinstance(s, dict) and s.get("tool") in ("finish", "stop", "ask")
                                       for s in raw.get("steps") or []):
@@ -583,6 +623,10 @@ class AutomationRunner:
                                    "purpose": raw.get("purpose") or (planned.purpose if planned else tool),
                                    "depends_on": planned.depends_on if planned else list(range(index))}], offset=index)
         except PlanError as error:
+            if not correcting:
+                # One chance to correct it, as for missing arguments: the model sees exactly what was wrong.
+                run.rejected = f"{tool}: {error}"
+                return self._decide(run, index)
             return self._stop(run, f"the next step was not usable ({error})")
         if step.arguments is None:
             target = planned or step
@@ -610,6 +654,11 @@ class AutomationRunner:
 
     def _decision_messages(self, run: AutomationRun, index: int) -> list[dict]:
         state = {"objective": run.objective, "steps": []}
+        if run.resumed_from:
+            state["note"] = (f"This run was paused and resumed at {run.resumed_from}. Results of earlier steps may be out "
+                             "of date: re-check (run the read again) anything a change depends on.")
+        if run.rejected:
+            state["rejected_next_step"] = f"Your last answer was not usable ({run.rejected}). Correct it or choose another action."
         if index >= len(run.steps):
             state["all_planned_steps_done"] = ("If the objective still needs an action the results now make possible "
                                                "(for example opening the project or file you identified), choose run; "
@@ -627,6 +676,38 @@ class AutomationRunner:
             state["steps"].append(entry)
         return [{"role": "system", "content": f"{DECIDER_PROMPT}\n\n{self.context()}\n\nTools:\n{self.catalog()}"},
                 {"role": "user", "content": json.dumps(state, ensure_ascii=False)}]
+
+    def _propose(self, run: AutomationRun) -> Outcome:
+        """Help mode: the reads are done; the changes are proposed, not made."""
+        remaining = [f"{i + 1}. {step.purpose}" for i, step in enumerate(run.steps) if step.status == "pending"]
+        run.status = PAUSED
+        run.question = "I can do this next:\n" + "\n".join(remaining) + "\nSay \"do it\" to go ahead (you approve changes as usual)."
+        self._event(run, PAUSED, "Proposed; waiting for you")
+        return self._finish(run)
+
+    def resume(self, run: AutomationRun) -> Outcome:
+        """Carry on with a proposed or interrupted run: finished steps stay finished; steps not done are
+        run again from the current state (approvals are asked for again), after the model has seen that
+        earlier results may be out of date."""
+        run.propose_only = False
+        run.cancel_event = threading.Event()
+        run.question = None
+        run.answer = None
+        run.resumed_from = datetime.now().astimezone().strftime("%H:%M")
+        for step in run.steps:
+            if step.status in ("cancelled", "skipped", "pending"):
+                step.status, step.approved, step.approved_summary = "pending", False, None
+            elif step.status == "failed" and step.changes is False:
+                step.status, step.attempts = "pending", 0
+        self._event(run, EXECUTING, f"Resuming: {run.objective}")
+        if not any(step.status == "pending" for step in run.steps):
+            return self._conclude(run)
+        first = next(i for i, step in enumerate(run.steps) if step.status == "pending")
+        if any(step.status in ("success", "uncertain") for step in run.steps[:first]):
+            decision = self._decide(run, first)  # re-check against what may have changed
+            if isinstance(decision, Outcome):
+                return decision
+        return self.start(run)
 
     def _step_failed(self, run: AutomationRun, index: int, message: str, kind: str) -> Outcome:
         step = run.steps[index]
@@ -778,7 +859,8 @@ def classify(message: str, data) -> str:
         return "permission"  # checked first: permission messages often end with "then try again"
     if kind in ("timeout", "unavailable") or "try again" in text or "did not respond" in text:
         return "transient"
-    if any(word in text for word in ("several", "which one", "ask which", "ask the user which")):
+    if any(word in text for word in ("several", "which one", "ask which", "ask the user which", "whether this is the one",
+                                     "partial name match")):
         return "ambiguous"
     if any(word in text for word in ("not available", "not supported", "not configured", "no tool")):
         return "unsupported"

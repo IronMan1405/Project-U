@@ -198,6 +198,36 @@
   }
 
   const MAX_CHECK_FAILURES = 3;
+  // A microphone input that delivers nothing at all (every sample zero) for this long, as a virtual
+  // device such as BlackHole does when it is the system input: the name can never be heard, so the
+  // page says so once. Real microphones always pick up some room noise, far above SILENT_DB.
+  const SILENT_INPUT_MS = 4000;
+
+  function createSilenceWatch(limitMs = SILENT_INPUT_MS) {
+    let silentSince = null;
+    let reported = false;
+    return {
+      // True once, when the input has been completely silent for limitMs.
+      update(levelDb, nowMs) {
+        if (reported) return false;
+        if (Number.isFinite(levelDb) && levelDb > SILENT_DB) {
+          silentSince = null;
+          return false;
+        }
+        if (silentSince === null) silentSince = nowMs;
+        if (nowMs - silentSince < limitMs) return false;
+        reported = true;
+        return true;
+      },
+    };
+  }
+
+  function silentInputMessage(deviceLabel) {
+    const device = deviceLabel ? `“${deviceLabel}”` : "The microphone input";
+    return `${device} is sending no sound, so “Kris” cannot be heard. Choose your microphone in ` +
+      "System Settings › Sound › Input (or in the browser's microphone setting for this page), then switch Wake word on again.";
+  }
+
   const MESSAGES = {
     standby: "Standby: say “Kris” to start talking.",
     denied: "Wake word is off: microphone access was denied. Allow the microphone for this page, then switch Wake word on again.",
@@ -342,9 +372,9 @@
   const enabled = (wake) => ENABLED.has(wake.state);
 
   return {
-    createBurstDetector, createSampleRing, downsample, encodeWav,
+    createBurstDetector, createSilenceWatch, silentInputMessage, createSampleRing, downsample, encodeWav,
     createWakeState, reduce, standbyAllowed, bargeAllowed, mentionsWakeName, capturing, barging, enabled,
     pickAcknowledgement,
-    BURST_TUNING, MESSAGES, MAX_CHECK_FAILURES, ACKNOWLEDGEMENTS, ACK_HISTORY,
+    BURST_TUNING, MESSAGES, MAX_CHECK_FAILURES, ACKNOWLEDGEMENTS, ACK_HISTORY, SILENT_INPUT_MS,
   };
 });

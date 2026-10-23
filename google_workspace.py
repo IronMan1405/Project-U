@@ -149,7 +149,7 @@ CALENDAR_WRITE_TOOLS = ("create_calendar_event", "update_calendar_event", "delet
 # the opposite action. These run without an approval when the user explicitly asks for them about
 # a message found in the same conversation (tool_registry decides); every other action is confirmed.
 LOW_IMPACT_GMAIL_ACTIONS = frozenset({"mark_email_read", "mark_email_unread", "star_email", "unstar_email"})
-CONSEQUENTIAL_OPERATIONS = frozenset({"create_gmail_draft", *(set(GMAIL_ACTIONS) - LOW_IMPACT_GMAIL_ACTIONS),
+CONSEQUENTIAL_OPERATIONS = frozenset({"create_gmail_draft", "update_gmail_draft", *(set(GMAIL_ACTIONS) - LOW_IMPACT_GMAIL_ACTIONS),
                                       *SEND_TOOLS, *CALENDAR_WRITE_TOOLS})
 MAX_SEND_BODY = 60000  # a forward quotes the original; model-written text is still capped by the tool schema
 MAX_EVENT_TITLE = 300
@@ -1040,7 +1040,48 @@ class GoogleWorkspaceProvider:
             "to": addresses("To"), "cc": addresses("Cc"), "bcc": addresses("Bcc"),
             "subject": _header(headers, "Subject"), "body": body, "attachments": attachments,
             "thread_id": message.get("threadId") if isinstance(message.get("threadId"), str) else None,
+            "in_reply_to": _header(headers, "In-Reply-To").strip() or None,
+            "references": _header(headers, "References").strip() or None,
         }
+
+    def prepare_draft_update(self, draft_id: str, to: str | None = None, cc: str | None = None,
+                             subject: str | None = None, body: str | None = None) -> dict:
+        """The draft as it would be after the change (unchanged fields kept), and what it is now.
+        Never sends; the user approves the exact new version."""
+        self._client()
+        self._require("mail.draft", "Gmail drafts")
+        draft_id = validate_draft_id(draft_id)
+        current = self._draft_contents(draft_id)
+        if current.get("attachments"):
+            raise GoogleError("invalid", "That draft has attachments; change it in Gmail so they are not lost.")
+        reply = ({"thread_id": current["thread_id"], "in_reply_to": current["in_reply_to"],
+                  "references": current["references"]} if current.get("in_reply_to") else None)
+        draft = {"to": parse_addresses(to) if to is not None else current["to"],
+                 "cc": parse_addresses(cc) if cc is not None else current["cc"],
+                 "subject": (subject if subject is not None else current["subject"]).strip(),
+                 "body": body if body is not None else current["body"], "reply": reply}
+        validate_draft(draft)
+        shown = {key: current.get(key) for key in ("to", "cc", "subject", "body")}
+        return {"draft_id": draft_id, "draft": draft, "before": shown, "thread_id": current.get("thread_id"),
+                "fingerprint": hashlib.sha256(json.dumps(shown, sort_keys=True).encode("utf-8")).hexdigest()}
+
+    def update_draft(self, prepared: dict) -> dict:
+        """Replace exactly the approved draft's content, if the draft has not changed since it was read."""
+        self._client()
+        self._require("mail.draft", "Gmail drafts")
+        draft_id = validate_draft_id(prepared.get("draft_id"))
+        current = self._draft_contents(draft_id)
+        shown = {key: current.get(key) for key in ("to", "cc", "subject", "body")}
+        if hashlib.sha256(json.dumps(shown, sort_keys=True).encode("utf-8")).hexdigest() != prepared.get("fingerprint"):
+            raise GoogleError("stale", "The draft changed in Gmail after you approved this edit. It was not changed; ask again.")
+        validate_draft(prepared["draft"])
+        message = {"raw": draft_raw(prepared["draft"])}
+        if prepared.get("thread_id"):
+            message["threadId"] = prepared["thread_id"]
+        result = self._write("PUT", f"{GMAIL_API}/drafts/{draft_id}", {"id": draft_id, "message": message}, "Gmail", "saved")
+        if result.get("id") != draft_id:
+            raise GoogleError("bad_response", "Gmail did not confirm the draft was changed.")
+        return {"draft_id": draft_id}
 
     def list_drafts(self, max_results: int = SEARCH_LIMIT) -> dict:
         """The newest drafts' IDs, recipients and subjects (for send_gmail_draft)."""
@@ -1466,6 +1507,7 @@ def message_summary(detail: dict) -> dict:
         "date": received or _header(headers, "Date")[:64] or None,
         "unread": "UNREAD" in labels,
         "starred": "STARRED" in labels,
+        "important": "IMPORTANT" in labels,  # Gmail's own importance marker
         "in_inbox": "INBOX" in labels,
         "in_trash": "TRASH" in labels,
     }

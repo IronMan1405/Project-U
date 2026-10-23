@@ -4,7 +4,7 @@ import sys
 import urllib.error
 
 from assistant_runtime import AssistantRuntime, ask_ollama
-from config import load_settings, load_utility_settings
+from config import load_settings, load_think_setting, load_utility_settings
 from storage import initialize_database
 from tool_registry import ToolRegistry
 
@@ -42,6 +42,7 @@ def main() -> int:
         tool_registry=ToolRegistry(utilities=load_utility_settings()),
         model_client=ask_ollama,
         activity_callback=_terminal_activity,
+        think=load_think_setting(),
     )
     while True:
         try:

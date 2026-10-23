@@ -11,6 +11,7 @@ A task and a reminder with the same title due the same day are shown once.
 from datetime import date, datetime, time, timedelta, timezone
 
 import google_workspace
+import priorities
 import storage
 from reminders import AppleReminders, RemindersError, normalize_title
 
@@ -109,6 +110,9 @@ def build_briefing(
     reminders: AppleReminders | None = None,
     timers=None,
     calendar_accounts: str | None = None,
+    include_email: bool = False,
+    context: dict | None = None,
+    window: str = "day",
 ) -> dict:
     now = _local_now(now)
     target = now.date() + timedelta(days=1 if day == "tomorrow" else 0)
@@ -141,6 +145,9 @@ def build_briefing(
             briefing["sources"]["calendar"] = {"status": "ok", "events": found["events"], "more": found["more_available"]}
             if accounts is not None and accounts.multiple:
                 briefing["sources"]["calendar"]["account"] = accounts.default
+                others = [name for name in accounts.names if name != accounts.default]
+                briefing["sources"]["calendar"]["scope"] = (
+                    f"Only the {accounts.default} calendar; not included: {', '.join(others)} (ask for all calendars)")
         except google_workspace.GoogleError as error:
             briefing["sources"]["calendar"] = {"status": "unavailable", "reason": error.message}
 
@@ -207,8 +214,66 @@ def build_briefing(
     if timers is not None:
         briefing["sources"]["timers"] = {"status": "ok", "active": timers.active(),
                                          "recently_finished": timers.recent()}
+    # Recent mail: unread inbox messages from the last three days (headers only), for "needs attention".
+    if include_email and google is not None and google.settings.enabled:
+        briefing["sources"]["email"] = _recent_mail(google, calendar_accounts)
+
     briefing["unavailable"] = [
         f"{name}: {source['reason']}" for name, source in briefing["sources"].items() if source["status"] != "ok"
     ]
     briefing["_reminder_ids"] = seen_reminder_ids
+    briefing["focus"] = priorities.focus(briefing, now, context, window)
     return briefing
+
+
+MAIL_QUERY = "is:unread in:inbox newer_than:3d"
+MAIL_LIMIT = 8
+
+
+def _recent_mail(google, calendar_accounts: str | None) -> dict:
+    accounts = google if hasattr(google, "provider") else None
+    names = (accounts.connected() if calendar_accounts == "all" and accounts is not None and accounts.multiple
+             else [accounts.default] if accounts is not None else [None])
+    messages, problems = [], []
+    for name in names:
+        try:
+            provider = accounts.check(name) if accounts is not None else google
+            found = provider.search_messages(MAIL_QUERY, MAIL_LIMIT)
+            messages += [{**message, "account": name} for message in found["messages"]]
+        except google_workspace.GoogleError as error:
+            problems.append(f"{name or 'Gmail'}: {error.message}")
+    if problems and not messages:
+        return {"status": "unavailable", "reason": "; ".join(problems)}
+    result = {"status": "ok", "query": MAIL_QUERY, "messages": messages,
+              "note": "Unread inbox mail from the last three days, headers only."}
+    if problems:
+        result["partly_unavailable"] = problems
+    return result
+
+
+EVENT_FIELDS = ("event_id", "title", "start", "end", "all_day", "finished")
+MAX_EVENTS_FOR_MODEL = 12
+
+
+def for_model(briefing: dict) -> dict:
+    """The briefing trimmed for the model: the focus in full; events reduced to what identifies them;
+    mail as a count (the messages that matter are already in the focus)."""
+    result = {"focus": briefing["focus"], **{key: value for key, value in briefing.items() if key not in ("sources", "focus")}}
+    sources = {}
+    for name, source in briefing.get("sources", {}).items():
+        source = dict(source)
+        if name == "calendar" and source.get("status") == "ok":
+            trim = lambda events: [{k: e[k] for k in EVENT_FIELDS if k in e} for e in events[:MAX_EVENTS_FOR_MODEL]]
+            if source.get("accounts"):
+                source["accounts"] = [{**group, "events": trim(group["events"]),
+                                       "more": group.get("more") or len(group["events"]) > MAX_EVENTS_FOR_MODEL}
+                                      for group in source["accounts"]]
+            else:
+                source["more"] = source.get("more") or len(source.get("events") or []) > MAX_EVENTS_FOR_MODEL
+                source["events"] = trim(source.get("events") or [])
+        if name == "email" and source.get("status") == "ok":
+            source = {"status": "ok", "unread_recent": len(source.get("messages") or []), "note":
+                      "Unread inbox mail from the last three days; those Gmail marks Important or Starred are in focus."}
+        sources[name] = source
+    result["sources"] = sources
+    return result

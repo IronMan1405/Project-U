@@ -45,6 +45,17 @@
     <main class="command-center">
       <!-- Left: system and incoming information, one section at a time -->
       <aside class="cc-column cc-system" aria-label="System and incoming">
+        <!-- Focus: what deserves attention now, from the briefing's sources (each item says why). -->
+        <section class="panel panel-focus" data-section="FOC·00" aria-labelledby="focus-heading">
+          <h2 class="panel-title" id="focus-heading">Focus <span class="panel-title-note" id="focus-asof"></span></h2>
+          <dl class="telemetry focus-list">
+            <div class="telemetry-row"><dt>Next</dt><dd id="focus-next">Checking…</dd></div>
+            <div class="telemetry-row focus-row-block"><dt>Needs attention</dt><dd><ul class="focus-attention" id="focus-attention"></ul></dd></div>
+            <div class="telemetry-row focus-row-block"><dt>Suggestion</dt><dd id="focus-suggestion">None</dd></div>
+            <div class="telemetry-row" id="focus-working-row" hidden><dt>Working on</dt><dd id="focus-working"></dd></div>
+          </dl>
+          <p class="panel-empty focus-note" id="focus-note" hidden></p>
+        </section>
         <section class="panel panel-system" data-section="SYS·01" aria-labelledby="system-heading">
           <h2 class="panel-title" id="system-heading">System</h2>
           <dl class="telemetry">

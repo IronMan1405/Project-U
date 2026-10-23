@@ -20,6 +20,41 @@ Set `model` in `config.ini` to a model shown by `ollama list`. The default
 configuration uses `gemma4:e4b` and the local Ollama endpoint
 `http://127.0.0.1:11434`. Make sure Ollama is running before starting U.
 
+### Model and speed
+
+Every request carries K.R.I.S.'s rules and its tool definitions, about 12,000 tokens in all.
+Ollama keeps that processed prompt in memory and reuses it, so only the first request after the
+model loads pays for it in full. Measured on a 16 GB M3 (October 2026, the benchmark cases in
+TODO section 24):
+
+| | `gemma4:e4b` (default) | `gemma4:12b` |
+|---|---|---|
+| Fixed prompt from cold | 25 s | 122–125 s (over the 120 s limit) |
+| Simple question, prompt already processed | 9–17 s | 2–4 s |
+| Find an email, draft a reply, shorten it (three turns) | 17–54 s per turn | 15–84 s per turn |
+| "What's important today?" | 21–23 s | 31 s |
+| Project overview | 16–28 s | 25 s |
+| "Help me…" proposal | 53–55 s | 140 s |
+| Multi-step objective | 43–75 s | 211 s |
+
+`gemma4:e4b` is the default: every turn finished within the limit, and it drafted, then edited
+the same draft, through the draft tools (`gemma4:12b` wrote the draft into the chat instead).
+`gemma4:12b` answers simple questions faster once warm, but it processes prompts about five times
+slower, so a cold start or each planning step of an objective takes minutes. Set `model` to try
+another model; nothing else changes.
+
+To hide the cold start, the running server has Ollama process the fixed prompt as soon as a
+conversation opens, and again after an objective finishes (its planning requests can push the
+chat prompt out of Ollama's memory). Nothing is stored or shown. Ollama unloads an idle model after
+five minutes; to keep it loaded longer (it then keeps using memory), start Ollama with, for
+example, `OLLAMA_KEEP_ALIVE=30m`.
+
+gemma4 reasons privately before it answers, and that is most of a turn's time. `think = off`
+under `[ollama]` turns this off, but it is not recommended: in the benchmark, `gemma4:e4b`
+then asked for search terms instead of searching, refused a general question and wrote an
+unusable plan step. A request that takes longer than 120 seconds is stopped and reported, and
+nothing is changed.
+
 The example configuration also turns on the approved computer utilities (for
 `~/Documents` and the Calendar and Notes apps) and voice; see those sections
 below to adjust or remove them. Its tool paths assume Homebrew on Apple Silicon
@@ -533,6 +568,58 @@ alert across a Mac restart. Cancelling the timer marks that reminder complete
 still alert. After a timer with a reminder ends, K.R.I.S. marks the reminder
 complete a couple of minutes later, so finished timers do not pile up as
 overdue reminders. Without the request, no reminder is created.
+
+## Assistant intelligence (v1.1): context, priorities, follow-ups
+
+**Working context.** Each conversation keeps a small, dated record of what it is about, built only
+from what actually happened: emails and events found, drafts created or changed, tasks, notes,
+reminders and timers made, files and projects opened, your approvals and declines, and the
+current objective with what is left of it. The model receives it with every request (it is not
+stored in the history), so "make it shorter", "don't send that yet", "open the project we're
+working on" and "what did we decide about it?" refer to the right thing. Items are labelled
+with the time K.R.I.S. last saw them and expire after 12 messages or two hours; when two recent
+items could be meant, both are listed and K.R.I.S. asks; live objects are read again before
+any change. "New topic" or "start over" clears it. It is never saved: this is not long-term memory.
+
+**Editing a draft.** "Make it shorter / more formal / add Ada in Cc" changes the same Gmail draft
+(`update_gmail_draft`), never a second one. You approve the exact new version (shown before and
+after), and if the draft was edited in Gmail meanwhile, nothing is changed.
+
+**What's important.** "What's important today?", "What am I forgetting?", "What should I work on
+next?", "Anything urgent?", "What does tomorrow look like?" and "What needs my attention before
+my next class?" use the briefing, which now ends in a short focus built by transparent rules
+(`priorities.py`), each item with its evidence:
+1. the next commitment: the next timed calendar event, with the minutes until it starts;
+2. what needs attention: overdue tasks and reminders, then what is due before the next
+   commitment or later today, then unread mail Gmail marks Important or Starred (from the last
+   three days), then unfinished work from this conversation;
+3. one suggested next step with its reason (get ready if something starts within 30 minutes,
+   otherwise the most overdue item, and so on; with nothing due, an undated task "with no deadline").
+Nothing gets a deadline or urgency the data does not show, the same item is listed once, sources
+that could not be read are named, and a suggestion is only a suggestion: nothing is created,
+moved, sent or deleted because of it.
+
+**Tell me / help me / do it.** For requests that combine things, K.R.I.S. first asks the model
+what kind of request it is. Information requests stay informational. "Help me ..." looks things
+up and proposes the changes ("I can do this next: ... Say "do it" to go ahead") without making
+them; "do it", "go ahead" or "continue" then carries them out, with the usual approvals. An
+automation that was cancelled, stopped or proposed can be resumed the same way: finished steps
+stay finished, steps not done are approved again, and the model is told that earlier results
+may be out of date and re-checks before acting on them.
+
+**Projects.** "Let's work on SOLVE", "What's left to do on this project?" use `project_overview`:
+a configured project is matched by name ignoring case and punctuation ("Project U" is
+Project-U) and reports its folder, Git state and last test run; otherwise a folder with exactly
+that name is found in the approved folders (several, or only similar ones: K.R.I.S. asks). Open
+tasks, saved notes and upcoming events that mention the name are listed separately, as name
+matches that may be unrelated. A folder found only by a partial name match is never opened
+without asking. A task made from a note keeps a link to it (`source_note_id`).
+
+**Focus panel.** The top of the left column shows the next commitment, up to three items that
+need attention (each with why), the suggestion and its reason, what you are working on, and
+when it was checked, with any source that could not be read. It refreshes on load, every five
+minutes while visible, and after each reply (`GET /api/focus`, cached two minutes; it never calls
+the model or changes anything).
 
 ## Automation: objectives, not just commands
 

@@ -838,12 +838,13 @@ class AssistantRuntimeTests(unittest.TestCase):
             self.assertEqual(len(context), 1)
             self.assertIn(minute, context[0])
             user_index = max(i for i, m in enumerate(messages) if m["role"] == "user")
-            volatile = [m["content"] for m in messages[user_index - 2 : user_index]]
+            # Per-request context (clock, working-context note, document) sits just before the message.
+            volatile = [m["content"] for m in messages[user_index - 3 : user_index]]
             self.assertIn(context[0], volatile)
             if document:
                 self.assertEqual(messages[user_index - 1]["content"], document)
         stored = json.dumps(runtime.history)
-        for volatile_text in ("Current local date", "DOC-A", "DOC-B"):
+        for volatile_text in ("Current local date", "DOC-A", "DOC-B", "Working context from this conversation"):
             self.assertNotIn(volatile_text, stored)
 
     def test_post_execution_model_failure_does_not_report_or_repeat_success(self):
@@ -975,7 +976,7 @@ class RuntimeWebApiTests(unittest.TestCase):
         started, release = threading.Event(), threading.Event()
         responses = iter([assistant_tool_call("delete_task", {"task_id": 1})])
 
-        def model(*args):
+        def model(*args, **kwargs):
             try:
                 return next(responses)
             except StopIteration:
@@ -1015,7 +1016,7 @@ class RuntimeWebApiTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def blocked_model(endpoint, model, messages, tools):
+        def blocked_model(endpoint, model, messages, tools, **options):
             started.set()
             release.wait(timeout=3)
             return {"role": "assistant", "content": "Finished."}
@@ -1104,8 +1105,9 @@ class OllamaFailureTests(unittest.TestCase):
     def test_failures_return_clear_status_and_the_next_turn_recovers(self):
         cases = [
             ("connection refused", urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), 503, "Could not connect to Ollama"),
-            ("request timeout", TimeoutError("timed out"), 503, "Could not connect to Ollama: timed out"),
-            ("socket timeout", socket.timeout("timed out"), 503, "Could not connect to Ollama"),
+            ("request timeout", TimeoutError("timed out"), 504, "did not answer within 120 seconds"),
+            ("socket timeout", socket.timeout("timed out"), 504, "nothing was changed"),
+            ("connect timeout", urllib.error.URLError(TimeoutError("timed out")), 503, "Could not connect to Ollama"),
             ("malformed JSON", json.JSONDecodeError("Expecting value", "<html>", 0), 502, "Could not read Ollama's response"),
             ("unexpected response", ValueError("Ollama returned an unexpected response."), 502, "Could not read Ollama's response"),
             ("HTTP 500", self.http_error(500, b'{"error": "model runner crashed"}'), 502, "Ollama request failed (HTTP 500): model runner crashed"),
@@ -1192,7 +1194,7 @@ class TerminalRuntimeTests(unittest.TestCase):
         ]
         original_runtime = AssistantRuntime
 
-        def runtime_factory(endpoint, model, model_client, activity_callback, tool_registry):
+        def runtime_factory(endpoint, model, model_client, activity_callback, tool_registry, think=None):
             # Keep the terminal's utility settings but point storage at the test database.
             return original_runtime(
                 endpoint,
@@ -1200,6 +1202,7 @@ class TerminalRuntimeTests(unittest.TestCase):
                 tool_registry=ToolRegistry(database_path, utilities=tool_registry.utilities),
                 model_client=model_client,
                 activity_callback=activity_callback,
+                think=think,
             )
 
         with (

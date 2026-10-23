@@ -22,7 +22,8 @@ from google_accounts import ALL as ALL_ACCOUNTS, GoogleAccounts
 import ui_control
 from ui_control import UIController, UIControlError
 from mac_control import MEDIA_ACTIONS, PLAYERS, MacControl, MacControlError, music_play, music_search
-from briefing import build_briefing
+import priorities
+from briefing import build_briefing, for_model as briefing_for_model
 from reminders import AppleReminders, Due, RemindersError
 from timers import TimerError, TimerService, timer_name
 from storage import (
@@ -363,6 +364,7 @@ class ToolRegistry:
         # Paths returned by file and folder searches in this conversation, and the matches the
         # latest search returned for the current message (see _check_unambiguous).
         self._seen_paths: set[str] = set()
+        self._partial_paths: set[str] = set()  # found only by a partial name match: never used without asking
         self._candidates: dict[str, tuple[str, list[tuple[str, list[str]]]]] = {}
         self._current_message = ""
         self._seen_music: dict[str, dict] = {}  # Music items from find_music in this conversation
@@ -549,6 +551,7 @@ class ToolRegistry:
         self._register_mac()
         self._register_developer()
         self._register_ui()
+        self._register_project_overview()
         self._add_account_parameters()
         self._definitions["start_automation"] = ToolDefinition(
             "start_automation",
@@ -559,7 +562,10 @@ class ToolRegistry:
             "for a single action or question that one tool answers: call that tool directly.",
             _object_schema({"objective": {"type": "string", "minLength": 3, "maxLength": 500,
                                           "description": "The user's objective in their words, with any names, "
-                                          "accounts, dates and details they gave."}}, ("objective",)),
+                                          "accounts, dates and details they gave."},
+                            "propose": {"type": "boolean", "description": "True when the user wants help deciding or "
+                                        "preparing ('help me ...', 'what should I ...'): look things up and propose the "
+                                        "changes without making them."}}, ("objective",)),
             lambda arguments: ToolOutcome(False, "Automations are run by K.R.I.S.'s runtime, not as a step."),
         )
         check_confirmation_boundaries(self._definitions)
@@ -579,12 +585,17 @@ class ToolRegistry:
         }
         self._definitions["get_briefing"] = ToolDefinition(
             "get_briefing",
-            "The user's briefing for today or tomorrow from every source at once: calendar events, K.R.I.S. tasks "
-            "(overdue, due that day, without a due date), Apple Reminders (overdue, due that day), and active timers. "
-            "Use it for 'brief me', 'what do I have today/tomorrow', 'what's overdue', 'what did I leave "
-            "unfinished' and planning the rest of the day. Report only what it returns; sources it marks "
-            "unavailable or not connected must be named as such, never shown as empty.",
+            "The user's briefing and priorities for today or tomorrow from every source at once: calendar, K.R.I.S. "
+            "tasks, Apple Reminders, timers, recent unread mail and this conversation's unfinished work. Use it for 'brief "
+            "me', 'what's important today', 'what am I forgetting', 'what should I work on next', 'anything urgent', 'what "
+            "does tomorrow look like', 'what needs my attention before my next class' (window before_next). Answer from "
+            "its 'focus': the next commitment, what needs attention (with the reason given), and the suggested next step "
+            "with its reason, briefly; say each item once; offer details on request. The suggestion is a proposal: do "
+            "not create, move, send or delete anything because of it. Name any unavailable source; never present a "
+            "partial briefing as complete, and never add deadlines or urgency the data does not show.",
             _object_schema({"day": {"type": "string", "enum": ["today", "tomorrow"]},
+                            "window": {"type": "string", "enum": ["day", "before_next"],
+                                       "description": "before_next: only what matters before the next commitment."},
                             "all_calendars": {"type": "boolean", "description": "Only when the user asks for all their "
                                               "calendars or accounts: include every connected Google account, grouped "
                                               "by account. Otherwise the default account's calendar is used."}}),
@@ -667,18 +678,23 @@ class ToolRegistry:
             r"\ball (?:of )?(?:my |the )?(?:calendars|accounts)\b", self._current_message, re.IGNORECASE))
 
     def _get_briefing(self, arguments: dict) -> ToolOutcome:
+        context = self.working_context.snapshot() if getattr(self, "working_context", None) is not None else None
         result = build_briefing(datetime.now().astimezone(), arguments.get("day", "today"),
                                 database_path=self.database_path, google=self.google,
                                 reminders=self.reminders, timers=self.timers,
-                                calendar_accounts="all" if self._briefing_all(arguments) else None)
+                                calendar_accounts="all" if self._briefing_all(arguments) else None,
+                                include_email=True, context=context, window=arguments.get("window", "day"))
+        for message in (result["sources"].get("email") or {}).get("messages") or []:
+            if message.get("id"):  # mail the briefing found can be read or answered next
+                self._seen_message_ids.add((message.get("account") or (self.google.default if self.google else None), message["id"]))
         calendar = result["sources"].get("calendar") or {}
         for group in calendar.get("accounts") or [{"account": calendar.get("account") or (self.google.default if self.google else None),
                                                   "events": calendar.get("events") or []}]:
             self._seen_event_ids.update((group["account"], event["event_id"]) for event in group["events"] if event.get("event_id"))
         self._seen_reminder_ids.update(result.pop("_reminder_ids"))
         missing = result["unavailable"]
-        message = "Briefing data follows." + (f" Not available: {'; '.join(missing)}." if missing else "")
-        return ToolOutcome(True, message, result)
+        message = ("Answer from this focus (details follow): " + priorities.summary_text(result["focus"]))
+        return ToolOutcome(True, message, briefing_for_model(result))
 
     def _start_timer(self, arguments: dict) -> ToolOutcome:
         seconds = arguments.get("minutes", 0) * 60 + arguments.get("seconds", 0)
@@ -926,6 +942,16 @@ class ToolRegistry:
                             "body": {**body, "minLength": 0, "description": "Optional note above the forwarded text."}},
                            ("message_id", "to")),
             self._send_email, always_confirm=True,
+        )
+        self._definitions["update_gmail_draft"] = ToolDefinition(
+            "update_gmail_draft",
+            "Change an existing Gmail draft (found or created in this conversation), e.g. 'make it shorter', 'more "
+            "formal', 'add Ada in Cc'. Give only the fields that change; body must be the complete new text. The user "
+            "approves the exact new version; the draft is never sent by this.",
+            _object_schema({"draft_id": {"type": "string", "pattern": r"^[A-Za-z0-9_-]{1,128}$"}, "to": optional_address,
+                            "cc": optional_address, "subject": subject,
+                            "body": {**body, "description": "The complete new body text."}}, ("draft_id",)),
+            self._update_gmail_draft, always_confirm=True,
         )
         self._definitions["list_gmail_drafts"] = ToolDefinition(
             "list_gmail_drafts",
@@ -1275,6 +1301,16 @@ class ToolRegistry:
             return ToolOutcome(False, error.message)
         return ToolOutcome(True, f"Done: {_gmail_action_phrase(action)}{self._in(account)}.", {**result, "account": account})
 
+    def _update_gmail_draft(self, arguments: dict) -> ToolOutcome:
+        change = dict(arguments)
+        account = change.pop("account")
+        try:
+            result = self._gprovider(account).update_draft(change)
+        except google_workspace.GoogleError as error:
+            return ToolOutcome(False, error.message)
+        return ToolOutcome(True, f"Gmail draft changed{self._in(account)}. It has not been sent.",
+                           {**result, "account": account})
+
     def _create_gmail_draft(self, arguments: dict) -> ToolOutcome:
         draft = dict(arguments)
         account = draft.pop("account")
@@ -1296,6 +1332,9 @@ class ToolRegistry:
         if name in ("update_calendar_event", "delete_calendar_event") and (account, arguments["event_id"]) not in self._seen_event_ids:
             raise ToolError("Find the event with search_calendar_events (or read_calendar_event) first; "
                             "only event IDs returned by Google Calendar in this conversation can be changed.")
+        if name == "update_gmail_draft" and (account, arguments["draft_id"]) not in self._seen_draft_ids:
+            raise ToolError("Find the draft with list_gmail_drafts first (or create it); only drafts found in this "
+                            "conversation can be changed.")
         if name == "send_gmail_draft" and (account, arguments["draft_id"]) not in self._seen_draft_ids:
             raise ToolError("Find the draft with list_gmail_drafts first; only draft IDs returned by Gmail in "
                             "this conversation can be sent.")
@@ -1310,6 +1349,19 @@ class ToolRegistry:
                     message_id=arguments.get("message_id"), draft_id=arguments.get("draft_id"),
                 )
                 summary, preview = _send_summary(prepared), send_preview(prepared)
+            elif name == "update_gmail_draft":
+                prepared = google.prepare_draft_update(arguments["draft_id"], arguments.get("to"), arguments.get("cc"),
+                                                       arguments.get("subject"), arguments.get("body"))
+                after = prepared["draft"]
+                summary = f"Change Gmail draft {prepared['draft_id']} to {', '.join(after['to'])}: {after['subject'] or '(no subject)'}"
+                preview = {"kind": "sections", "sections": [
+                    {"heading": "Draft now", "rows": [["To", ", ".join(prepared["before"]["to"])],
+                                                       ["Subject", prepared["before"]["subject"] or "(no subject)"],
+                                                       ["Body", prepared["before"]["body"]]]},
+                    {"heading": "After the change", "rows": [["To", ", ".join(after["to"])], *(
+                        [["Cc", ", ".join(after["cc"])]] if after["cc"] else []),
+                        ["Subject", after["subject"] or "(no subject)"], ["Body", after["body"]]]}],
+                    "notes": ["Only the draft changes; nothing is sent."]}
             elif name == "create_calendar_event":
                 prepared = google.prepare_event_create(
                     arguments["title"], arguments["start"], arguments.get("end"), arguments.get("time_zone"),
@@ -1329,8 +1381,8 @@ class ToolRegistry:
             raise ToolError(error.message) from error
         if self.google.multiple:
             # Which account sends or changes is part of what the user approves.
-            where = {"send": "from your", "calendar": "on your"}["send" if name in google_workspace.SEND_TOOLS else "calendar"]
-            noun = "account" if name in google_workspace.SEND_TOOLS else "calendar"
+            where, noun = (("from your", "account") if name in google_workspace.SEND_TOOLS else
+                           ("in your", "Gmail") if name == "update_gmail_draft" else ("on your", "calendar"))
             summary = f"{summary} ({where} {account} {noun}, {self.google.email(account) or 'email unknown'})"
             preview = {**preview, **self._account_rows(account)}
         return PreparedToolCall(name=name, arguments={**prepared, "account": account}, summary=summary,
@@ -1529,7 +1581,7 @@ class ToolRegistry:
                 direct_write=False,
                 preview={**draft_preview(draft), **self._account_rows(account)},
             )
-        if name in google_workspace.SEND_TOOLS or name in google_workspace.CALENDAR_WRITE_TOOLS:
+        if name in google_workspace.SEND_TOOLS or name in google_workspace.CALENDAR_WRITE_TOOLS or name == "update_gmail_draft":
             return self._prepare_google_change(name, arguments)
         if name in google_workspace.GMAIL_ACTIONS:
             # Identify the exact message (and label) now; the approval applies to exactly this.
@@ -1681,6 +1733,7 @@ class ToolRegistry:
             description,
             self.database_path,
             due_at=arguments.get("due_at"),
+            source_note_id=arguments.get("note_id"),
         )
         if task["due_at"] is None:
             return ToolOutcome(True, "Task created.", task)
@@ -2076,6 +2129,80 @@ class ToolRegistry:
             return ToolOutcome(True, "No test run has been recorded since K.R.I.S. started. Ask to run the tests.")
         return ToolOutcome(True, f"Latest run ({result['finished_at']}): {result['status']}.", result)
 
+    def _register_project_overview(self) -> None:
+        if not self._search_roots().folders:
+            return
+        self._definitions["project_overview"] = ToolDefinition(
+            "project_overview",
+            "What is known about a project, by its name: where it is, and for configured projects the Git state and "
+            "latest test run; plus open tasks, saved notes and upcoming events that mention its name. Use it for "
+            "'let's work on X', 'what is left to do on this project', 'where are we with X'. Read-only. If several "
+            "folders match the name, or only a similar one, it says so: ask which one the user means.",
+            _object_schema({"name": {"type": "string", "minLength": 1, "maxLength": 80}}, ("name",)),
+            self._project_overview,
+        )
+
+    def _project_overview(self, arguments: dict) -> ToolOutcome:
+        name = " ".join(arguments["name"].split())
+        compact = lambda text: "".join(re.findall(r"[a-z0-9]+", text.casefold()))
+        configured = None
+        if self.developer is not None:
+            configured = next((label for label in self.developer.projects if compact(label) == compact(name)), None)
+        facts: dict = {"name": name}
+        if configured:
+            facts.update(project=configured, configured=True, location=self.developer.describe()[
+                self.developer.projects.index(configured)]["folder"])
+            try:
+                status = self.developer.git_status(configured)
+                facts["git"] = {"branch": status["branch"], "uncommitted": status["counts"], "clean": status["clean"]}
+                last = self.developer.recent_commits(configured, 1)["commits"]
+                facts["git"]["last_commit"] = last[0] if last else None
+            except DeveloperError as error:
+                facts["git"] = {"unavailable": error.message}
+            tests = self.developer.last_results(configured)
+            facts["last_test_run"] = ({"status": tests["status"], "finished_at": tests["finished_at"]} if tests
+                                      else "none since K.R.I.S. started")
+            label = configured
+        else:
+            try:
+                found = computer_utilities.find_folders(self._search_roots(), name)
+            except UtilityError as error:
+                return _utility_failure(error)
+            exact = [r for r in found["results"] if r["exact"]]
+            if len(exact) != 1:
+                candidates = exact or found["results"][:5]
+                self._seen_paths.update(r["path"] for r in candidates)
+                self._partial_paths.update(r["path"] for r in candidates if not r["exact"])
+                self._remember_candidates("paths", [(r["path"], r["path"].split("/")) for r in candidates])
+                if not candidates:
+                    return ToolOutcome(True, f"No project or folder named \"{name}\" was found in the approved folders. "
+                                       "Ask the user where it is (or for its exact name).", {"name": name, "candidates": []})
+                what = "Several folders are named" if exact else "No folder is named exactly"
+                return ToolOutcome(True, f"{what} \"{name}\"; candidates are listed. Ask the user which one they mean "
+                                   "before using any of them.", {"name": name, "candidates": candidates})
+            folder = exact[0]
+            self._seen_paths.add(folder["path"])
+            facts.update(project=folder["path"], configured=False, location=folder["location"],
+                         note="Not a configured project, so Git and tests are not available for it.")
+            label = folder["name"]
+        # Things that mention the project by name (evidence by name only, not a verified link).
+        words = [w for w in re.findall(r"[a-z0-9]+", label.casefold()) if len(w) > 1]
+        mention = lambda text: all(re.search(rf"(?<![a-z0-9]){re.escape(w)}", (text or "").casefold()) for w in words)
+        tasks = [{"task_id": t["id"], "title": t["title"], "due_at": t["due_at"]}
+                 for t in list_tasks(self.database_path) if not t["completed"] and (mention(t["title"]) or mention(t["description"]))]
+        notes = search_notes(words, database_path=self.database_path, limit=5)["notes"]
+        mentions = {"open_tasks": tasks[:8], "notes": [{"note_id": n["id"], "title": n["title"]} for n in notes]}
+        if self.google is not None and self.google.settings.enabled:
+            try:
+                events = self.google.check(self.google.default).search_events(None, None, label, 5)["events"]
+                mentions["upcoming_events"] = [{"title": e["title"], "start": e["start"]} for e in events]
+            except google_workspace.GoogleError as error:
+                mentions["upcoming_events"] = {"unavailable": error.message}
+        facts["mentioning_the_name"] = mentions
+        facts["how_to_read"] = ("'location', 'git' and 'last_test_run' are checked facts. Items under "
+                                "'mentioning_the_name' only contain the project's name; they may be unrelated.")
+        return ToolOutcome(True, f"Project overview for {label}.", facts)
+
     def _register_ui(self) -> None:
         """Named UI elements in approved apps through macOS Accessibility (ui_control.py)."""
         if self.ui is None or not self.ui.settings.apps:
@@ -2376,6 +2503,7 @@ class ToolRegistry:
             return _utility_failure(error)
         results = found["results"]
         self._seen_paths.update(result["path"] for result in results)
+        self._partial_paths.update(result["path"] for result in results if not result["exact"])
         exact = [result for result in results if result["exact"]] or results
         self._remember_candidates("paths", [(r["path"], r["path"].split("/")) for r in exact])
         message = (f"Searched {', '.join(found['folders_searched'])} for folder names containing all of: "
@@ -2417,6 +2545,10 @@ class ToolRegistry:
             raise ToolError("Only these document types open with their default app: "
                             f"{', '.join(sorted(computer_utilities.OPENABLE_EXTENSIONS))}. Name an app such as the editor.")
         self._check_unambiguous("paths", display, user_message)
+        if display in self._partial_paths and not _mentions(user_message, path.name):
+            # Never silently swap the user's target for a merely similar one.
+            raise ToolError(f"Only a partial name match was found ({display}); ask the user whether this is the one they "
+                            "mean before opening it.")
         named = display in self._seen_paths or _mentions(user_message, path.name) or _mentions(user_message, display.split("/")[0]) and "/" not in display
         app_named = application is None or name == "open_in_editor" or _mentions(user_message, application) or (
             application.casefold() == "visual studio code" and re.search(r"\b(?:vs ?code|code|editor)\b", user_message, re.IGNORECASE))
@@ -2667,7 +2799,7 @@ FORBIDDEN_TOOLS = frozenset({"run_command", "run_shell", "shell", "execute_comma
 
 
 GOOGLE_TOOLS = frozenset({
-    "create_gmail_draft", "search_gmail", "read_gmail_message", "list_gmail_drafts", "search_calendar_events",
+    "create_gmail_draft", "update_gmail_draft", "search_gmail", "read_gmail_message", "list_gmail_drafts", "search_calendar_events",
     "read_calendar_event", *google_workspace.GMAIL_ACTIONS, *google_workspace.SEND_TOOLS,
     *google_workspace.CALENDAR_WRITE_TOOLS,
 })

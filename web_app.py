@@ -1,5 +1,7 @@
 import atexit
 import json
+import time
+from datetime import datetime
 import logging
 import sqlite3
 import threading
@@ -13,6 +15,8 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 import system_telemetry
 import notifications
+import priorities
+from briefing import build_briefing
 import voice
 from config import (
     load_automation_limits,
@@ -21,6 +25,7 @@ from config import (
     load_google_settings,
     load_resource_alert_settings,
     load_settings,
+    load_think_setting,
     load_ui_control_settings,
     load_ui_settings,
     load_utility_settings,
@@ -44,7 +49,7 @@ from documents import (
     document_context_message,
     extract_document,
 )
-from assistant_runtime import AssistantRuntime, RuntimeBusyError, TurnResult
+from assistant_runtime import MODEL_TIMEOUT_SECONDS, AssistantRuntime, RuntimeBusyError, TurnResult
 from tool_registry import ToolRegistry
 from storage import (
     DATABASE_PATH,
@@ -82,6 +87,7 @@ def create_app(
     conversation_documents: dict[str, SelectedDocument] = {}
     conversation_activity: dict[str, dict] = {}
     app.config["DATABASE_PATH"] = Path(database_path) if database_path else DATABASE_PATH
+    app.config["WARM_MODEL"] = False  # set by the server below
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES + 64 * 1024
     # Only the loopback names the server is reached by. Rejecting every other Host header
     # (400) stops DNS-rebinding pages from reading data or approving tool actions.
@@ -119,6 +125,7 @@ def create_app(
                                            notifier=notifications.notify)
     app.config["RESOURCE_MONITOR"] = resource_monitor
     automation_limits = load_automation_limits()
+    think = load_think_setting()
     if ui is None:
         ui = UIController(load_ui_control_settings())
     if mac is None and MacControl.available():
@@ -233,12 +240,17 @@ def create_app(
                 ),
                 activity_callback=update_activity,
                 automation_limits=automation_limits,
+                think=think,
             )
             conversation_activity[conversation_id] = {
                 "status": "idle",
                 "tool": None,
                 "summary": "",
             }
+            if app.config["WARM_MODEL"]:
+                # The running server only (never tests): prepare the model while the user types.
+                conversations[conversation_id].keep_warm = True
+                threading.Thread(target=conversations[conversation_id].warm_up, daemon=True).start()
         return jsonify(conversation_id=conversation_id)
 
     @app.get("/api/conversations/<conversation_id>/activity")
@@ -293,7 +305,13 @@ def create_app(
             except (json.JSONDecodeError, AttributeError):
                 pass
             return jsonify(error=f"Ollama request failed (HTTP {error.code}): {detail}"), 502
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
+        except TimeoutError:
+            # Connected, but no answer in time (a model still loading, or too large for this Mac).
+            # The turn was rolled back; a turn that had already changed something reports that instead.
+            return jsonify(error=f"The model did not answer within {MODEL_TIMEOUT_SECONDS} seconds, so the request "
+                                 "was stopped and nothing was changed. Try again; if this keeps happening, a smaller "
+                                 "model may suit this Mac better."), 504
+        except (urllib.error.URLError, OSError) as error:
             reason = getattr(error, "reason", error)
             return jsonify(error=f"Could not connect to Ollama: {reason}"), 503
         except (json.JSONDecodeError, ValueError) as error:
@@ -312,6 +330,32 @@ def create_app(
         if isinstance(error, VoiceTimeout):
             return jsonify(error=str(error)), 504
         return jsonify(error=str(error)), 422
+
+    focus_cache: dict[str, tuple[float, dict]] = {}
+
+    @app.get("/api/focus")
+    def focus_status():
+        # Read-only: the Focus panel (next commitment, what needs attention and why, a suggestion,
+        # what is being worked on). Built from the briefing's sources, cached for two minutes; no model call.
+        conversation_id = request.args.get("conversation_id")
+        runtime = conversations.get(conversation_id) if _valid_conversation_id(conversation_id) else None
+        key = conversation_id or ""
+        cached = focus_cache.get(key)
+        if cached and time.monotonic() - cached[0] < 120 and request.args.get("refresh") != "1":
+            briefing_data = cached[1]
+        else:
+            if not app.config["DATABASE_READY"]:
+                return data_store_unavailable()
+            briefing_data = build_briefing(
+                datetime.now().astimezone(), "today", database_path=app.config["DATABASE_PATH"], google=google,
+                reminders=reminders, timers=timers, include_email=True,
+                context=runtime.context.snapshot() if runtime is not None else None)
+            focus_cache[key] = (time.monotonic(), briefing_data)
+        view = priorities.dashboard(briefing_data, runtime.context.snapshot() if runtime is not None else None,
+                                    runtime.automation_status() if runtime is not None else None)
+        response = jsonify(view)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/timers")
     def timers_status():
@@ -785,6 +829,8 @@ if __name__ == "__main__":
     # Load the speech model in the background now, so the first spoken reply is not a cold start.
     voice.preload_speech(load_voice_settings())
     server = create_app()
+    # Each new conversation has Ollama process the fixed prompt in the background (assistant_runtime.warm_up).
+    server.config["WARM_MODEL"] = True
     # Recover timers that ended while K.R.I.S. was closed (reported as missed), then check
     # every second so a timer alerts on time while the server runs.
     server.config["TIMERS"].start_background()

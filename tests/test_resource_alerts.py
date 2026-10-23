@@ -2,6 +2,7 @@
 
 Telemetry and notifications are fakes; nothing depends on this Mac's real usage.
 """
+import tempfile
 import threading
 import time
 import unittest
@@ -146,7 +147,9 @@ class LifecycleTests(unittest.TestCase):
     def test_web_app_does_not_start_the_thread_and_reports_status(self):
         m, _ = monitor(snapshot(memory=95), snapshot(memory=95))
         run(m, 2)
-        client = web_app.create_app(resource_monitor=m, ui_settings={}).test_client()
+        database = tempfile.TemporaryDirectory()
+        self.addCleanup(database.cleanup)
+        client = web_app.create_app(f"{database.name}/test.sqlite3", resource_monitor=m, ui_settings={}).test_client()
         response = client.get("/api/resource-alerts")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         data = response.get_json()

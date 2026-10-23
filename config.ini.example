@@ -1,6 +1,8 @@
 [ollama]
 endpoint = http://127.0.0.1:11434
 model = gemma4:e4b
+# gemma4:12b is slower to start and to plan on a 16 GB Mac; see README, "Model and speed".
+# think = off skips the model's hidden reasoning: faster, but it chose tools worse in testing.
 
 [utilities]
 # Comma-separated macOS applications K.R.I.S. may open. One you name ("open Notes") opens at once;

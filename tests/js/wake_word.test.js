@@ -242,3 +242,29 @@ test("the indicator distinguishes standby from active listening", () => {
   const listening = Loop.reduce(off, { type: "start" }).loop;
   assert.equal(Loop.viewState(listening, { standby: true }).state, "listening");
 });
+
+// Regression: with a virtual device (BlackHole) as the system input, standby opened normally but
+// only ever received zeros, so "Kris" was never heard and nothing said why.
+test("an input that sends no sound at all is reported once; a real quiet room is not", () => {
+  const frames = (watch, level, ms) => {
+    const hits = [];
+    for (let now = 0; now <= ms; now += FRAME_MS) if (watch.update(level, now)) hits.push(now);
+    return hits;
+  };
+  const silent = frames(Wake.createSilenceWatch(), -120, 10000);
+  assert.equal(silent.length, 1);
+  assert.ok(silent[0] >= Wake.SILENT_INPUT_MS && silent[0] < Wake.SILENT_INPUT_MS + FRAME_MS * 2);
+  assert.deepEqual(frames(Wake.createSilenceWatch(), -85, 10000), []); // a quiet room still has noise
+  assert.deepEqual(frames(Wake.createSilenceWatch(), Number.NEGATIVE_INFINITY, 1000), []); // not yet
+
+  // Sound arriving restarts the count.
+  const watch = Wake.createSilenceWatch();
+  assert.equal(watch.update(-120, 0), false);
+  assert.equal(watch.update(-40, 3000), false);
+  assert.equal(watch.update(-120, 3100), false);
+  assert.equal(watch.update(-120, 6000), false);
+  assert.equal(watch.update(-120, 7200), true);
+
+  assert.match(Wake.silentInputMessage("blackhole2chinput"), /“blackhole2chinput” is sending no sound/);
+  assert.match(Wake.silentInputMessage(""), /System Settings › Sound › Input/);
+});

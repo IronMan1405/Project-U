@@ -25,6 +25,21 @@ def load_settings() -> tuple[str, str]:
 
     return endpoint, model
 
+
+def load_think_setting(config_path: Path = CONFIG_PATH) -> bool | None:
+    """[ollama] think: off asks the model to answer without its hidden reasoning pass, on asks for
+    it, and leaving it out keeps the model's own default."""
+    parser = configparser.ConfigParser()
+    parser.read(config_path)
+    value = parser.get("ollama", "think", fallback="").strip().lower()
+    if value in ("on", "true", "yes"):
+        return True
+    if value in ("off", "false", "no"):
+        return False
+    if value:
+        print(f"Ignoring ollama think = {value!r}: use on or off")
+    return None
+
 def load_utility_settings(
     config_path: Path = CONFIG_PATH, home: Path | None = None
 ) -> UtilitySettings:

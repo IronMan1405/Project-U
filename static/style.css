@@ -2858,23 +2858,24 @@ button {
       "system ops"
       "bar    bar";
     grid-template-columns: minmax(260px, 0.8fr) minmax(380px, 1.2fr);
-    grid-template-rows: minmax(0, 1fr) auto auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
   }
 
   .core-instrument {
-    width: min(100%, 44vh, 410px);
+    width: min(100%, 32vh, 410px);
   }
 
-  /* The three left boxes sit under the core and scroll together if they run long. */
+  /* The core keeps the height it needs; the left boxes take the rest under it and scroll
+     together if they run long, so they never slide under the core's readouts. */
   .cc-system {
-    max-height: 42vh;
+    min-height: 0;
     overflow-y: auto;
   }
 }
 
-/* Tablet and phone: one scrolling column; the core stays on top and the command bar is
-   pinned to the bottom. */
-@media (max-width: 820px) {
+/* Tablet and phone, and short medium-width windows: one scrolling column; the core stays on
+   top and the command bar is pinned to the bottom. */
+@media (max-width: 820px), (max-width: 1180px) and (max-height: 720px) {
   .app-shell {
     height: auto;
     min-height: 100vh;
@@ -3096,4 +3097,40 @@ button {
   margin-left: 0.75rem;
   padding: 0.1rem 0.6rem;
   font-size: 0.8rem;
+}
+
+/* Focus panel: a few lines of text in the telemetry style; long items wrap instead of clipping. */
+.focus-list .focus-row-block {
+  flex-direction: column;
+  gap: 4px;
+}
+
+.focus-list .focus-row-block dd,
+.focus-list #focus-next,
+.focus-list #focus-working {
+  font-family: var(--font-sans, inherit);
+  font-size: var(--text-sm);
+  text-align: left;
+  white-space: normal;
+}
+
+.focus-attention {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.focus-attention li {
+  padding: 2px 0;
+}
+
+.focus-why {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.focus-note {
+  margin-top: var(--space-2, 6px);
+  font-size: 11px;
 }

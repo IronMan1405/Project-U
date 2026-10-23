@@ -12,6 +12,7 @@ from typing import Callable
 from user_profile import load_profile, profile_context_message
 from tool_registry import PreparedToolCall, ToolError, ToolOutcome, ToolRegistry
 import automation
+from working_context import WorkingContext
 from automation import AUTOMATION_TOOL, AutomationLimits, AutomationRun, AutomationRunner, Outcome
 
 
@@ -125,6 +126,12 @@ SYSTEM_RULES = (
     "for ...', 'take care of ...'), call start_automation once with the user's whole objective instead of calling "
     "the tools yourself; K.R.I.S. then plans, asks for approval, runs and checks the steps. A single action or a "
     "question that one tool answers is not an automation. "
+    "Intent: if the user wants to know something (tell me), answer and look things up, but change nothing; if "
+    "they want help deciding or preparing (help me, what should I...), investigate and propose, and only act "
+    "when they say so; if they ask for something to be done (do it), do it with the tools, approvals as usual. "
+    "Ask one short question only when it is genuinely unclear which they mean. "
+    "Follow-ups: resolve 'it', 'that draft', 'the project' from the working context note; to change an existing "
+    "draft use update_gmail_draft (never a second draft); 'don't send it' means nothing is sent. "
     "Saving: save something to notes (capture_note) only when the user asks you to remember or save it; "
     "never decide on your own to remember things. When asked what the user told you or asked you to "
     "remember, keep apart what is in this conversation, what search_notes finds in saved notes, and other "
@@ -141,41 +148,79 @@ class RuntimeBusyError(RuntimeError):
     pass
 
 
+# One model request may take this long; a slower answer is stopped and reported as a timeout.
+MODEL_TIMEOUT_SECONDS = 120
+# A warm-up runs in the background, so it may take as long as a large model needs from cold.
+WARM_TIMEOUT_SECONDS = 600
+
+
 def ask_ollama(
     endpoint: str,
     model: str,
     messages: list[dict],
     tools: list[dict] | None = None,
+    think: bool | None = None,
 ) -> dict:
     payload = {"model": model, "messages": messages, "stream": False}
     if tools:
         payload["tools"] = tools
+    if think is not None:
+        payload["think"] = think
     request = urllib.request.Request(
         f"{endpoint}/api/chat",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:
         result = json.load(response)
     if not isinstance(result, dict) or not isinstance(result.get("message"), dict):
         raise ValueError("Ollama returned an unexpected response.")
     return result["message"]
 
 
+_WARMING = threading.Lock()  # at most one warm-up request at a time
+
+
+def warm_ollama(endpoint: str, model: str, messages: list[dict], tools: list[dict] | None,
+                think: bool | None = None) -> bool:
+    """Have Ollama load the model and process this prompt now, generating a single token, so the
+    next request that starts the same way reuses the processed prompt. Best effort: False if another
+    warm-up is running or Ollama did not answer."""
+    if not _WARMING.acquire(blocking=False):
+        return False
+    try:
+        payload = {"model": model, "messages": messages, "stream": False, "options": {"num_predict": 1}}
+        if tools:
+            payload["tools"] = tools
+        if think is not None:
+            payload["think"] = think
+        request = urllib.request.Request(f"{endpoint}/api/chat", data=json.dumps(payload).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=WARM_TIMEOUT_SECONDS) as response:
+            response.read()
+        return True
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        logger.info("Model warm-up did not finish: %s", type(error).__name__)
+        return False
+    finally:
+        _WARMING.release()
+
+
 _STRUCTURED_UNAVAILABLE: set[str] = set()  # models for which Ollama refused constrained JSON output
 
 
-def ask_ollama_json(endpoint: str, model: str, messages: list[dict], schema: dict) -> dict:
+def ask_ollama_json(endpoint: str, model: str, messages: list[dict], schema: dict, think: bool | None = None) -> dict:
     """One JSON answer, for automation planning. Uses Ollama's schema-constrained output when the
     model supports it; otherwise (e.g. gemma4 on Ollama 0.40: "structured output is unavailable")
     asks for a bare JSON object and extracts it. The caller validates the result either way."""
     def chat(payload: dict) -> str:
         request = urllib.request.Request(
-            f"{endpoint}/api/chat", data=json.dumps({"model": model, "stream": False, **payload}).encode("utf-8"),
+            f"{endpoint}/api/chat", data=json.dumps({"model": model, "stream": False, **payload,
+                                                     **({"think": think} if think is not None else {})}).encode("utf-8"),
             headers={"Content-Type": "application/json"}, method="POST",
         )
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:
             result = json.load(response)
         return str((result.get("message") or {}).get("content") or "") if isinstance(result, dict) else ""
 
@@ -270,6 +315,7 @@ class AssistantRuntime:
         clock: Callable[[], datetime] | None = None,
         automation_limits: AutomationLimits | None = None,
         planner_client: Callable[[list[dict], dict], dict] | None = None,
+        think: bool | None = None,
     ):
         self.endpoint = endpoint
         self.model = model
@@ -283,11 +329,22 @@ class AssistantRuntime:
         self._pending: _PendingConfirmation | None = None
         # Automation (automation.py): at most one run per conversation, observable and cancellable.
         self.automation_limits = automation_limits or AutomationLimits()
-        self._planner = planner_client or (lambda messages, schema: ask_ollama_json(self.endpoint, self.model, messages, schema))
+        # think ([ollama] think in config.ini): None keeps the model's default; False skips its hidden
+        # reasoning pass, which is most of the answer time for gemma4 (see README, "Model and speed").
+        self.think = think
+        self.keep_warm = False  # the running server sets this (warm_up after a new conversation and automations)
+        self._planner = planner_client or (lambda messages, schema: ask_ollama_json(
+            self.endpoint, self.model, messages, schema, think=self.think))
         self._run: AutomationRun | None = None
         self.runs: list[AutomationRun] = []
+        # Working context (working_context.py): what this conversation is about, from what happened here.
+        developer = getattr(self.registry, "developer", None)
+        self.context = WorkingContext(project_names=lambda: list(developer.projects) if developer is not None else [])
+        self.registry.working_context = self.context  # the briefing's "unfinished work" comes from here
         self.runner = AutomationRunner(self.registry, self._planner, limits=self.automation_limits,
-                                       notify=self._automation_activity, context=lambda: date_context(self.clock()))
+                                       notify=self._automation_activity, observe=self.context.observe,
+                                       context=lambda: date_context(self.clock()) + (
+                                           "\n\n" + self.context.render() if self.context.render() else ""))
 
     @property
     def has_pending_confirmation(self) -> bool:
@@ -309,6 +366,7 @@ class AssistantRuntime:
                 # new turn are atomic: the old confirmation ID is invalid afterwards and the
                 # pending action (and anything queued after it) can never run.
                 pending, self._pending = self._pending, None
+                self.context.resolved(pending.prepared_call.name, pending.prepared_call.summary, False)
                 if pending.automation:
                     cancelled = self._end_automation(self.runner.cancel(self._run, "cancelled by a new message"))
                 else:
@@ -333,6 +391,7 @@ class AssistantRuntime:
         confirm_callback: Callable[[str], bool] | None,
     ) -> TurnResult:
         self._trim_history()
+        self.context.new_turn(message)
         history_start = len(self.history)
         self.history.append({"role": "user", "content": message})
         self._turn = _TurnState(
@@ -366,6 +425,7 @@ class AssistantRuntime:
             turn = self._turn
             if turn is None:
                 raise RuntimeBusyError("The conversation turn is no longer active.")
+            self.context.resolved(pending.prepared_call.name, pending.prepared_call.summary, approved)
             if pending.automation:
                 return self._resolve_automation(pending, approved)
             if not approved:
@@ -389,6 +449,19 @@ class AssistantRuntime:
 
     # --- Automation -----------------------------------------------------------------------
 
+    def _tool_definitions(self) -> list[dict]:
+        return [definition for definition in self.registry.definitions()
+                if self.automation_limits.enabled or definition["function"]["name"] != AUTOMATION_TOOL]
+
+    def warm_up(self) -> bool:
+        """Process the fixed start of every request (profile, rules, tool definitions) ahead of the
+        first message. From cold that is most of a turn's time (about 25 s for gemma4:e4b and two
+        minutes for gemma4:12b on a 16 GB M3); afterwards Ollama reuses it. Nothing is stored."""
+        # Only the fixed part: a placeholder user message here made Ollama redo about 9 s of it on
+        # the first real turn (measured with gemma4:e4b); without one, the first turn reuses it all.
+        messages = [profile_context_message(load_profile()), {"role": "system", "content": system_prompt(self.model)}]
+        return warm_ollama(self.endpoint, self.model, messages, self._tool_definitions(), self.think)
+
     def cancel_automation(self) -> bool:
         """Stop the running automation before its next step (safe from another request: no lock)."""
         run = self._run
@@ -402,13 +475,34 @@ class AssistantRuntime:
         run = self._run or (self.runs[-1] if self.runs else None)
         return run.view() if run is not None else None
 
+    def _synthetic_call(self, arguments: dict) -> str:
+        """Record a start_automation call the runtime made for the user's message (history stays paired)."""
+        call_id = "auto-" + secrets.token_hex(4)
+        self.history.append({"role": "assistant", "content": "", "tool_calls": [{"id": call_id, "function": {
+            "name": AUTOMATION_TOOL, "arguments": arguments}}]})
+        self._turn.seen_call_ids.add(call_id)
+        return call_id
+
+    def _resumable_run(self) -> AutomationRun | None:
+        """The latest run that stopped with work left (proposed, paused, cancelled or failed), if recent."""
+        for run in reversed(self.runs):
+            left = [step for step in run.steps if step.status in ("pending", "cancelled", "skipped")]
+            if run.status in (automation.PAUSED, automation.CANCELLED, automation.FAILED) and left:
+                finished = datetime.fromisoformat(run.finished_at) if run.finished_at else None
+                if finished is None or (datetime.now().astimezone() - finished).total_seconds() < 2 * 3600:
+                    return run
+            if run.status == automation.COMPLETED:
+                return None  # a later completed run supersedes older unfinished ones
+        return None
+
     def _run_is_idle(self) -> bool:
         return self._run is None or self._run.status not in (automation.EXECUTING, automation.AWAITING_APPROVAL)
 
     def _automation_activity(self, activity: dict) -> None:
         self._notify(activity)
 
-    def _start_automation(self, call_id: str | None, arguments: object, remaining: list[dict]) -> TurnResult:
+    def _start_automation(self, call_id: str | None, arguments: object, remaining: list[dict],
+                          propose: bool = False) -> TurnResult:
         turn = self._turn
         for call in remaining:  # one request starts one automation; anything queued after it is not run
             name, _, _ = self._read_tool_call(call)
@@ -420,9 +514,17 @@ class AssistantRuntime:
             return self._tool_refused(turn, "Give the objective to carry out.")
         if self._run is not None and self._run.status in (automation.EXECUTING, automation.AWAITING_APPROVAL):
             return self._tool_refused(turn, "An automation is already running; it cannot start another.")
+        if automation.is_plain_question(turn.user_message):
+            # Tell me: a question is answered with the read tools in this conversation, not automated.
+            self._append_tool_result(AUTOMATION_TOOL, ToolOutcome(False, "This is a question, not something to carry "
+                                     "out: answer it directly with the read tools (for priorities and schedules, "
+                                     "get_briefing)."))
+            turn.activities.append({"tool": AUTOMATION_TOOL, "status": "rejected", "summary": "Answered directly instead"})
+            return None
         recent = "\n".join(f"{m['role']}: {str(m.get('content') or '')[:300]}" for m in self.history[turn.history_start - 6:turn.history_start]
                            if m.get("role") in ("user", "assistant") and m.get("content")) if turn.history_start else ""
         run = self.runner.plan(objective, recent)
+        run.propose_only = propose or bool(isinstance(arguments, dict) and arguments.get("propose"))
         self._run = run
         self.runs = [*self.runs[-4:], run]
         return self._handle_outcome(self.runner.start(run), call_id)
@@ -448,6 +550,7 @@ class AssistantRuntime:
 
     def _await(self, prepared: PreparedToolCall, call_id: str | None, kind: str) -> TurnResult:
         token = secrets.token_urlsafe(24)
+        self.context.pending(prepared.name, prepared.arguments, prepared.summary)
         self._notify({"status": "confirmation", "tool": prepared.name, "summary": prepared.summary})
         self._pending = _PendingConfirmation(token=token, call_id=call_id, prepared_call=prepared,
                                              remaining_calls=[], automation=kind)
@@ -478,6 +581,7 @@ class AssistantRuntime:
     def _end_automation(self, outcome: Outcome) -> TurnResult:
         """Record the run in the conversation (one compact tool result) and reply with its report."""
         run, turn = outcome.run, self._turn
+        self.context.automation(run.view(), outcome.text)
         self._append_tool_result(AUTOMATION_TOOL, ToolOutcome(run.status in (automation.COMPLETED, automation.PAUSED),
                                                               outcome.text, run.view()))
         if turn is not None:
@@ -488,6 +592,9 @@ class AssistantRuntime:
                     turn.changes.append((step.summary, step.status != "failed"))
         if outcome.kind != "question":
             self._run = None
+        if self.keep_warm:
+            # The planning requests may have displaced the chat prompt in Ollama's cache.
+            threading.Thread(target=self.warm_up, daemon=True).start()
         return self._finish(outcome.text)
 
     def reset_history(self) -> None:
@@ -495,6 +602,7 @@ class AssistantRuntime:
             raise RuntimeBusyError("This conversation is already processing a request.")
         try:
             self.history.clear()
+            self.context.clear()
             self._turn = None
             self._pending = None
         finally:
@@ -532,16 +640,23 @@ class AssistantRuntime:
         if turn is None:
             raise RuntimeBusyError("There is no active conversation turn.")
         if turn.model_rounds == 0 and self.automation_limits.enabled and self._run_is_idle():
+            resumable = self._resumable_run()
+            if resumable is not None and automation.is_resume_reply(turn.user_message):
+                # "Do it" / "continue": carry on with the proposed or interrupted run (approvals as usual).
+                turn.model_rounds += 1
+                call_id = self._synthetic_call({"objective": resumable.objective, "resume": True})
+                self._run = resumable
+                return self._handle_outcome(self.runner.resume(resumable), call_id)
             last_reply = next((m.get("content") or "" for m in reversed(self.history[:turn.history_start])
                                if m.get("role") == "assistant" and m.get("content")), "")
-            if automation.wants_automation(turn.user_message, last_reply, self._planner):
-                # The model judged this an objective: start a run as if it had called start_automation.
+            mode = automation.route(turn.user_message, last_reply, self._planner)
+            if mode is not None:
+                # The model judged this an objective ("help": propose; "do": carry it out).
                 turn.model_rounds += 1
-                call_id = "auto-" + secrets.token_hex(4)
-                self.history.append({"role": "assistant", "content": "", "tool_calls": [{"id": call_id, "function": {
-                    "name": AUTOMATION_TOOL, "arguments": {"objective": turn.user_message}}}]})
-                turn.seen_call_ids.add(call_id)
-                return self._start_automation(call_id, {"objective": turn.user_message}, [])
+                call_id = self._synthetic_call({"objective": turn.user_message})
+                started = self._start_automation(call_id, {"objective": turn.user_message}, [], propose=mode == "help")
+                if started is not None:
+                    return started  # (None: answered directly instead; the ordinary loop continues)
 
         while turn.model_rounds < MAX_MODEL_ROUNDS_PER_TURN:
             turn.model_rounds += 1
@@ -554,17 +669,14 @@ class AssistantRuntime:
                 {"role": "system", "content": system_prompt(self.model)},
                 *self.history[: turn.history_start],
                 {"role": "system", "content": date_context(self.clock())},
+                *([{"role": "system", "content": note}] if (note := self.context.render()) else []),
                 *turn.additional_context,
                 *self.history[turn.history_start :],
             ]
-            tools = (
-                [definition for definition in self.registry.definitions()
-                 if self.automation_limits.enabled or definition["function"]["name"] != AUTOMATION_TOOL]
-                if turn.executions < MAX_TOOL_EXECUTIONS_PER_TURN
-                else None
-            )
+            tools = self._tool_definitions() if turn.executions < MAX_TOOL_EXECUTIONS_PER_TURN else None
             try:
-                message = self.model_client(self.endpoint, self.model, messages, tools)
+                message = self.model_client(self.endpoint, self.model, messages, tools,
+                                            **({"think": self.think} if self.think is not None else {}))
             except Exception:
                 if turn.executions > 0:
                     return self._finish(_unfinished_message(
@@ -657,6 +769,7 @@ class AssistantRuntime:
                     continue
 
                 token = secrets.token_urlsafe(24)
+                self.context.pending(name, prepared.arguments, prepared.summary)
                 self._notify(
                     {"status": "confirmation", "tool": name, "summary": prepared.summary}
                 )
@@ -686,8 +799,8 @@ class AssistantRuntime:
             self._record_change(turn, prepared, outcome)
         return None
 
-    @staticmethod
-    def _record_change(turn: _TurnState, prepared: PreparedToolCall, outcome: ToolOutcome) -> None:
+    def _record_change(self, turn: _TurnState, prepared: PreparedToolCall, outcome: ToolOutcome) -> None:
+        self.context.observe(prepared.name, prepared.arguments, outcome.ok, outcome.message, outcome.data)
         if prepared.always_confirm or prepared.direct_write:
             turn.changes.append((prepared.summary, outcome.ok))
 

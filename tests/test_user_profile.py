@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import main
+import storage
 import user_profile
 import web_app
 import assistant_runtime
@@ -181,6 +182,7 @@ class SharedProfileContextTests(unittest.TestCase):
         prompts = iter(["hello", "/quit"])
         with (
             patch.object(user_profile, "PROFILE_PATH", self.profile_path),
+            patch.object(storage, "DATABASE_PATH", Path(self.temp_dir.name) / "test.sqlite3"),
             patch.object(main, "load_settings", return_value=("local", "model")),
             patch("builtins.input", side_effect=lambda _: next(prompts)),
             patch.object(
