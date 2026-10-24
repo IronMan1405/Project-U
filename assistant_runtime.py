@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import secrets
 import threading
 import urllib.error
@@ -12,6 +13,7 @@ from typing import Callable
 from user_profile import load_profile, profile_context_message
 from tool_registry import PreparedToolCall, ToolError, ToolOutcome, ToolRegistry
 import automation
+import session_state
 from working_context import WorkingContext
 from automation import AUTOMATION_TOOL, AutomationLimits, AutomationRun, AutomationRunner, Outcome
 
@@ -148,6 +150,27 @@ class RuntimeBusyError(RuntimeError):
     pass
 
 
+# Read-only tools whose result can be the whole reply (ToolOutcome.answer): when the model's first and
+# only step for a plain request is one of these, that text is returned without a second model call to
+# rephrase it (measured at 4-12 s on gemma4:e4b). Anything else, or a request that asks for more,
+# keeps the normal path.
+DIRECT_ANSWER_TOOLS = frozenset({"get_briefing", "list_timers", "list_tasks"})
+_JOINED_REQUEST = re.compile(r"\b(?:and|then|also|plus)\b", re.IGNORECASE)
+# A task question with a filter ("due this week", "about SOLVE") needs the model; only a plain list request
+# is answered by the list itself.
+_PLAIN_TASK_LIST = re.compile(
+    r"^\W*(?:(?:please|can you|could you)\s+)?(?:(?:show|list|read|tell)(?:\s+me)?|what(?:'s|\s+is|\s+are)?|which)"
+    r"\s+(?:are\s+)?(?:all\s+)?(?:of\s+)?(?:my|the)?\s*(?:open\s+)?(?:tasks?|task\s+list|to-?dos?)"
+    r"(?:\s+(?:do\s+i\s+have|i\s+have|are\s+there|on\s+my\s+list))?\W*$", re.IGNORECASE)
+
+
+def answers_directly(tool: str, message: str) -> bool:
+    """Whether this allowlisted tool's own answer fully replies to the user's message."""
+    if tool not in DIRECT_ANSWER_TOOLS or _JOINED_REQUEST.search(message or ""):
+        return False
+    return tool != "list_tasks" or bool(_PLAIN_TASK_LIST.match(message or ""))
+
+
 # One model request may take this long; a slower answer is stopped and reported as a timeout.
 MODEL_TIMEOUT_SECONDS = 120
 # A warm-up runs in the background, so it may take as long as a large model needs from cold.
@@ -273,6 +296,9 @@ class _TurnState:
     # Writes and confirmed actions that ran this turn: (summary, succeeded). Used to report
     # partial results exactly when the turn cannot end with a model reply.
     changes: list[tuple[str, bool]] = field(default_factory=list)
+    # A tool read or wrote email, draft, note or event-description text (session_state.CONTENT_TOOLS),
+    # or a document was attached: this turn's reply may quote it, so it is not kept for the session.
+    saw_content: bool = False
 
 
 def changes_report(turn: "_TurnState") -> str:
@@ -341,8 +367,11 @@ class AssistantRuntime:
         developer = getattr(self.registry, "developer", None)
         self.context = WorkingContext(project_names=lambda: list(developer.projects) if developer is not None else [])
         self.registry.working_context = self.context  # the briefing's "unfinished work" comes from here
+        # The last few exchanges, compact (session_state.turn_record), for continuing after a reload or restart.
+        self.session_turns: list[dict] = []
+        self.restored_at: str | None = None
         self.runner = AutomationRunner(self.registry, self._planner, limits=self.automation_limits,
-                                       notify=self._automation_activity, observe=self.context.observe,
+                                       notify=self._automation_activity, observe=self._observe,
                                        context=lambda: date_context(self.clock()) + (
                                            "\n\n" + self.context.render() if self.context.render() else ""))
 
@@ -581,6 +610,8 @@ class AssistantRuntime:
     def _end_automation(self, outcome: Outcome) -> TurnResult:
         """Record the run in the conversation (one compact tool result) and reply with its report."""
         run, turn = outcome.run, self._turn
+        if turn is not None and any(step.tool in session_state.CONTENT_TOOLS for step in run.steps):
+            turn.saw_content = True  # the report and approvals can quote what those steps read or wrote
         self.context.automation(run.view(), outcome.text)
         self._append_tool_result(AUTOMATION_TOOL, ToolOutcome(run.status in (automation.COMPLETED, automation.PAUSED),
                                                               outcome.text, run.view()))
@@ -603,10 +634,47 @@ class AssistantRuntime:
         try:
             self.history.clear()
             self.context.clear()
+            self.session_turns.clear()
             self._turn = None
             self._pending = None
         finally:
             self._lock.release()
+
+    # --- Session continuity (session_state.py) --------------------------------------------
+
+    def session_state(self) -> dict | None:
+        """The compact state to keep for this conversation, or None while there is nothing to keep."""
+        if not self.session_turns:
+            return None
+        return session_state.build(self.session_turns, self.context, self._resumable_run(), datetime.now().astimezone())
+
+    def restore_session(self, state: object) -> None:
+        """Continue a saved session in this new runtime: its last exchanges become the history (user
+        words and replies only, never tool results), the working context comes back with its times,
+        and an unfinished run is offered for "do it". Nothing runs and nothing is approved here.
+        Raises SessionError (or another ValueError/KeyError/TypeError) for an unusable state."""
+        state = session_state.check(state, datetime.now().astimezone())  # wall clock, like the working context
+        turns = [turn for turn in state["turns"] if isinstance(turn, dict) and isinstance(turn.get("user"), str)]
+        run = session_state.load_run(state.get("run"), {d["function"]["name"] for d in self.registry.definitions()})
+        history = []
+        for turn in turns:
+            reply = turn.get("reply") if isinstance(turn.get("reply"), str) else session_state.REPLY_NOT_KEPT
+            history += [{"role": "user", "content": turn["user"]}, {"role": "assistant", "content": reply}]
+        session_state.load_context(self.context, state["context"])
+        self.history = history
+        self.session_turns = [{"user": t["user"], "reply": t.get("reply"), "at": t.get("at")} for t in turns]
+        self.runs = [run] if run is not None else []
+        self.restored_at = state["saved_at"]
+
+    def pending_view(self) -> dict | None:
+        """The action still waiting for approval (shown again after a page reload; never approved by it)."""
+        pending = self._pending
+        if pending is None:
+            return None
+        prepared = pending.prepared_call
+        return {"confirmation_id": pending.token, "tool": prepared.name, "summary": prepared.summary,
+                "message": "This operation requires your explicit approval.",
+                **({"preview": prepared.preview} if prepared.preview is not None else {})}
 
     def _trim_history(self) -> None:
         """Drop the oldest whole turns when history exceeds MAX_HISTORY_CHARS.
@@ -756,6 +824,8 @@ class AssistantRuntime:
                 self._append_tool_result(name, outcome)
                 turn.activities.append({"tool": name, "status": "rejected", "summary": outcome.message})
                 continue
+            if name in session_state.CONTENT_TOOLS:
+                turn.saw_content = True  # even if it is declined or cancelled, its summary can hold the text
 
             if prepared.always_confirm:
                 if turn.confirm_callback is not None:
@@ -797,10 +867,20 @@ class AssistantRuntime:
             self._append_tool_result(name, outcome)
             turn.activities.append(self._activity(prepared, outcome, approved=True))
             self._record_change(turn, prepared, outcome)
+            if (len(calls) == 1 and turn.model_rounds == 1 and turn.executions == 1 and outcome.ok and outcome.answer
+                    and not turn.additional_context and answers_directly(name, turn.user_message)):
+                # The result already is the reply: no second model call to rephrase it.
+                return self._finish(outcome.answer)
         return None
 
+    def _observe(self, name: str, arguments: dict, ok: bool, message: str, data) -> None:
+        """Every executed tool, direct or in an automation run: the working context, and the content flag."""
+        self.context.observe(name, arguments, ok, message, data)
+        if name in session_state.CONTENT_TOOLS and self._turn is not None:
+            self._turn.saw_content = True
+
     def _record_change(self, turn: _TurnState, prepared: PreparedToolCall, outcome: ToolOutcome) -> None:
-        self.context.observe(prepared.name, prepared.arguments, outcome.ok, outcome.message, outcome.data)
+        self._observe(prepared.name, prepared.arguments, outcome.ok, outcome.message, outcome.data)
         if prepared.always_confirm or prepared.direct_write:
             turn.changes.append((prepared.summary, outcome.ok))
 
@@ -883,6 +963,11 @@ class AssistantRuntime:
 
     def _finish(self, response: str) -> TurnResult:
         self.history.append({"role": "assistant", "content": response})
+        if self._turn is not None:
+            turn = self._turn
+            self.session_turns.append(session_state.turn_record(
+                turn.user_message, response, datetime.now().astimezone(), turn.saw_content or bool(turn.additional_context)))
+            del self.session_turns[:-session_state.MAX_TURNS]
         result = TurnResult(response=response, activities=list(self._turn.activities if self._turn else []))
         self._turn = None
         self._pending = None

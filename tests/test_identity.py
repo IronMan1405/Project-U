@@ -112,7 +112,7 @@ class IdentityInRuntimeTests(unittest.TestCase):
         ])
         runtime = self.runtime(model)
         runtime.run_turn("Who are you?")
-        runtime.run_turn("What tasks do I have?")
+        runtime.run_turn("Which tasks are due this week?")  # a filtered question: two model calls
         runtime.run_turn("And who did you say you were?")
         self.assertEqual(model.call_count, 4)
         for call in model.call_args_list:

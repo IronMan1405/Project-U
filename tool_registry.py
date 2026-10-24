@@ -63,11 +63,65 @@ class ToolError(ValueError):
     pass
 
 
+def timers_answer(active: list[dict], recent: list[dict]) -> str:
+    """list_timers as the reply itself: each running timer with the time left, queued ones, and
+    those that recently ended (done, or missed while K.R.I.S. was not running)."""
+    lines = []
+    for timer in active:
+        if timer["status"] == "running":
+            line = f"{timer['name']}: {timer['remaining']} left, ends at {timer['ends_at_local'][:5]}"
+        else:
+            line = f"{timer['name']}: queued, starts when timer {timer['starts_after_timer_id']} ends"
+        if (timer.get("reminder") or {}).get("state") == "open":
+            line += f" (Apple Reminder at {timer['reminder']['due_local'][11:16]})"
+        lines.append(line + ".")
+    if not active:
+        lines.append("No timer is running.")
+    for timer in recent[:3]:
+        ended = timer.get("finished_at_local", "")[11:16]
+        lines.append(f"Recently {'missed (K.R.I.S. was not running)' if timer['status'] == 'missed' else 'ended'}: "
+                     f"{timer['name']}{f' at {ended}' if ended else ''}.")
+    return "\n".join(lines)
+
+
+def _due_text(due_at: str) -> tuple[str, bool]:
+    """A task due date as the user reads it, and whether it has passed."""
+    if len(due_at) == 10:
+        return describe_due_at(due_at), due_at < datetime.now().astimezone().date().isoformat()
+    moment = datetime.fromisoformat(due_at.replace("Z", "+00:00")).astimezone()
+    return f"{moment:%a %Y-%m-%d %H:%M}", moment < datetime.now().astimezone()
+
+
+def tasks_answer(tasks: list[dict]) -> str:
+    """list_tasks as the reply itself: open tasks with their due dates (overdue ones marked), then how
+    many are completed. Nothing beyond what is stored."""
+    open_tasks = [task for task in tasks if not task["completed"]]
+    done = len(tasks) - len(open_tasks)
+    if not tasks:
+        return "You have no tasks."
+    lines = [f"You have {len(open_tasks)} open task{'s' if len(open_tasks) != 1 else ''}"
+             + (":" if open_tasks else ".")]
+    for task in open_tasks[:MAX_LIST_ITEMS]:
+        line = f"- {task['title']}"
+        if task["due_at"]:
+            due, passed = _due_text(task["due_at"])
+            line += f" (overdue, was due {due})" if passed else f" (due {due})"
+        lines.append(line)
+    if len(open_tasks) > MAX_LIST_ITEMS:
+        lines.append(f"- and {len(open_tasks) - MAX_LIST_ITEMS} more")
+    if done:
+        lines.append(f"{done} completed task{'s are' if done != 1 else ' is'} not listed.")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class ToolOutcome:
     ok: bool
     message: str
     data: object = None
+    # A complete reply for the user, set only by read tools whose result fully answers a plain request
+    # (assistant_runtime.DIRECT_ANSWER_TOOLS); the model still sees message and data, never this.
+    answer: str | None = None
 
     def as_content(self) -> str:
         result = {"ok": self.ok, "message": self.message}
@@ -694,7 +748,7 @@ class ToolRegistry:
         self._seen_reminder_ids.update(result.pop("_reminder_ids"))
         missing = result["unavailable"]
         message = ("Answer from this focus (details follow): " + priorities.summary_text(result["focus"]))
-        return ToolOutcome(True, message, briefing_for_model(result))
+        return ToolOutcome(True, message, briefing_for_model(result), answer=priorities.answer_text(result))
 
     def _start_timer(self, arguments: dict) -> ToolOutcome:
         seconds = arguments.get("minutes", 0) * 60 + arguments.get("seconds", 0)
@@ -733,7 +787,8 @@ class ToolRegistry:
     def _list_timers(self, arguments: dict) -> ToolOutcome:
         active, recent = self.timers.active(), self.timers.recent()
         message = f"{len(active)} active timer(s)." if active else "No timer is running."
-        return ToolOutcome(True, message, {"active": active, "recently_finished": recent})
+        return ToolOutcome(True, message, {"active": active, "recently_finished": recent},
+                           answer=timers_answer(active, recent))
 
     def _cancel_timer(self, arguments: dict) -> ToolOutcome:
         try:
@@ -1757,6 +1812,7 @@ class ToolRegistry:
             True,
             f"Found {len(tasks)} task(s).",
             {"tasks": bounded_tasks, "truncated": len(tasks) > MAX_LIST_ITEMS},
+            answer=tasks_answer(tasks),
         )
 
     def _set_task_completed(self, arguments: dict) -> ToolOutcome:

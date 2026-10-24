@@ -251,8 +251,75 @@
     return handsFree ? { action: "guard", reason: "still_waiting" } : { action: "ordinary", reason: null };
   }
 
+  // --- Progress cue: one short spoken line while a spoken request is still being processed ---
+  // Feedback only (the answer is no faster). At most one per request, never after it has ended,
+  // never while anything is being spoken or recorded, never for a typed request. The page plays it
+  // with its normal speakReply(), so the answer always replaces it and the two never overlap.
+  const PROGRESS_CUE_MS = 3000;
+  // Said only while that read tool is actually running (from the live activity); nothing that
+  // changes anything is announced. Anything else gets the neutral cue.
+  const PROGRESS_CUES = {
+    get_briefing: "Checking your schedule.",
+    search_calendar_events: "Checking your calendar.",
+    read_calendar_event: "Checking your calendar.",
+    search_gmail: "Checking your email.",
+    read_gmail_message: "Reading the email.",
+    list_tasks: "Checking your tasks.",
+    list_reminders: "Checking your reminders.",
+    list_notes: "Checking your notes.",
+    search_notes: "Checking your notes.",
+    project_overview: "Looking at the project.",
+  };
+  const NEUTRAL_CUE = "One moment.";
+
+  function progressCueText(activity) {
+    return activity && activity.status === "running" && PROGRESS_CUES[activity.tool] || NEUTRAL_CUE;
+  }
+
+  // facts: sending (the request is in flight), voiceTurn (it was spoken), speaking, recording,
+  // confirmationPending, loopState, speechOutput. Spoken requests are sent only from the hands-free
+  // loop, which stays "thinking" until the answer; any other state means the request was left.
+  function progressCueAllowed(facts) {
+    return Boolean(facts.sending && facts.voiceTurn && facts.speechOutput && !facts.speaking && !facts.recording &&
+      !facts.confirmationPending && facts.loopState === "thinking");
+  }
+
+  // start() when a spoken request is sent; stop() when it ends in any way (answer, error,
+  // cancel, interruption). The timer re-checks the page when it fires (check() returns the cue
+  // text or null), so a cue can never belong to a request that already ended.
+  function createProgressCue({ schedule, cancel, check, speak, delayMs = PROGRESS_CUE_MS }) {
+    let timer = null;
+    let request = 0;
+    const clear = () => {
+      if (timer !== null) cancel(timer);
+      timer = null;
+    };
+    return {
+      start() {
+        clear();
+        request += 1;
+        const mine = request;
+        timer = schedule(() => {
+          timer = null;
+          if (mine !== request) return;
+          request += 1; // one cue per request: nothing more can fire for it
+          const text = check();
+          if (text) speak(text);
+        }, delayMs);
+      },
+      stop() {
+        clear();
+        request += 1;
+      },
+      get pending() {
+        return timer !== null;
+      },
+    };
+  }
+
   return {
     createVoiceLoop, reduce, viewState, confirmationDecision, VIEW_LABELS, MAX_CONSECUTIVE_SILENCES,
     MAX_CONFIRMATION_ANSWERS, MESSAGES,
+    createProgressCue, progressCueAllowed, progressCueText, PROGRESS_CUE_MS, PROGRESS_CUES, NEUTRAL_CUE,
   };
 });

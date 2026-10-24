@@ -308,7 +308,7 @@ class AssistantRuntimeTests(unittest.TestCase):
         call["content"] = None
         model = Mock(side_effect=[call, {"role": "assistant", "content": "None yet.", "thinking": "more"}])
         runtime = self.runtime(model)
-        runtime.run_turn("What tasks do I have?")
+        runtime.run_turn("Which tasks are due this week?")  # a filtered question: the model phrases the answer
 
         stored_call = runtime.history[1]
         self.assertEqual(stored_call, {"role": "assistant", "content": "", "tool_calls": call["tool_calls"]})
@@ -816,7 +816,7 @@ class AssistantRuntimeTests(unittest.TestCase):
             "http://local", "test-model", database_path=self.database_path,
             model_client=model, clock=lambda: next(times),
         )
-        runtime.run_turn("What tasks do I have?")
+        runtime.run_turn("Which tasks are due this week?")  # a filtered question: two model calls
         runtime.run_turn("Thanks", additional_context=[{"role": "system", "content": "DOC-A excerpt"}])
         runtime.run_turn("Check again", additional_context=[{"role": "system", "content": "DOC-B excerpt"}])
 

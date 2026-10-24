@@ -155,6 +155,9 @@ let automationActive = false;
 // events to it and carries out its actions. Events from the wrong state are ignored there.
 function dispatchLoop(event) {
   const { loop, actions } = window.VoiceLoop.reduce(voiceLoop, event);
+  // Hands-free switched off, the page hidden, or typing taking over while a spoken request runs:
+  // its progress cue must not play afterwards.
+  if (voiceLoop.state === "thinking" && loop.state === "off") stopProgressCue();
   voiceLoop = loop;
   for (const action of actions) {
     if (action.type === "start_listening") resumeListening();
@@ -771,11 +774,13 @@ function setHealthTelemetry(online, text) {
   renderVoiceView();
 }
 
-async function startConversation(previousId = null) {
+// restore (page load only): continue the recent session if the server still has one (session_state.py);
+// otherwise, and for New conversation, a fresh conversation starts.
+async function startConversation(previousId = null, restore = false) {
   const response = await fetch("/api/conversations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ previous_id: previousId }),
+    body: JSON.stringify({ previous_id: previousId, restore }),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Could not start a new conversation.");
@@ -788,7 +793,26 @@ async function startConversation(previousId = null) {
   confirmationPanel.hidden = true;
   clearToolActivity();
   clearError();
+  if (result.restored) showRestoredSession(result.restored);
   input.focus();
+}
+
+// The last few exchanges of the session being continued, with one quiet line saying so. A reply
+// that quoted email or note content was not kept, and says that instead.
+function showRestoredSession(restored) {
+  const note = document.createElement("p");
+  note.className = "session-note";
+  const last = restored.turns[restored.turns.length - 1]?.at;
+  note.textContent = `Continuing where we left off${last ? ` (${new Date(last).toTimeString().slice(0, 5)})` : ""}. ` +
+    "Press New conversation to start fresh.";
+  messagesElement.append(note);
+  for (const turn of restored.turns) {
+    appendMessage("user", turn.user);
+    appendMessage("assistant", turn.reply ?? "_That reply quoted email or note content, so it was not kept. Ask again to see it._");
+  }
+  emptyState.hidden = true;
+  logActivity("Continued the recent session");
+  if (restored.pending_confirmation) showPendingConfirmation(restored.pending_confirmation); // still needs Confirm
 }
 
 function setSelectedDocument(documentInfo) {
@@ -964,6 +988,7 @@ function toolLabel(toolName) {
 }
 
 function showLiveActivity(activity) {
+  liveActivity = activity;
   const wasAutomation = automationActive;
   automationActive = Boolean(activity && activity.status === "automation" && isSending);
   if (wasAutomation !== automationActive) renderVoiceView(); // the wake detector listens for "stop"
@@ -994,6 +1019,7 @@ function showLiveActivity(activity) {
 // Stops the running automation before its next step (finished steps are kept and reported).
 async function cancelAutomation() {
   if (!conversationId || !automationActive) return;
+  stopProgressCue(); // stopping is not progress: no "one moment" after it
   try {
     await apiRequest("/api/automation/cancel", {
       method: "POST",
@@ -1530,6 +1556,33 @@ function stopReplyAudio() {
 // null if it is stopped or replaced first; only the newest request ever plays. replyFinish
 // stays set for the whole reply, so Stop speaking, barge-in and wake-word standby treat it as
 // one continuous reply with no gaps between segments.
+// Spoken progress cue (voice_loop.js, createProgressCue): one short line when a spoken request is
+// still running after PROGRESS_CUE_MS. It is played by speakReply like any reply, so the answer
+// (or an error) replaces it and the two never overlap; check() runs when the timer fires, so a
+// request that has ended, a recording, a confirmation or anything already speaking means no cue.
+let liveActivity = null; // the latest activity polled for the request in flight
+let cueRequest = null; // replyRequest of the cue while it may still be playing
+const progressCue = window.VoiceLoop.createProgressCue({
+  schedule: (callback, delay) => window.setTimeout(callback, delay),
+  cancel: (timer) => window.clearTimeout(timer),
+  check: () => (window.VoiceLoop.progressCueAllowed({
+    sending: isSending, voiceTurn, speechOutput: Boolean(voiceStatus.speech_output), speaking: replyFinish !== null,
+    recording: recorder !== null || startPending, confirmationPending: pendingConfirmationId !== null,
+    loopState: voiceLoop.state,
+  }) ? window.VoiceLoop.progressCueText(liveActivity) : null),
+  speak: (text) => {
+    speakReply(text);
+    cueRequest = replyRequest;
+  },
+});
+
+// The request ended (or was cancelled): no cue from now on, and a cue still playing stops.
+function stopProgressCue() {
+  progressCue.stop();
+  if (cueRequest !== null && cueRequest === replyRequest && replyFinish !== null) stopReplyAudio();
+  cueRequest = null;
+}
+
 function speakReply(text) {
   stopReplyAudio();
   const request = replyRequest;
@@ -2420,6 +2473,8 @@ form.addEventListener("submit", async (event) => {
   input.style.height = "auto";
   setBusy(true);
   startActivityPolling();
+  liveActivity = null;
+  if (fromVoice) progressCue.start(); // typed requests never get a spoken cue
 
   try {
     const response = await fetch("/api/chat", {
@@ -2427,6 +2482,7 @@ form.addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_id: conversationId, message }),
     });
+    stopProgressCue(); // the answer (or error) is here: it is spoken next, never after a cue
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The assistant could not respond.");
     const { outcome, speech } = acceptTurnResult(result);
@@ -2436,9 +2492,11 @@ form.addEventListener("submit", async (event) => {
       documentDetail.textContent = `${selectedDocumentDetail} · Last answer used ${scope}`;
     }
   } catch (error) {
+    stopProgressCue();
     reportVoiceError(error.message || "Could not reach the local assistant backend.");
     dispatchLoop({ type: "turn_finished", turn, outcome: "error" });
   } finally {
+    progressCue.stop();
     stopActivityPolling();
     setBusy(false);
     if (!pendingConfirmationId) input.focus();
@@ -2653,4 +2711,4 @@ refreshFocus();
 refreshTimers();
 refreshResourceAlerts();
 window.setInterval(refreshHealth, 10000);
-startConversation().catch((error) => showError(error.message));
+startConversation(null, true).catch((error) => showError(error.message));

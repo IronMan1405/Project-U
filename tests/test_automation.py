@@ -502,7 +502,7 @@ class DirectPathAndVoiceTests(AutomationCase):
         runtime = assistant_runtime.AssistantRuntime("http://local", "m", database_path=self.database,
                                                      tool_registry=self.registry(), model_client=model,
                                                      planner_client=Mock(side_effect=AssertionError("no planning")))
-        self.assertEqual(runtime.run_turn("What are my tasks?").response, "None.")
+        self.assertEqual(runtime.run_turn("Which tasks are due this week?").response, "None.")
         self.assertIsNone(runtime.automation_status())
 
     def test_the_automation_tool_is_offered_once_and_only_runs_in_the_runtime(self):

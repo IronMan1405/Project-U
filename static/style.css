@@ -730,6 +730,13 @@ button {
   padding: 54px 0 26px;
 }
 
+.session-note {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 .empty-state {
   margin: auto;
   padding: 30px 0 58px;

@@ -124,7 +124,7 @@ class WorkingContext:
     def resolved(self, name: str, summary: str, approved: bool) -> None:
         self.items.pop((_KINDS.get(name, ""), f"pending:{name}"), None)
         self.decisions.append({"text": f"You {'approved' if approved else 'declined'}: {summary[:160]}",
-                               "turn": self.turn, "at": self.clock()})
+                               "tool": name, "turn": self.turn, "at": self.clock()})
 
     def automation(self, run_view: dict, report: str) -> None:
         remaining = [step["purpose"] for step in run_view.get("steps", []) if step["status"] in ("pending", "skipped", "cancelled")]

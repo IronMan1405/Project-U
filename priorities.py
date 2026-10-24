@@ -24,7 +24,7 @@ presented as complete.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 PREPARE_MINUTES = 30
 FREE_STRETCH_MINUTES = 45
@@ -58,7 +58,7 @@ def focus(briefing: dict, now: datetime, context: dict | None = None, window: st
     before the next commitment."""
     now = now.astimezone()
     sources = briefing.get("sources", {})
-    result = {"as_of": now.strftime("%Y-%m-%d %H:%M"), "day": briefing.get("day"), "next_commitment": None,
+    result = {"as_of": now.strftime("%Y-%m-%d %H:%M"), "day": briefing.get("day"), "window": window, "next_commitment": None,
               "all_day": [], "needs_attention": [], "suggestion": None,
               "unavailable": list(briefing.get("unavailable", []))}
 
@@ -172,6 +172,58 @@ def summary_text(focus_view: dict) -> str:
     if focus_view.get("unavailable"):
         parts.append("Not available: " + "; ".join(focus_view["unavailable"]) + ".")
     return " ".join(parts)
+
+
+def _until(minutes: int) -> str:
+    hours, minutes = divmod(max(0, minutes), 60)
+    parts = [f"{hours} hour{'s' if hours != 1 else ''}"] if hours else []
+    if minutes or not hours:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    return "in " + " ".join(parts)
+
+
+def answer_text(briefing: dict) -> str:
+    """The briefing as the reply itself, for a plain "what's important" question: the focus (same
+    items, reasons and suggestion as summary_text), the rest of the day's timed events, and every
+    coverage note and unavailable source. Nothing is added that the data does not show."""
+    focus_view = briefing["focus"]
+    now = _parse(focus_view["as_of"]) or datetime.now().astimezone()
+    day = "tomorrow" if focus_view.get("day") == "tomorrow" else "today"
+    lines = []
+    nxt = focus_view.get("next_commitment")
+    if nxt:
+        days_ahead = (date.fromisoformat(nxt["date"]) - now.date()).days
+        when = "" if days_ahead == 0 else "tomorrow " if days_ahead == 1 else f"on {nxt['date']} "
+        where = f" ({nxt['location']})" if nxt.get("location") else ""
+        lines.append(f"Next: {nxt['title']} at {nxt['start']} {when.strip() + ', ' if when else ''}{_until(nxt['minutes_until'])}{where}.")
+        later = [event for event in _events(briefing.get("sources", {}).get("calendar", {}))
+                 if not event.get("all_day") and (start := _parse(event.get("start"))) and start > now
+                 and (event.get("title"), start.strftime("%H:%M")) != (nxt["title"], nxt["start"])
+                 and start.date().isoformat() == nxt["date"]]
+        if later and focus_view.get("window", "day") == "day":
+            later.sort(key=lambda event: event["start"])
+            lines.append("Later: " + "; ".join(f"{_parse(e['start']).strftime('%H:%M')} {e.get('title')}" for e in later[:6])
+                         + (f"; and {len(later) - 6} more" if len(later) > 6 else "") + ".")
+    elif focus_view.get("calendar_checked", True):
+        lines.append(f"Nothing else is scheduled {day}." if day == "today" else "Nothing is scheduled tomorrow.")
+    else:
+        lines.append("I couldn't read your calendar, so I don't know what's scheduled.")
+    if focus_view.get("all_day"):
+        lines.append("All day: " + ", ".join(focus_view["all_day"]) + ".")
+    if focus_view.get("calendar_scope"):
+        lines.append(focus_view["calendar_scope"] + ".")
+    if focus_view.get("needs_attention"):
+        lines.append("Needs attention:")
+        lines.extend(f"- {item['title']}: {item['why']}" for item in focus_view["needs_attention"])
+        if focus_view.get("more_attention"):
+            lines.append(f"- and {focus_view['more_attention']} more")
+    else:
+        lines.append("Nothing is overdue, due soon or flagged.")
+    if focus_view.get("suggestion"):
+        lines.append(f"Suggestion: {focus_view['suggestion']['text']}, because {focus_view['suggestion']['reason']}.")
+    if focus_view.get("unavailable"):
+        lines.append("Not available: " + "; ".join(focus_view["unavailable"]) + ".")
+    return "\n".join(lines)
 
 
 def dashboard(briefing: dict, context: dict | None, automation: dict | None) -> dict:

@@ -3,6 +3,7 @@ propose-then-do and resume, task/note links, project awareness, the partial-matc
 Focus panel and draft editing. Fakes and temporary databases only; no model, Google or Mac.
 """
 import base64
+import dataclasses
 import io
 import json
 import sys
@@ -598,6 +599,122 @@ class ResponsivenessTests(Case):
                 path.write_text(f"[ollama]\nendpoint = http://x\nmodel = m\n{text}")
                 with patch("builtins.print"):
                     self.assertIs(config.load_think_setting(path), expected)
+
+
+
+# --- Direct answers (no second model call for a complete read result) ---------------------------
+
+def tool_call(name, arguments=None, call_id="c1"):
+    return {"role": "assistant", "content": "", "tool_calls": [{"id": call_id, "function": {"name": name, "arguments": arguments or {}}}]}
+
+
+class DirectAnswerTests(Case):
+    def runtime(self, *replies, registry=None, google=None, reminders_fail=None):
+        osascript = FakeOsascript()
+        osascript.fail = reminders_fail
+        registry = registry or ToolRegistry(self.database, google=google, reminders=AppleReminders(runner=osascript),
+                                            timers=TimerService(self.database))
+        self.model = Mock(side_effect=list(replies))  # one reply per allowed model call; another call fails the test
+        return assistant_runtime.AssistantRuntime("http://local", "m", database_path=self.database, tool_registry=registry,
+                                                  model_client=self.model, planner_client=Planner())
+
+    def test_whats_important_is_answered_from_the_briefing_without_a_second_call(self):
+        storage.create_task("Submit lab report", due_at=(NOW - timedelta(days=1)).strftime("%Y-%m-%d"), database_path=self.database)
+        google = GoogleAccounts.single(MailProvider("me@x.org", [timed_event("Robotics lab", 90, "labevt01"),
+                                                                 timed_event("Control lecture", 240, "lecevt01")]))
+        runtime = self.runtime(tool_call("get_briefing", {"day": "today"}), google=google, reminders_fail="(-1743)")
+        result = runtime.run_turn("What's important today?")
+        self.assertEqual(self.model.call_count, 1)
+        text = result.response
+        self.assertRegex(text, r"^Next: Robotics lab at \d\d:\d\d (?:tomorrow, )?in 1 hour (?:29|30) minutes\.")
+        self.assertIn("Later: ", text)
+        self.assertIn("Control lecture", text)
+        self.assertIn("- Submit lab report: overdue (was due", text)
+        self.assertIn("Suggestion: Deal with Submit lab report, because overdue", text)
+        self.assertIn("Not available: reminders:", text)  # the unreadable source is still named
+        self.assertNotIn("Answer from this focus", text)  # no model instructions or raw data
+        self.assertNotIn("{", text)
+        self.assertEqual([a["tool"] for a in result.activities], ["get_briefing"])
+        # History stays complete: the call, its result and the reply, so a follow-up can use them.
+        self.assertEqual([m["role"] for m in runtime.history], ["user", "assistant", "tool", "assistant"])
+        self.assertEqual(runtime.history[-1]["content"], text)
+
+    def test_the_calendar_coverage_note_and_an_unreadable_calendar_are_kept(self):
+        from google_workspace import GoogleSettings
+        path = Path(self.temp.name) / "accounts.json"
+        path.write_text(json.dumps({"version": 1, "default": "personal", "accounts": [
+            {"name": "personal", "item": "oauth", "email": "me@x.org"}, {"name": "BITS", "item": "oauth:bits", "email": "d@bits.edu"}]}))
+        providers = {"oauth": MailProvider("me@x.org"), "oauth:bits": MailProvider("d@bits.edu", [timed_event("Lecture", 60, "l1")])}
+        accounts = GoogleAccounts(GoogleSettings(enabled=True, client_secrets_file=Path("/x")), registry_path=path,
+                                  provider_factory=lambda item: providers[item])
+        text = self.runtime(tool_call("get_briefing"), google=accounts).run_turn("What's important today?").response
+        self.assertIn("Nothing else is scheduled today.", text)
+        self.assertIn("Only the personal calendar; not included: BITS (ask for all calendars).", text)
+        offline = GoogleAccounts.single(FakeProvider("me@x.org", fail="offline"))
+        text = self.runtime(tool_call("get_briefing"), google=offline).run_turn("Brief me").response
+        self.assertIn("I couldn't read your calendar", text)
+        self.assertNotIn("Nothing else is scheduled", text)
+        self.assertIn("Not available: calendar", text)
+
+    def test_timer_status_and_a_plain_task_list_are_answered_directly(self):
+        runtime = self.runtime(tool_call("list_timers"), tool_call("list_tasks", call_id="c2"))
+        runtime.registry.timers.start("focus", 25 * 60, "SOP edits", None)
+        text = runtime.run_turn("How much time is left on my timer?").response
+        self.assertRegex(text, r"^25-minute focus session \"SOP edits\": (?:25 minutes|24 minutes \d+ seconds) left, ends at \d\d:\d\d\.$")
+        storage.create_task("Submit lab report", due_at=(NOW - timedelta(days=1)).strftime("%Y-%m-%d"), database_path=self.database)
+        storage.create_task("Email the TA", due_at=(NOW + timedelta(days=2)).strftime("%Y-%m-%d"), database_path=self.database)
+        done = storage.create_task("Old thing", database_path=self.database)
+        storage.update_task(done["id"], self.database, completed=True)
+        text = runtime.run_turn("What tasks do I have?").response
+        self.assertEqual(self.model.call_count, 2)  # one per turn
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "You have 2 open tasks:")
+        self.assertIn("- Email the TA (due ", text)
+        self.assertRegex(text, r"- Submit lab report \(overdue, was due \w{3} \d{4}-\d\d-\d\d\)")
+        self.assertEqual(lines[-1], "1 completed task is not listed.")
+
+    def test_requests_that_need_more_than_the_result_keep_the_model_path(self):
+        answer = {"role": "assistant", "content": "Phrased by the model."}
+        cases = [
+            ("What tasks are due this week?", [tool_call("list_tasks")]),  # a filter needs interpretation
+            ("Check my timer and then start a break", [tool_call("list_timers")]),  # more to do
+            ("What notes do I have?", [tool_call("list_notes")]),  # not allowlisted
+            ("What's important today?", [{"role": "assistant", "content": "", "tool_calls": [  # two calls at once
+                {"id": "a", "function": {"name": "get_briefing", "arguments": {}}},
+                {"id": "b", "function": {"name": "list_tasks", "arguments": {}}}]}]),
+            ("What tasks do I have?", [tool_call("list_notes"), tool_call("list_tasks", call_id="c2")]),  # not the first step
+        ]
+        for message, steps in cases:
+            with self.subTest(message=message, steps=len(steps)):
+                runtime = self.runtime(*steps, answer)
+                self.assertEqual(runtime.run_turn(message).response, "Phrased by the model.")
+                self.assertEqual(self.model.call_count, len(steps) + 1)
+
+    def test_a_failed_read_or_a_selected_document_keeps_the_model_path(self):
+        registry = ToolRegistry(self.database, timers=TimerService(self.database))
+        registry._definitions["list_timers"] = dataclasses.replace(
+            registry._definitions["list_timers"],
+            execute=lambda arguments: ToolOutcome(False, "The timer store is unavailable.", answer="unused"))
+        runtime = self.runtime(tool_call("list_timers"), {"role": "assistant", "content": "I couldn't read your timers."},
+                               registry=registry)
+        self.assertEqual(runtime.run_turn("How much time is left?").response, "I couldn't read your timers.")
+        runtime = self.runtime(tool_call("list_tasks"), {"role": "assistant", "content": "From the document: ..."})
+        result = runtime.run_turn("What tasks do I have?", additional_context=[{"role": "system", "content": "Document excerpt"}])
+        self.assertEqual(result.response, "From the document: ...")
+
+    def test_approvals_writes_and_automation_are_unchanged(self):
+        task = storage.create_task("Old thing", database_path=self.database)
+        runtime = self.runtime(tool_call("delete_task", {"task_id": task["id"]}))
+        pending = runtime.run_turn("Delete the task Old thing").pending_confirmation
+        self.assertEqual(pending["tool"], "delete_task")  # still asks first
+        self.assertEqual(len(storage.list_tasks(self.database)), 1)
+        runtime = self.runtime(tool_call("create_task", {"title": "Buy servos"}), {"role": "assistant", "content": "Added."})
+        self.assertEqual(runtime.run_turn("Add a task to buy servos").response, "Added.")  # writes are phrased by the model
+        planner = Planner(plan(step("list_tasks")), route=True)
+        automated = ModeTests.runtime(self, planner)
+        result = automated.run_turn("Check my tasks and then tell me what is open")
+        self.assertEqual(automated.automation_status()["status"], "COMPLETED")
+        self.assertNotIn("You have", result.response)  # the automation reports; its read step does not end the turn
 
 
 if __name__ == "__main__":

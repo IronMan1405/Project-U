@@ -319,3 +319,138 @@ test("random event sequences never listen unless the user started the loop", () 
     }
   }
 });
+
+// --- Progress cue (createProgressCue): one short spoken line while a spoken request runs ---
+const Loop = require(path.join(__dirname, "../../static/voice_loop.js"));
+
+// Fake clock: schedule/cancel like setTimeout/clearTimeout; advance(ms) fires what is due.
+function fakeTimers() {
+  let now = 0;
+  let next = 1;
+  const pending = new Map();
+  return {
+    schedule: (callback, delay) => {
+      const id = next++;
+      pending.set(id, { at: now + delay, callback });
+      return id;
+    },
+    cancel: (id) => pending.delete(id),
+    advance(ms) {
+      now += ms;
+      for (const [id, timer] of [...pending].sort((a, b) => a[1].at - b[1].at)) {
+        if (timer.at <= now && pending.delete(id)) timer.callback();
+      }
+    },
+    get now() {
+      return now;
+    },
+  };
+}
+
+// The page as the cue sees it: a spoken request in flight in a hands-free conversation.
+function cuePage(overrides = {}) {
+  const page = {
+    facts: { sending: true, voiceTurn: true, speechOutput: true, speaking: false, recording: false,
+      confirmationPending: false, loopState: "thinking", ...overrides },
+    activity: { status: "thinking", tool: null },
+    spoken: [],
+  };
+  const timers = fakeTimers();
+  const cue = Loop.createProgressCue({
+    schedule: timers.schedule, cancel: timers.cancel,
+    check: () => (Loop.progressCueAllowed(page.facts) ? Loop.progressCueText(page.activity) : null),
+    speak: (text) => {
+      page.spoken.push({ text, at: timers.now });
+      page.facts.speaking = true; // speakReply() owns the audio from here
+    },
+  });
+  return { page, timers, cue };
+}
+
+test("a slow spoken request gets exactly one cue, at the threshold", () => {
+  const { page, timers, cue } = cuePage();
+  cue.start();
+  timers.advance(Loop.PROGRESS_CUE_MS - 1);
+  assert.deepEqual(page.spoken, []);
+  timers.advance(1);
+  assert.deepEqual(page.spoken, [{ text: "One moment.", at: 3000 }]);
+  page.facts.speaking = false; // the cue ended; the request is still running
+  timers.advance(20000);
+  assert.equal(page.spoken.length, 1);
+});
+
+test("the cue names a read only while that read is running; otherwise it is neutral", () => {
+  const { page, timers, cue } = cuePage();
+  page.activity = { status: "running", tool: "get_briefing" };
+  cue.start();
+  timers.advance(3000);
+  assert.deepEqual(page.spoken.map((s) => s.text), ["Checking your schedule."]);
+  assert.equal(Loop.progressCueText({ status: "running", tool: "create_reminder" }), "One moment."); // writes are never announced
+  assert.equal(Loop.progressCueText({ status: "thinking", tool: "get_briefing" }), "One moment.");
+  assert.equal(Loop.progressCueText(null), "One moment.");
+});
+
+test("a request that ends before the threshold, or exactly at it, gets no cue", () => {
+  const early = cuePage();
+  early.cue.start();
+  early.timers.advance(2000);
+  early.cue.stop(); // the answer arrived
+  early.timers.advance(5000);
+  assert.deepEqual(early.page.spoken, []);
+
+  // The timer fires in the same moment the request finishes: the fire-time check sees it ended.
+  const late = cuePage();
+  late.cue.start();
+  late.page.facts.sending = false;
+  late.timers.advance(3000);
+  assert.deepEqual(late.page.spoken, []);
+  assert.equal(late.cue.pending, false);
+});
+
+test("a cancelled or interrupted request gets no late cue", () => {
+  for (const interruption of [
+    (page, cue) => cue.stop(), // Stop / automation cancelled / hands-free off
+    (page) => { page.facts.recording = true; }, // the user started talking again
+    (page) => { page.facts.loopState = "off"; }, // the hands-free loop ended
+    (page) => { page.facts.confirmationPending = true; }, // an approval is now waiting
+  ]) {
+    const { page, timers, cue } = cuePage();
+    cue.start();
+    timers.advance(1500);
+    interruption(page, cue);
+    timers.advance(5000);
+    assert.deepEqual(page.spoken, []);
+  }
+});
+
+test("the cue never starts over speech, so it cannot overlap the answer", () => {
+  const { page, timers, cue } = cuePage({ speaking: true }); // something is already being spoken
+  cue.start();
+  timers.advance(5000);
+  assert.deepEqual(page.spoken, []);
+  // A new start (the next request) replaces the old timer: still one cue for the new request only.
+  page.facts.speaking = false;
+  cue.start();
+  cue.start();
+  timers.advance(3000);
+  assert.equal(page.spoken.length, 1);
+});
+
+test("typed requests never get a cue", () => {
+  const { page, timers, cue } = cuePage({ voiceTurn: false, loopState: "off" });
+  cue.start(); // even if started, the check refuses a typed request
+  timers.advance(10000);
+  assert.deepEqual(page.spoken, []);
+  assert.equal(Loop.progressCueAllowed({ sending: true, voiceTurn: true, speechOutput: false, loopState: "thinking" }), false);
+});
+
+test("a multi-step request with several tools still gets at most one cue", () => {
+  const { page, timers, cue } = cuePage();
+  cue.start();
+  for (const tool of ["search_gmail", "read_gmail_message", "create_task", "get_briefing"]) {
+    page.activity = { status: "running", tool };
+    timers.advance(2500);
+    page.facts.speaking = false;
+  }
+  assert.deepEqual(page.spoken.map((s) => s.text), ["Reading the email."]);
+});

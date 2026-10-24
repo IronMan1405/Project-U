@@ -175,6 +175,13 @@ def initialize_database(database_path: str | Path | None = None) -> None:
                 after_timer_id INTEGER REFERENCES timers(id),
                 finished_at TEXT
             );
+            -- The recent working session (session_state.py), so a reload or restart can continue it.
+            -- Compact JSON of metadata and IDs only; rows older than the session limit are deleted.
+            CREATE TABLE IF NOT EXISTS sessions (
+                conversation_id TEXT PRIMARY KEY,
+                updated_at TEXT NOT NULL,
+                state TEXT NOT NULL
+            );
             """
         )
         task_columns = {
@@ -425,6 +432,35 @@ def find_open_task(title: str, due_at: str | None, database_path: str | Path | N
         if not task["completed"] and normalize_text(task["title"]) == wanted and task["due_at"] == due_at:
             return task
     return None
+
+
+def save_session(conversation_id: str, state: str, database_path: str | Path | None = None) -> None:
+    with _connection(database_path) as connection:
+        connection.execute(
+            "INSERT INTO sessions (conversation_id, updated_at, state) VALUES (?, ?, ?) "
+            "ON CONFLICT(conversation_id) DO UPDATE SET updated_at = excluded.updated_at, state = excluded.state",
+            (conversation_id, _timestamp(), state),
+        )
+
+
+def latest_session(max_age_seconds: float, database_path: str | Path | None = None) -> tuple[str, str] | None:
+    """The most recently saved session younger than max_age_seconds. Older ones are deleted."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+    with _connection(database_path) as connection:
+        connection.execute("DELETE FROM sessions WHERE updated_at < ?", (cutoff,))
+        row = connection.execute(
+            "SELECT conversation_id, state FROM sessions ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+    return (row["conversation_id"], row["state"]) if row else None
+
+
+def delete_session(conversation_id: str | None = None, database_path: str | Path | None = None) -> None:
+    """Forget one saved session (or, with no ID, every saved session)."""
+    with _connection(database_path) as connection:
+        if conversation_id is None:
+            connection.execute("DELETE FROM sessions")
+        else:
+            connection.execute("DELETE FROM sessions WHERE conversation_id = ?", (conversation_id,))
 
 
 def delete_note(note_id: int, database_path: str | Path | None = None) -> None:

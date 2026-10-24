@@ -16,6 +16,8 @@ from werkzeug.exceptions import RequestEntityTooLarge
 import system_telemetry
 import notifications
 import priorities
+import session_state
+import storage
 from briefing import build_briefing
 import voice
 from config import (
@@ -214,6 +216,75 @@ def create_app(
 
         return jsonify(connected=True, model=model)
 
+    def make_runtime(conversation_id: str) -> AssistantRuntime:
+        def update_activity(activity: dict, key: str = conversation_id) -> None:
+            conversation_activity[key] = activity
+
+        runtime = conversations[conversation_id] = AssistantRuntime(
+            endpoint,
+            model,
+            database_path=app.config["DATABASE_PATH"],
+            tool_registry=ToolRegistry(
+                app.config["DATABASE_PATH"], utilities=utility_settings, telemetry=telemetry,
+                google=google, reminders=reminders, timers=timers, mac=mac, developer=developer, ui=ui,
+            ),
+            activity_callback=update_activity,
+            automation_limits=automation_limits,
+            think=think,
+        )
+        conversation_activity[conversation_id] = {
+            "status": "idle",
+            "tool": None,
+            "summary": "",
+        }
+        if app.config["WARM_MODEL"]:
+            # The running server only (never tests): prepare the model while the user types.
+            runtime.keep_warm = True
+            threading.Thread(target=runtime.warm_up, daemon=True).start()
+        return runtime
+
+    # Session continuity (session_state.py): the recent session survives a reload or a restart.
+    def save_session(conversation_id: str, runtime: AssistantRuntime) -> None:
+        try:
+            state = runtime.session_state()
+            if state is not None:
+                storage.save_session(conversation_id, json.dumps(state, ensure_ascii=False), app.config["DATABASE_PATH"])
+        except (sqlite3.Error, OSError, TypeError, ValueError) as error:
+            logging.getLogger(__name__).warning("The session could not be saved: %s", type(error).__name__)
+
+    def forget_session(conversation_id: str | None) -> None:
+        try:
+            storage.delete_session(conversation_id, app.config["DATABASE_PATH"])
+        except (sqlite3.Error, OSError) as error:
+            logging.getLogger(__name__).warning("The saved session could not be removed: %s", type(error).__name__)
+
+    def restore_latest() -> dict | None:
+        """The latest recent session: still in memory after a reload, or rebuilt after a restart. An
+        unusable or expired one is deleted and None returned (the page starts fresh)."""
+        try:
+            found = storage.latest_session(session_state.SESSION_MAX_AGE_MINUTES * 60, app.config["DATABASE_PATH"])
+        except (sqlite3.Error, OSError) as error:
+            logging.getLogger(__name__).warning("Saved sessions could not be read: %s", type(error).__name__)
+            return None
+        if found is None or not _valid_conversation_id(found[0]):
+            return None
+        conversation_id, raw = found
+        runtime = conversations.get(conversation_id)
+        if runtime is None:
+            runtime = make_runtime(conversation_id)
+            try:
+                runtime.restore_session(json.loads(raw))
+            except (ValueError, KeyError, TypeError, AttributeError) as error:
+                logging.getLogger(__name__).warning("Saved session not restored (%s); starting fresh", type(error).__name__)
+                conversations.pop(conversation_id, None)
+                conversation_activity.pop(conversation_id, None)
+                forget_session(conversation_id)
+                return None
+        if not runtime.session_turns:
+            return None
+        return {"conversation_id": conversation_id, "restored": {
+            "turns": runtime.session_turns, "pending_confirmation": runtime.pending_view()}}
+
     @app.post("/api/conversations")
     def new_conversation():
         data = request.get_json(silent=True)
@@ -224,33 +295,15 @@ def create_app(
             conversations.pop(previous_id, None)
             conversation_documents.pop(previous_id, None)
             conversation_activity.pop(previous_id, None)
+            forget_session(previous_id)  # a fresh start on purpose: the old session is not offered again
+        if isinstance(data, dict) and data.get("restore") is True and config_error is None:
+            restored = restore_latest()
+            if restored is not None:
+                return jsonify(restored)
 
         conversation_id = str(uuid4())
         if config_error is None:
-            def update_activity(activity: dict, key: str = conversation_id) -> None:
-                conversation_activity[key] = activity
-
-            conversations[conversation_id] = AssistantRuntime(
-                endpoint,
-                model,
-                database_path=app.config["DATABASE_PATH"],
-                tool_registry=ToolRegistry(
-                    app.config["DATABASE_PATH"], utilities=utility_settings, telemetry=telemetry,
-                    google=google, reminders=reminders, timers=timers, mac=mac, developer=developer, ui=ui,
-                ),
-                activity_callback=update_activity,
-                automation_limits=automation_limits,
-                think=think,
-            )
-            conversation_activity[conversation_id] = {
-                "status": "idle",
-                "tool": None,
-                "summary": "",
-            }
-            if app.config["WARM_MODEL"]:
-                # The running server only (never tests): prepare the model while the user types.
-                conversations[conversation_id].keep_warm = True
-                threading.Thread(target=conversations[conversation_id].warm_up, daemon=True).start()
+            make_runtime(conversation_id)
         return jsonify(conversation_id=conversation_id)
 
     @app.get("/api/conversations/<conversation_id>/activity")
@@ -317,6 +370,7 @@ def create_app(
         except (json.JSONDecodeError, ValueError) as error:
             return jsonify(error=f"Could not read Ollama's response: {error}"), 502
         finally:
+            save_session(conversation_id, runtime)
             if not runtime.has_pending_confirmation:
                 conversation_activity[conversation_id] = {
                     "status": "idle",
@@ -670,6 +724,7 @@ def create_app(
         except RuntimeBusyError as error:
             return jsonify(error=str(error)), 409
         finally:
+            save_session(conversation_id, runtime)
             if not runtime.has_pending_confirmation:
                 conversation_activity[conversation_id] = {
                     "status": "idle",
