@@ -69,10 +69,13 @@ def focus(briefing: dict, now: datetime, context: dict | None = None, window: st
             result["all_day"].append(event.get("title"))
             continue
         start = _parse(event.get("start"))
+        start = start.astimezone() if start is not None else None  # local time, whatever the calendar's zone
         if start is not None and start > now:
             upcoming.append((start, event))
     upcoming.sort(key=lambda pair: pair[0])
     result["calendar_checked"] = sources.get("calendar", {}).get("status") == "ok"
+    # Connected calendars that could not be read this time: an empty day is then only empty in the others.
+    result["calendar_missing"] = [missing["account"] for missing in sources.get("calendar", {}).get("unavailable_accounts", [])]
     scope = sources.get("calendar", {}).get("scope")
     if scope:
         result["calendar_scope"] = scope
@@ -158,8 +161,11 @@ def summary_text(focus_view: dict) -> str:
     """The focus as plain sentences, stated from the data (for the tool result message)."""
     parts = []
     nxt = focus_view.get("next_commitment")
+    missing = focus_view.get("calendar_missing") or []
     parts.append(f"Next commitment: {nxt['title']} at {nxt['start']} on {nxt['date']} (in {nxt['minutes_until']} min)."
-                 if nxt else "Next commitment: none found for this day." if focus_view.get("calendar_checked", True)
+                 if nxt else (f"Next commitment: none found in the calendars that could be read (not {', '.join(missing)})."
+                              if missing else "Next commitment: none found for this day.")
+                 if focus_view.get("calendar_checked", True)
                  else "Next commitment: unknown, because the calendar could not be read.")
     if focus_view.get("calendar_scope"):
         parts.append(focus_view["calendar_scope"] + ".")
@@ -191,19 +197,27 @@ def answer_text(briefing: dict) -> str:
     day = "tomorrow" if focus_view.get("day") == "tomorrow" else "today"
     lines = []
     nxt = focus_view.get("next_commitment")
+    calendar = briefing.get("sources", {}).get("calendar", {})
+    several = bool(calendar.get("accounts"))  # every connected account's calendar: say whose each event is
+    whose = lambda account: f" ({account})" if several and account else ""
     if nxt:
         days_ahead = (date.fromisoformat(nxt["date"]) - now.date()).days
         when = "" if days_ahead == 0 else "tomorrow " if days_ahead == 1 else f"on {nxt['date']} "
         where = f" ({nxt['location']})" if nxt.get("location") else ""
-        lines.append(f"Next: {nxt['title']} at {nxt['start']} {when.strip() + ', ' if when else ''}{_until(nxt['minutes_until'])}{where}.")
-        later = [event for event in _events(briefing.get("sources", {}).get("calendar", {}))
+        lines.append(f"Next: {nxt['title']}{whose(nxt.get('account'))} at {nxt['start']} "
+                     f"{when.strip() + ', ' if when else ''}{_until(nxt['minutes_until'])}{where}.")
+        later = [event for event in _events(calendar)
                  if not event.get("all_day") and (start := _parse(event.get("start"))) and start > now
-                 and (event.get("title"), start.strftime("%H:%M")) != (nxt["title"], nxt["start"])
-                 and start.date().isoformat() == nxt["date"]]
+                 and (event.get("title"), start.astimezone().strftime("%H:%M")) != (nxt["title"], nxt["start"])
+                 and start.astimezone().date().isoformat() == nxt["date"]]
         if later and focus_view.get("window", "day") == "day":
-            later.sort(key=lambda event: event["start"])
-            lines.append("Later: " + "; ".join(f"{_parse(e['start']).strftime('%H:%M')} {e.get('title')}" for e in later[:6])
+            later.sort(key=lambda event: _parse(event["start"]))  # by time, across calendars in other time zones
+            lines.append("Later: " + "; ".join(f"{_parse(e['start']).astimezone().strftime('%H:%M')} {e.get('title')}"
+                                               f"{whose(e.get('account'))}" for e in later[:6])
                          + (f"; and {len(later) - 6} more" if len(later) > 6 else "") + ".")
+    elif focus_view.get("calendar_checked", True) and focus_view.get("calendar_missing"):
+        lines.append(f"Nothing else is scheduled {day} in the calendars I could check; "
+                     f"I couldn't check {', '.join(focus_view['calendar_missing'])}.")
     elif focus_view.get("calendar_checked", True):
         lines.append(f"Nothing else is scheduled {day}." if day == "today" else "Nothing is scheduled tomorrow.")
     else:
@@ -244,4 +258,5 @@ def dashboard(briefing: dict, context: dict | None, automation: dict | None) -> 
             + max(0, len(focus_view["needs_attention"]) - 3), "suggestion": focus_view["suggestion"],
             "all_day": focus_view["all_day"], "working_on": working, "automation": active, "sources": sources,
             "calendar_scope": focus_view.get("calendar_scope"), "calendar_checked": focus_view.get("calendar_checked", True),
+            "calendar_missing": focus_view.get("calendar_missing") or [],
             "unavailable": focus_view["unavailable"]}

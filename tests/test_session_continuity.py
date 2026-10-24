@@ -124,11 +124,10 @@ class RuntimeContinuityTests(Case):
         self.assertEqual([(s.approved, s.approved_summary, s.arguments) for s in restored.steps][1], (False, None, None))
         result = second.run_turn("Do it")
         pending = result.pending_confirmation
-        # "Do it" alone sends nothing: the plan with the send needs a new explicit approval in this session.
-        # (Approving a plan whose send is already concrete counts as that send's approval; that is the
-        # automation engine's existing rule and is unchanged here.)
-        self.assertEqual(pending["tool"], "start_automation")
-        self.assertIn(["Step 2", "Send the reply — needs approval"], pending["preview"]["sections"][0]["rows"])
+        # "Do it" alone sends nothing: the send itself is shown, exactly, for a new explicit approval.
+        self.assertEqual(pending["tool"], "send_email")
+        rows = dict(pending["preview"]["sections"][0]["rows"])
+        self.assertEqual((rows["To"], rows["Subject"], rows["Body"]), ("prof@x.org", "Re: SOP", "Monday works."))
         self.assertNotIn("send_message", provider.calls)
         second.resolve_confirmation(pending["confirmation_id"], False)  # declined: still nothing sent
         self.assertNotIn("send_message", provider.calls)

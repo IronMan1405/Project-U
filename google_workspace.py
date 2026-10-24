@@ -1172,7 +1172,7 @@ class GoogleWorkspaceProvider:
         params = {
             "timeMin": time_min.isoformat(), "singleEvents": "true", "orderBy": "startTime",
             "maxResults": FILTER_SCAN if filtering else max_results,
-            "fields": "items(id,summary,start,end,status,location,recurringEventId,attendees(email,self),eventType,"
+            "fields": "items(id,iCalUID,summary,start,end,status,location,recurringEventId,attendees(email,self),eventType,"
                       "eventLabelId,hangoutLink,conferenceData(conferenceId)" + (",description" if kind else "")
                       + "),nextPageToken",
         }
@@ -1864,6 +1864,8 @@ def event_summary(item: dict) -> dict | None:
     all_day = "date" in start and "dateTime" not in start
     return {
         "event_id": item["id"],
+        # Google's identifier shared by every copy of one event (an invitation in several calendars).
+        "ical_uid": item["iCalUID"] if isinstance(item.get("iCalUID"), str) else None,
         "title": str(item.get("summary") or "(No title)")[:200],
         "start": start.get("date") if all_day else start.get("dateTime"),
         "end": end.get("date") if all_day else end.get("dateTime"),

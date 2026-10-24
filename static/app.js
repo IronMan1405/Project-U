@@ -2595,7 +2595,9 @@ function renderFocus(view) {
   const next = view.next_commitment;
   focusNext.textContent = next
     ? `${next.title} at ${next.start} (in ${next.minutes_until} min)${next.account ? ` · ${next.account}` : ""}`
-    : view.calendar_checked === false ? "Unknown: the calendar could not be read" : "Nothing else scheduled today";
+    : view.calendar_checked === false ? "Unknown: the calendar could not be read"
+      : view.calendar_missing?.length ? `Nothing else in the calendars checked (not ${view.calendar_missing.join(", ")})`
+        : "Nothing else scheduled today";
   const items = view.needs_attention.map((item) => {
     const li = document.createElement("li");
     li.textContent = item.title;

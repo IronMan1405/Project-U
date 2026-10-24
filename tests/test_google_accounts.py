@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import google_workspace
 import storage
-from briefing import build_briefing
+from briefing import build_briefing, for_model
 from google_accounts import LEGACY_ITEM, GoogleAccounts
 from google_workspace import GoogleError, GoogleSettings, GoogleWorkspaceProvider, MemoryTokenStore
 from tool_registry import ToolError, ToolRegistry
@@ -372,10 +372,25 @@ class ToolRoutingTests(AccountsCase):
         with self.assertRaisesRegex(ToolError, "found in the BITS account, not personal"):  # never cross accounts
             registry.prepare("delete_calendar_event", {"event_id": "evt0001", "account": "personal"}, "Cancel evt0001 in personal")
 
-    def test_an_unnamed_calendar_question_uses_the_default(self):
-        registry = self.registry(self.two())
-        self.run_tool(registry, "search_calendar_events", {}, "What's on my calendar tomorrow?")
-        self.assertEqual((self.personal.calls, self.bits.calls), (["search_events"], []))
+    def test_an_unnamed_calendar_question_covers_every_calendar_as_one_timeline(self):
+        registry = self.registry(self.two(personal_events=[event("Dinner", 18, "pevt001")],
+                                          bits_events=[event("Midsem review", 10, "bevt001")]))
+        outcome = self.run_tool(registry, "search_calendar_events", {}, "What's on my calendar tomorrow?")
+        self.assertEqual((self.personal.calls, self.bits.calls), (["search_events"], ["search_events"]))
+        self.assertEqual([(e["title"], e["account"]) for e in outcome.data["events"]],
+                         [("Midsem review", "BITS"), ("Dinner", "personal")])
+        # Changing one of them still goes to the account it is in.
+        self.assertEqual(registry.prepare("delete_calendar_event", {"event_id": "bevt001"}, "Cancel it").arguments["account"], "BITS")
+        named = self.run_tool(self.registry(self.two()), "search_calendar_events", {}, "What's on my BITS calendar tomorrow?")
+        self.assertEqual((self.personal.calls, self.bits.calls), ([], ["search_events"]))
+        self.assertIn("in BITS", named.message)
+
+    def test_a_calendar_that_fails_makes_the_search_partial_not_empty(self):
+        registry = self.registry(self.two(bits={"fail": "Google Calendar is unavailable."}))
+        outcome = self.run_tool(registry, "search_calendar_events", {}, "What's on my calendar tomorrow?")
+        self.assertTrue(outcome.ok)
+        self.assertIn("Not checked, so this is not the whole schedule: BITS (Google Calendar is unavailable.)", outcome.message)
+        self.assertEqual(outcome.data["accounts_checked"], ["personal"])
 
     def test_one_account_behaves_exactly_as_before(self):
         only = FakeProvider("me@gmail.example")
@@ -413,23 +428,37 @@ class BriefingTests(AccountsCase):
         storage.initialize_database(path)  # never the user's real data
         return path
 
-    def test_default_briefing_uses_the_default_calendar_only(self):
+    def test_a_briefing_covers_every_connected_calendar_and_a_named_one_restricts_it(self):
         accounts = self.two(personal_events=[event("Dinner", 18, "pevt001")], bits_events=[event("Midsem review", 10, "bevt001")])
         result = build_briefing(datetime.now().astimezone(), "tomorrow", database_path=self.database(), google=accounts)
         calendar = result["sources"]["calendar"]
-        self.assertEqual([e["title"] for e in calendar["events"]], ["Dinner"])
-        self.assertEqual(calendar["account"], "personal")
+        self.assertEqual({g["account"]: [e["title"] for e in g["events"]] for g in calendar["accounts"]},
+                         {"personal": ["Dinner"], "BITS": ["Midsem review"]})
+        self.assertEqual((self.personal.calls, self.bits.calls), (["search_events"], ["search_events"]))
+        self.assertNotIn("calendar_scope", result["focus"])  # nothing was left out
+        # The model sees one timeline in time order, each event with its account.
+        timeline = for_model(result)["sources"]["calendar"]
+        self.assertEqual([(e["title"], e["account"]) for e in timeline["events"]], [("Midsem review", "BITS"), ("Dinner", "personal")])
+        self.assertEqual(timeline["accounts_checked"], ["personal", "BITS"])
 
-    def test_all_calendars_are_grouped_by_account_with_duplicates_once(self):
-        shared = event("Club meeting", 16, "sevt001")
-        accounts = self.two(personal_events=[event("Dinner", 18, "pevt001"), shared],
-                            bits_events=[event("Midsem review", 10, "bevt001"), dict(shared, event_id="sevt002")])
-        calendar = build_briefing(datetime.now().astimezone(), "tomorrow", database_path=self.database(), google=accounts,
-                                  calendar_accounts="all")["sources"]["calendar"]
+        only = build_briefing(datetime.now().astimezone(), "tomorrow", database_path=self.database(), google=accounts,
+                              calendar_accounts="BITS")["sources"]["calendar"]
+        self.assertEqual(([e["title"] for e in only["events"]], only["account"]), (["Midsem review"], "BITS"))
+        self.assertEqual(only["scope"], "Only the BITS calendar, as asked; not included: personal")
+
+    def test_the_same_event_is_listed_once_and_different_events_with_one_title_stay_apart(self):
+        shared = dict(event("Club meeting", 16, "sevt001"), ical_uid="club-123@google.com")
+        lecture = event("Lecture", 11, "pevt009")
+        accounts = self.two(personal_events=[event("Dinner", 18, "pevt001"), shared, lecture],
+                            # the same invitation (one iCalUID, another event ID in this account), and a different
+                            # event that only shares the lecture's title and time
+                            bits_events=[event("Midsem review", 10, "bevt001"), dict(shared, event_id="sevt002"),
+                                         dict(lecture, event_id="bevt009")])
+        calendar = build_briefing(datetime.now().astimezone(), "tomorrow", database_path=self.database(),
+                                  google=accounts)["sources"]["calendar"]
         groups = {g["account"]: [e["title"] for e in g["events"]] for g in calendar["accounts"]}
-        self.assertEqual(groups, {"personal": ["Dinner", "Club meeting"], "BITS": ["Midsem review"]})
+        self.assertEqual(groups, {"personal": ["Dinner", "Club meeting", "Lecture"], "BITS": ["Midsem review", "Lecture"]})
         self.assertEqual(calendar["accounts"][0]["events"][1]["also_in"], ["BITS"])
-        self.assertIn("grouped by account", calendar["note"])
 
     def test_one_unavailable_account_does_not_hide_the_others(self):
         accounts = self.two(personal_events=[event("Dinner", 18, "pevt001")], bits={"fail": "Google Calendar is unavailable."})
@@ -438,15 +467,16 @@ class BriefingTests(AccountsCase):
         self.assertEqual(calendar["status"], "ok")
         self.assertEqual(calendar["unavailable_accounts"], [{"account": "BITS", "reason": "Google Calendar is unavailable."}])
 
-    def test_the_briefing_tool_asks_for_all_only_when_the_user_does(self):
+    def test_the_briefing_tool_covers_every_calendar_unless_one_is_named(self):
         accounts = self.two(personal_events=[event("Dinner", 18, "pevt001")], bits_events=[event("Midsem review", 10, "bevt001")])
         database = Path(self.temp.name) / "r.sqlite3"
         storage.initialize_database(database)
         registry = ToolRegistry(database, google=accounts)
-        normal = registry.execute(registry.prepare("get_briefing", {"day": "tomorrow"}, "Brief me on tomorrow"))
-        self.assertIn("events", normal.data["sources"]["calendar"])
-        everything = registry.execute(registry.prepare("get_briefing", {"day": "tomorrow"}, "Brief me on all my calendars"))
-        self.assertEqual([g["account"] for g in everything.data["sources"]["calendar"]["accounts"]], ["personal", "BITS"])
+        everything = registry.execute(registry.prepare("get_briefing", {"day": "tomorrow"}, "Brief me on tomorrow"))
+        self.assertEqual(everything.data["sources"]["calendar"]["accounts_checked"], ["personal", "BITS"])
+        named = registry.execute(registry.prepare("get_briefing", {"day": "tomorrow"}, "What's on my BITS calendar tomorrow?"))
+        self.assertEqual([e["title"] for e in named.data["sources"]["calendar"]["events"]], ["Midsem review"])
+        self.assertIn("Only the BITS calendar, as asked", named.message)
         # Events found in the briefing can then be changed, in their own account only.
         self.assertTrue(registry.prepare("delete_calendar_event", {"event_id": "bevt001"}, "Cancel the midsem review").always_confirm)
 

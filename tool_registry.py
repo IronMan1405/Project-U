@@ -23,7 +23,7 @@ import ui_control
 from ui_control import UIController, UIControlError
 from mac_control import MEDIA_ACTIONS, PLAYERS, MacControl, MacControlError, music_play, music_search
 import priorities
-from briefing import build_briefing, for_model as briefing_for_model
+from briefing import build_briefing, event_identity, event_start, for_model as briefing_for_model
 from reminders import AppleReminders, Due, RemindersError
 from timers import TimerError, TimerService, timer_name
 from storage import (
@@ -650,9 +650,9 @@ class ToolRegistry:
             _object_schema({"day": {"type": "string", "enum": ["today", "tomorrow"]},
                             "window": {"type": "string", "enum": ["day", "before_next"],
                                        "description": "before_next: only what matters before the next commitment."},
-                            "all_calendars": {"type": "boolean", "description": "Only when the user asks for all their "
-                                              "calendars or accounts: include every connected Google account, grouped "
-                                              "by account. Otherwise the default account's calendar is used."}}),
+                            "all_calendars": {"type": "boolean", "description": "Every connected Google account's "
+                                              "calendar is included anyway; only naming one account (e.g. 'my BITS "
+                                              "calendar') restricts it to that one."}}),
             self._get_briefing,
         )
         self._definitions["start_timer"] = ToolDefinition(
@@ -725,18 +725,19 @@ class ToolRegistry:
             self._reschedule_reminder, direct_write=True,
         )
 
-    def _briefing_all(self, arguments: dict) -> bool:
-        if self.google is None or not self.google.multiple:
-            return False
-        return bool(arguments.get("all_calendars")) or bool(re.search(
-            r"\ball (?:of )?(?:my |the )?(?:calendars|accounts)\b", self._current_message, re.IGNORECASE))
+    def _briefing_calendars(self, arguments: dict) -> str | None:
+        """Every connected calendar (None), unless the user named exactly one account for this request."""
+        if self.google is None or not self.google.multiple or arguments.get("all_calendars"):
+            return None
+        mentioned = self.google.mentioned(self._current_message)
+        return mentioned[0] if len(mentioned) == 1 else None
 
     def _get_briefing(self, arguments: dict) -> ToolOutcome:
         context = self.working_context.snapshot() if getattr(self, "working_context", None) is not None else None
         result = build_briefing(datetime.now().astimezone(), arguments.get("day", "today"),
                                 database_path=self.database_path, google=self.google,
                                 reminders=self.reminders, timers=self.timers,
-                                calendar_accounts="all" if self._briefing_all(arguments) else None,
+                                calendar_accounts=self._briefing_calendars(arguments),
                                 include_email=True, context=context, window=arguments.get("window", "day"))
         for message in (result["sources"].get("email") or {}).get("messages") or []:
             if message.get("id"):  # mail the briefing found can be read or answered next
@@ -1027,8 +1028,9 @@ class ToolRegistry:
             "search_calendar_events",
             "Search the user's Google Calendar over ANY date range, past or future (there is no limit), "
             "optionally by words in the event. Without start it searches from now on (upcoming events); "
-            "for past events always give start (and end). Returns event IDs and times. If several events "
-            "could match what the user means, ask which one before changing anything.",
+            "for past events always give start (and end). Returns event IDs and times. Without account it covers "
+            "every connected calendar as one timeline; give account only when the user names one. If several "
+            "events could match what the user means, ask which one before changing anything.",
             _object_schema({
                 "start": {**when, "description": "Optional start of the range (default: now). " + when["description"]},
                 "end": {**when, "description": "Optional end of the range. " + when["description"]},
@@ -1173,6 +1175,8 @@ class ToolRegistry:
             if name in ALL_ACCOUNT_TOOLS:
                 return ALL_ACCOUNTS
             raise ToolError(f"The request names several accounts ({', '.join(mentioned)}); ask which one to use.")
+        elif accounts.multiple and name == "search_calendar_events":
+            return ALL_ACCOUNTS  # the user's schedule is every connected calendar unless they name one
         elif accounts.multiple and name == "search_gmail":
             # Looking for a particular email without naming an account: it could be in any of them.
             raise ToolError(f"Several Google accounts are connected ({', '.join(accounts.names)}). Ask the user which "
@@ -1277,17 +1281,27 @@ class ToolRegistry:
             more = " More match; narrow the range." if result["more_available"] else ""
             how = f" Filtered by {result['filters']}." if result.get("filters") else ""
             return ToolOutcome(True, f"Found {len(result['events'])} event(s){self._in(name)}.{more}{how}", {**result, "account": name})
-        by_account = []
+        # One timeline across the calendars, in time order; an event in several (an invitation) is listed
+        # once with also_in. Each event names its account, which any change to it must use.
+        timeline, seen = [], {}
         for name, result in results:
             self._seen_event_ids.update((name, event["event_id"]) for event in result["events"])
-            by_account.append({"account": name, "email": self.google.email(name), "events": result["events"],
-                               "more_available": result["more_available"]})
-        total = sum(len(group["events"]) for group in by_account)
-        message = (f"Found {total} event(s) across {len(by_account)} account(s), listed per account; always say which "
-                   "account each event is in.")
+            for event in result["events"]:
+                key = event_identity(event)
+                if key in seen:
+                    seen[key].setdefault("also_in", []).append(name)
+                    continue
+                seen[key] = {**event, "account": name}
+                timeline.append(seen[key])
+        timeline.sort(key=event_start)
+        checked = [name for name, _ in results]
+        message = (f"Found {len(timeline)} event(s) across {len(checked)} calendar(s) ({', '.join(checked)}), in time "
+                   "order; each names its account.")
         if failures:
-            message += " Not available: " + "; ".join(f"{f['account']} ({f['message']})" for f in failures) + "."
-        return ToolOutcome(True, message, {"accounts": by_account, "unavailable": failures})
+            message += (" Not checked, so this is not the whole schedule: "
+                        + "; ".join(f"{f['account']} ({f['message']})" for f in failures) + ".")
+        return ToolOutcome(True, message, {"events": timeline, "accounts_checked": checked, "unavailable": failures,
+                                           "more_available": any(result["more_available"] for _, result in results)})
 
     def _read_calendar_event(self, arguments: dict) -> ToolOutcome:
         account = arguments["account"]

@@ -170,7 +170,7 @@ class WorkingContext:
         for group in data.get("accounts") or [data]:
             for event in (group.get("events") or [])[:2]:
                 self._put("event", event.get("event_id"), f"\"{event.get('title')}\" at {str(event.get('start'))[:16]}",
-                          "found", "search_calendar_events", group.get("account") or account)
+                          "found", "search_calendar_events", event.get("account") or group.get("account") or account)
 
     def _on_read_calendar_event(self, arguments, data, account):
         self._put("event", data.get("event_id"), f"\"{data.get('title')}\" at {str(data.get('start'))[:16]}", "read",

@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 import urllib.parse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -341,7 +341,7 @@ class PriorityTests(Case):
         registry = ToolRegistry(self.database, google=accounts, timers=TimerService(self.database))
         outcome = registry.execute(registry.prepare("get_briefing", {"day": "today"}, "What's important today?"))
         self.assertIn("Needs attention: Overdue thing (overdue (was due", outcome.message)
-        self.assertIn("Only the personal calendar; not included: BITS", outcome.message)
+        self.assertIn("Next commitment: Lecture at", outcome.message)  # from BITS: every calendar is included
         self.assertEqual(list(outcome.data)[0], "focus")  # the focus comes first
 
     def test_the_model_gets_a_compact_briefing_with_the_focus(self):
@@ -648,8 +648,11 @@ class DirectAnswerTests(Case):
         accounts = GoogleAccounts(GoogleSettings(enabled=True, client_secrets_file=Path("/x")), registry_path=path,
                                   provider_factory=lambda item: providers[item])
         text = self.runtime(tool_call("get_briefing"), google=accounts).run_turn("What's important today?").response
+        self.assertRegex(text, r"^Next: Lecture \(BITS\) at \d\d:\d\d,? (?:tomorrow, )?in (?:59 minutes|1 hour)\.")  # every calendar
+        self.assertNotIn("Only the", text)
+        text = self.runtime(tool_call("get_briefing"), google=accounts).run_turn("What's on my personal calendar today?").response
         self.assertIn("Nothing else is scheduled today.", text)
-        self.assertIn("Only the personal calendar; not included: BITS (ask for all calendars).", text)
+        self.assertIn("Only the personal calendar, as asked; not included: BITS.", text)
         offline = GoogleAccounts.single(FakeProvider("me@x.org", fail="offline"))
         text = self.runtime(tool_call("get_briefing"), google=offline).run_turn("Brief me").response
         self.assertIn("I couldn't read your calendar", text)
@@ -715,6 +718,52 @@ class DirectAnswerTests(Case):
         result = automated.run_turn("Check my tasks and then tell me what is open")
         self.assertEqual(automated.automation_status()["status"], "COMPLETED")
         self.assertNotIn("You have", result.response)  # the automation reports; its read step does not end the turn
+
+
+
+# --- Every connected calendar (P0.4) ------------------------------------------------------------
+
+class AllCalendarsTests(Case):
+    def accounts(self, personal_events=(), bits_events=(), bits_fail=None):
+        from google_workspace import GoogleSettings
+        path = Path(self.temp.name) / "accounts.json"
+        path.write_text(json.dumps({"version": 1, "default": "personal", "accounts": [
+            {"name": "personal", "item": "oauth", "email": "me@x.org"}, {"name": "BITS", "item": "oauth:bits", "email": "d@bits.edu"}]}))
+        providers = {"oauth": MailProvider("me@x.org", list(personal_events)),
+                     "oauth:bits": MailProvider("d@bits.edu", list(bits_events), fail=bits_fail)}
+        return GoogleAccounts(GoogleSettings(enabled=True, client_secrets_file=Path("/x")), registry_path=path,
+                              provider_factory=lambda item: providers[item])
+
+    def answer(self, accounts, message="What's important today?"):
+        runtime = DirectAnswerTests.runtime(self, tool_call("get_briefing", {"day": "today"}), google=accounts)
+        return runtime.run_turn(message).response
+
+    def test_one_timeline_in_local_time_with_all_day_events_from_every_calendar(self):
+        later, sooner = at(150), at(90)
+        utc_event = {"event_id": "bitsevt1", "ical_uid": "b1@google.com", "title": "Lab viva", "all_day": False,
+                     "start": sooner.astimezone(timezone.utc).isoformat(), "end": (sooner + timedelta(hours=1)).astimezone(timezone.utc).isoformat()}
+        holiday = {"event_id": "bitsevt2", "title": "Founders' Day", "start": NOW.date().isoformat(),
+                   "end": (NOW.date() + timedelta(days=1)).isoformat(), "all_day": True}
+        text = self.answer(self.accounts([timed_event("Group meeting", 150, "pevt0001")], [holiday, utc_event]))
+        # The BITS event, stored in UTC, is shown at its local time and comes first; then the personal one.
+        self.assertIn(f"Next: Lab viva (BITS) at {sooner:%H:%M}", text)
+        if later.date() == sooner.date():
+            self.assertIn(f"Later: {later:%H:%M} Group meeting (personal).", text)
+        self.assertIn("All day: Founders' Day.", text)
+
+    def test_an_empty_day_in_every_calendar_is_said_plainly(self):
+        text = self.answer(self.accounts())
+        self.assertIn("Nothing else is scheduled today.", text)
+        self.assertNotIn("Not available", text)
+
+    def test_a_calendar_that_cannot_be_read_makes_the_day_partial_not_empty(self):
+        accounts = self.accounts(bits_fail="Google Calendar is unavailable.")
+        text = self.answer(accounts)
+        self.assertIn("Nothing else is scheduled today in the calendars I could check; I couldn't check BITS.", text)
+        self.assertIn("Not available: calendar (BITS): Google Calendar is unavailable.", text)
+        result = briefing.build_briefing(NOW, "today", database_path=self.database, google=accounts, timers=TimerService(self.database))
+        self.assertEqual(priorities.dashboard(result, None, None)["calendar_missing"], ["BITS"])
+        self.assertIn("none found in the calendars that could be read (not BITS)", priorities.summary_text(result["focus"]))
 
 
 if __name__ == "__main__":

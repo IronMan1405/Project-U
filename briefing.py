@@ -1,8 +1,7 @@
 """The daily briefing: one verified picture of a day from K.R.I.S.'s sources.
 
-Sources: Google Calendar (the default Google account, or with calendar_accounts="all" every
-connected account, grouped by account), K.R.I.S. tasks (SQLite), Apple Reminders, and K.R.I.S.
-timers. Each source reports its own status ("ok", "not_connected" or
+Sources: Google Calendar (every connected account's calendar, or only the account the user names),
+K.R.I.S. tasks (SQLite), Apple Reminders, and K.R.I.S. timers. Each source reports its own status ("ok", "not_connected" or
 "unavailable" with the reason), so a briefing never presents missing data as an empty day.
 Nothing is inferred: tasks have no completion time, so "completed today" is not reported.
 A task and a reminder with the same title due the same day are shown once.
@@ -67,6 +66,25 @@ def _cap(items: list[dict]) -> dict:
     return {"items": items[:MAX_ITEMS], "more": max(0, len(items) - MAX_ITEMS)}
 
 
+def event_identity(event: dict) -> tuple:
+    """The same event wherever it appears: Google's iCalUID (shared by every copy of an invitation)
+    or else its event ID, plus its start (each occurrence of a series is its own event). Never the
+    title: two different events may share one."""
+    return (event.get("ical_uid") or f"id:{event.get('event_id')}", event.get("start"))
+
+
+def event_start(event: dict) -> datetime:
+    """When an event starts, comparable across time zones (an all-day event: local midnight)."""
+    start = event.get("start") or ""
+    try:
+        if len(start) == 10:
+            return datetime.combine(date.fromisoformat(start), time.min).astimezone()
+        moment = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        return moment if moment.tzinfo else moment.astimezone()
+    except ValueError:
+        return datetime.max.replace(tzinfo=timezone.utc)
+
+
 def _all_calendars(accounts, day_events) -> dict:
     """Every connected account's events, grouped by account. An event that appears in several
     accounts (an invitation both received) is listed once, in the first, with also_in naming the
@@ -84,7 +102,7 @@ def _all_calendars(accounts, day_events) -> dict:
             continue
         events = []
         for event in found["events"]:
-            key = (event.get("title"), event.get("start"), event.get("end"))
+            key = event_identity(event)
             if key in seen:
                 seen[key].setdefault("also_in", []).append(name)
                 continue
@@ -95,7 +113,7 @@ def _all_calendars(accounts, day_events) -> dict:
         return {"status": "unavailable", "reason": "; ".join(f"{u['account']}: {u['reason']}" for u in unavailable)
                 or "No Google account is connected."}
     result = {"status": "ok", "accounts": groups,
-              "note": "Events are grouped by account; always say which account each event is in."}
+              "note": "Every connected calendar; say which account an event is in when it matters."}
     if unavailable:
         result["unavailable_accounts"] = unavailable
     return result
@@ -125,7 +143,8 @@ def build_briefing(
         "sources": {},
     }
 
-    # Calendar: Google (never invented when unavailable). The default account unless all were asked for.
+    # Calendar: Google (never invented when unavailable). Every connected account's calendar, unless
+    # calendar_accounts names one account (the user restricted it); "all" is accepted as the default.
     def day_events(provider) -> dict:
         found = provider.search_events(day_start.isoformat(), day_end.isoformat(), None, google_workspace.MAX_EVENT_RESULTS)
         if day == "today":
@@ -135,19 +154,20 @@ def build_briefing(
         return found
 
     accounts = google if hasattr(google, "provider") else None  # several accounts (google_accounts.py)
+    only = calendar_accounts if calendar_accounts not in (None, "all") else None
     if google is None or not google.settings.enabled:
         briefing["sources"]["calendar"] = {"status": "not_connected", "reason": "Google Calendar is not connected."}
-    elif calendar_accounts == "all" and accounts is not None and accounts.multiple:
+    elif only is None and accounts is not None and accounts.multiple:
         briefing["sources"]["calendar"] = _all_calendars(accounts, day_events)
     else:
+        name = only or (accounts.default if accounts is not None else None)
         try:
-            found = day_events(accounts.check(accounts.default) if accounts is not None else google)
+            found = day_events(accounts.check(name) if accounts is not None else google)
             briefing["sources"]["calendar"] = {"status": "ok", "events": found["events"], "more": found["more_available"]}
             if accounts is not None and accounts.multiple:
-                briefing["sources"]["calendar"]["account"] = accounts.default
-                others = [name for name in accounts.names if name != accounts.default]
-                briefing["sources"]["calendar"]["scope"] = (
-                    f"Only the {accounts.default} calendar; not included: {', '.join(others)} (ask for all calendars)")
+                briefing["sources"]["calendar"]["account"] = name
+                others = [other for other in accounts.names if other != name]
+                briefing["sources"]["calendar"]["scope"] = f"Only the {name} calendar, as asked; not included: {', '.join(others)}"
         except google_workspace.GoogleError as error:
             briefing["sources"]["calendar"] = {"status": "unavailable", "reason": error.message}
 
@@ -220,6 +240,9 @@ def build_briefing(
 
     briefing["unavailable"] = [
         f"{name}: {source['reason']}" for name, source in briefing["sources"].items() if source["status"] != "ok"
+    ] + [  # partial coverage: the calendars that were read still count, but this one was not checked
+        f"calendar ({missing['account']}): {missing['reason']}"
+        for missing in briefing["sources"].get("calendar", {}).get("unavailable_accounts", [])
     ]
     briefing["_reminder_ids"] = seen_reminder_ids
     briefing["focus"] = priorities.focus(briefing, now, context, window)
@@ -265,9 +288,14 @@ def for_model(briefing: dict) -> dict:
         if name == "calendar" and source.get("status") == "ok":
             trim = lambda events: [{k: e[k] for k in EVENT_FIELDS if k in e} for e in events[:MAX_EVENTS_FOR_MODEL]]
             if source.get("accounts"):
-                source["accounts"] = [{**group, "events": trim(group["events"]),
-                                       "more": group.get("more") or len(group["events"]) > MAX_EVENTS_FOR_MODEL}
-                                      for group in source["accounts"]]
+                # One timeline across the calendars (each event names its account), not one list per account.
+                timeline = sorted(({**event, "account": group["account"]} for group in source.pop("accounts")
+                                   for event in group["events"]), key=event_start)
+                source["accounts_checked"] = [group["account"] for group in briefing["sources"]["calendar"]["accounts"]]
+                source["more"] = (len(timeline) > MAX_EVENTS_FOR_MODEL
+                                  or any(group.get("more") for group in briefing["sources"]["calendar"]["accounts"]))
+                source["events"] = [{k: e[k] for k in (*EVENT_FIELDS, "account", "also_in") if k in e}
+                                    for e in timeline[:MAX_EVENTS_FOR_MODEL]]
             else:
                 source["more"] = source.get("more") or len(source.get("events") or []) > MAX_EVENTS_FOR_MODEL
                 source["events"] = trim(source.get("events") or [])

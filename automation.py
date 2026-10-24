@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
 
+import google_workspace
 from tool_registry import PreparedToolCall, ToolError, ToolOutcome, validate_arguments
 
 AUTOMATION_TOOL = "start_automation"
@@ -46,6 +47,9 @@ MAX_RESULT_CHARS_FOR_MODEL = 1800
 MAX_PURPOSE_CHARS = 120
 # Treated as consequential inside automation: an approval covers only the exact action shown.
 ALWAYS_EXACT = frozenset({"ui_action"})
+# Email sends are never covered by a plan approval: each is confirmed on its own, from the exact
+# preview (recipients, subject, body, account), right before it is sent.
+SEND_TOOLS = frozenset(google_workspace.SEND_TOOLS)
 EMPTY_KEYS = ("events", "messages", "results", "notes", "reminders", "drafts", "elements", "accounts", "tasks")
 
 
@@ -368,8 +372,8 @@ class AutomationRunner:
         """Planned steps that the existing policy would not run directly, given the objective."""
         pending = []
         for index, step in enumerate(run.steps):
-            if step.status != "pending" or step.approved:
-                continue
+            if step.status != "pending" or step.approved or step.tool in SEND_TOOLS:
+                continue  # (a send is confirmed by itself, with its exact preview, when it is reached)
             tier = self.tier(step.tool)
             if tier == READ:
                 continue
@@ -390,7 +394,9 @@ class AutomationRunner:
             if step.status != "pending":
                 continue
             mark = ""
-            if indexes is not None and index in indexes:
+            if step.tool in SEND_TOOLS:
+                mark = " (you will confirm the exact email before it is sent)"
+            elif indexes is not None and index in indexes:
                 mark = (" (you will see the exact details before it happens)" if self.tier(step.tool) == CONSEQUENTIAL
                         and not self._concrete_summary(run, step) else "")
             lines.append(f"{index + 1}. {step.purpose}{mark}")
@@ -401,8 +407,8 @@ class AutomationRunner:
         for index, step in enumerate(run.steps):
             if step.status != "pending":
                 continue
-            needs = "needs approval" if index in indexes else {READ: "read only", LOW_IMPACT: "small change",
-                                                              CONSEQUENTIAL: "approved"}[self.tier(step.tool)]
+            needs = ("exact email confirmed separately" if step.tool in SEND_TOOLS else "needs approval" if index in indexes
+                     else {READ: "read only", LOW_IMPACT: "small change", CONSEQUENTIAL: "approved"}[self.tier(step.tool)])
             rows.append([f"Step {index + 1}", f"{step.purpose} — {needs}"])
         notes = ["Approving runs these steps only. Anything different that needs approval is asked for again.",
                  "Say \"stop\" or press Stop to cancel; finished steps are kept."]
@@ -446,7 +452,7 @@ class AutomationRunner:
     def approve(self, run: AutomationRun) -> Outcome:
         """The user approved the plan as shown: exactly its pending steps."""
         for step in run.steps:
-            if step.status == "pending" and not step.approved:
+            if step.status == "pending" and not step.approved and step.tool not in SEND_TOOLS:
                 step.approved = True
                 if self.tier(step.tool) == CONSEQUENTIAL:
                     step.approved_summary = self._concrete_summary(run, step)
@@ -521,6 +527,12 @@ class AutomationRunner:
         if not prepared.always_confirm:
             return None
         tier = self.tier(step.tool)
+        if step.tool in SEND_TOOLS:
+            # Always the exact preview, whatever was approved before (a plan, an earlier run, a restored
+            # session); only that confirmed payload is then sent (execute_confirmed).
+            run.status = AWAITING_APPROVAL
+            self._event(run, AWAITING_APPROVAL, f"Waiting for confirmation: {prepared.summary}")
+            return Outcome("confirm_step", run, prepared=prepared)
         if step.approved and (tier != CONSEQUENTIAL or step.approved_summary == prepared.summary):
             return None
         if tier == CONSEQUENTIAL or step.approved:
@@ -547,7 +559,9 @@ class AutomationRunner:
             if outcome.ok:
                 break
             kind = classify(outcome.message, outcome.data)
-            if kind == "transient" and step.attempts <= self.limits.max_retries and not run.cancel_event.is_set():
+            # Never for a send: a timed-out send may still have gone out, and was approved once.
+            if (kind == "transient" and step.attempts <= self.limits.max_retries and not run.cancel_event.is_set()
+                    and step.tool not in SEND_TOOLS):
                 continue
             step.status, step.message = "failed", outcome.message
             run.failures.append({"step": index + 1, "kind": kind, "message": outcome.message})
